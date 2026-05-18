@@ -111,16 +111,30 @@ def ensure_cluster_available() -> None:
 
 
 def pause_cluster() -> None:
-    try:
-        status = get_cluster_status()
-        if status == "available":
-            logger.info("Pausing cluster %s", CLUSTER_ID)
+    """Pause the cluster, retrying if Redshift still has internal operations running."""
+    MAX_PAUSE_ATTEMPTS = 6
+    PAUSE_RETRY_WAIT = 20  # seconds between retries
+
+    for attempt in range(1, MAX_PAUSE_ATTEMPTS + 1):
+        try:
+            status = get_cluster_status()
+            if status != "available":
+                logger.info("Cluster status is %s, skipping pause", status)
+                return
+            logger.info("Pausing cluster %s (attempt %d/%d)", CLUSTER_ID, attempt, MAX_PAUSE_ATTEMPTS)
             redshift.pause_cluster(ClusterIdentifier=CLUSTER_ID)
-        else:
-            logger.info("Cluster status is %s, skipping pause", status)
-    except Exception as e:  # noqa: BLE001
-        # Never fail the run on a pause error — the report is already delivered.
-        logger.exception("Failed to pause cluster: %s", e)
+            logger.info("Cluster pause initiated successfully")
+            return
+        except redshift.exceptions.InvalidClusterStateFault:
+            if attempt < MAX_PAUSE_ATTEMPTS:
+                logger.info("Cluster busy, retrying pause in %ds...", PAUSE_RETRY_WAIT)
+                time.sleep(PAUSE_RETRY_WAIT)
+            else:
+                logger.warning("Could not pause cluster after %d attempts — pause it manually", MAX_PAUSE_ATTEMPTS)
+        except Exception as e:  # noqa: BLE001
+            # Never fail the run on a pause error — the report is already delivered.
+            logger.exception("Failed to pause cluster: %s", e)
+            return
 
 
 # ---------------------------------------------------------------------------
