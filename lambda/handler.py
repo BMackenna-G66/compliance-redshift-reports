@@ -3,23 +3,28 @@ Compliance Redshift Reports — main Lambda handler.
 
 Flow:
   1. Resume cluster if paused, wait until available.
-  2. Execute parameterized SQL via Redshift Data API.
+  2. Execute the SQL for the requested report via Redshift Data API.
   3. Fetch results and build Excel + HTML summary.
   4. Upload Excel to S3 (encrypted).
-  5. Send SES email with attachment + presigned link.
+  5. Send SES email with attachment + presigned link (best-effort).
   6. POST summary to Slack webhook.
   7. Pause cluster.
+
+Supported reports (pass via event["report_name"] or REPORT_NAME env var):
+  - high_risk_countries        : AML screening — outbound tx to FATF/OFAC countries
+  - amount_ranges_by_country   : Volume distribution by USD range × destination country (7d)
+  - top_customers_by_range_country : Top-15 customers per range × country (7d)
 
 Environment variables expected (set by Terraform):
   CLUSTER_IDENTIFIER       — Redshift cluster identifier
   DATABASE_NAME            — DB name (e.g. dev)
-  DB_USER                  — DB user (e.g. awsuser) — uses IAM auth via GetClusterCredentials
+  DB_USER                  — DB user — uses IAM auth via GetClusterCredentials
   S3_BUCKET                — output bucket
   SES_FROM_ADDRESS         — verified SES sender
   SES_TO_ADDRESSES         — comma-separated recipients
   SLACK_WEBHOOK_SECRET_ARN — Secrets Manager ARN holding the Slack webhook URL
-  REPORT_NAME              — short id for the report ("high_risk_countries")
-  AUTO_PAUSE               — "true" to pause cluster after run, "false" to leave it on
+  REPORT_NAME              — default report if not passed in event
+  AUTO_PAUSE               — "true" to pause cluster after run
 """
 
 from __future__ import annotations
@@ -57,7 +62,7 @@ ses = boto3.client("ses")
 secrets = boto3.client("secretsmanager")
 
 # ---------------------------------------------------------------------------
-# Config
+# Config from environment
 # ---------------------------------------------------------------------------
 CLUSTER_ID = os.environ["CLUSTER_IDENTIFIER"]
 DATABASE = os.environ["DATABASE_NAME"]
@@ -75,8 +80,33 @@ CONFIG_DIR = BASE_DIR / "config"
 TEMPLATES_DIR = BASE_DIR
 
 POLL_INTERVAL_SECONDS = 5
-MAX_WAIT_RESUME_SECONDS = 600  # 10 min
-MAX_WAIT_QUERY_SECONDS = 600   # 10 min
+MAX_WAIT_RESUME_SECONDS = 600   # 10 min
+MAX_WAIT_QUERY_SECONDS = 600    # 10 min
+
+# ---------------------------------------------------------------------------
+# Report registry
+# Add new reports here — no other changes needed for simple cases.
+# ---------------------------------------------------------------------------
+REPORT_CONFIGS: dict[str, dict] = {
+    "high_risk_countries": {
+        "display_name": "High-Risk Countries Transactions",
+        "sql_file": "high_risk_countries_transactions.sql",
+        "needs_country_filter": True,   # substitutes {country_codes} and {only_successful}
+        "needs_since_date": True,        # passes :since_date as Data API parameter
+    },
+    "amount_ranges_by_country": {
+        "display_name": "Amount Ranges by Country (7d)",
+        "sql_file": "amount_ranges_by_country.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "top_customers_by_range_country": {
+        "display_name": "Top Customers by Range & Country (7d)",
+        "sql_file": "top_customers_by_range_country.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -132,13 +162,12 @@ def pause_cluster() -> None:
             else:
                 logger.warning("Could not pause cluster after %d attempts — pause it manually", MAX_PAUSE_ATTEMPTS)
         except Exception as e:  # noqa: BLE001
-            # Never fail the run on a pause error — the report is already delivered.
             logger.exception("Failed to pause cluster: %s", e)
             return
 
 
 # ---------------------------------------------------------------------------
-# Query execution
+# Query rendering + execution
 # ---------------------------------------------------------------------------
 def load_country_codes() -> list[dict]:
     with open(CONFIG_DIR / "high_risk_countries.yaml", encoding="utf-8") as f:
@@ -146,30 +175,41 @@ def load_country_codes() -> list[dict]:
     return data["countries"]
 
 
-def render_query(since_date: str, only_successful: bool, country_codes: list[str]) -> str:
-    sql_template = (QUERIES_DIR / "high_risk_countries_transactions.sql").read_text(encoding="utf-8")
-    # country list and boolean flag are template-substituted (trusted, not user input).
-    # since_date stays as a Data API parameter (`:since_date`) — see SQL.
-    quoted_countries = ",".join(f"'{c}'" for c in country_codes)
-    return (
-        sql_template
-        .replace("{country_codes}", quoted_countries)
-        .replace("{only_successful}", "TRUE" if only_successful else "FALSE")
-    )
+def render_query(
+    report_name: str,
+    since_date: str,
+    only_successful: bool,
+    country_codes: list[str],
+) -> tuple[str, list[dict]]:
+    """Return (sql_string, data_api_params_list) for the given report."""
+    config = REPORT_CONFIGS[report_name]
+    sql = (QUERIES_DIR / config["sql_file"]).read_text(encoding="utf-8")
+    api_params: list[dict] = []
+
+    if config["needs_country_filter"]:
+        quoted = ",".join(f"'{c}'" for c in country_codes)
+        sql = sql.replace("{country_codes}", quoted)
+        sql = sql.replace("{only_successful}", "TRUE" if only_successful else "FALSE")
+
+    if config["needs_since_date"]:
+        api_params.append({"name": "since_date", "value": since_date})
+
+    return sql, api_params
 
 
-def execute_query(sql: str, since_date: str) -> list[dict]:
+def execute_query(sql: str, api_params: list[dict] | None = None) -> list[dict]:
     logger.info("Submitting query to Redshift Data API")
-    resp = redshift_data.execute_statement(
+    kwargs: dict = dict(
         ClusterIdentifier=CLUSTER_ID,
         Database=DATABASE,
         DbUser=DB_USER,
         Sql=sql,
-        Parameters=[
-            {"name": "since_date", "value": since_date},
-        ],
         WithEvent=False,
     )
+    if api_params:
+        kwargs["Parameters"] = api_params
+
+    resp = redshift_data.execute_statement(**kwargs)
     statement_id = resp["Id"]
     logger.info("Statement id: %s", statement_id)
 
@@ -226,8 +266,18 @@ def _unwrap_value(cell: dict):
 # ---------------------------------------------------------------------------
 # Report building
 # ---------------------------------------------------------------------------
-def build_summary(rows: list[dict]) -> dict:
-    """Aggregate stats for the email/slack summary."""
+def build_summary(rows: list[dict], report_name: str) -> dict:
+    """Dispatch to report-specific summary builder."""
+    if report_name == "high_risk_countries":
+        return _summary_high_risk(rows)
+    if report_name == "amount_ranges_by_country":
+        return _summary_amount_ranges(rows)
+    if report_name == "top_customers_by_range_country":
+        return _summary_top_customers(rows)
+    return _summary_generic(rows)
+
+
+def _summary_high_risk(rows: list[dict]) -> dict:
     total = len(rows)
     by_country: dict[str, dict] = {}
     swift_mismatches = 0
@@ -239,7 +289,6 @@ def build_summary(rows: list[dict]) -> dict:
         total_usd += usd
         if r.get("swift_country_mismatch_flag"):
             swift_mismatches += 1
-
         bucket = by_country.setdefault(country, {"count": 0, "usd": 0.0})
         bucket["count"] += 1
         bucket["usd"] += usd
@@ -259,13 +308,71 @@ def build_summary(rows: list[dict]) -> dict:
     }
 
 
+def _summary_amount_ranges(rows: list[dict]) -> dict:
+    total_rows = len(rows)
+    total_txs = sum(int(r.get("total_transactions") or 0) for r in rows)
+    total_usd = sum(float(r.get("total_amount_usd") or 0) for r in rows)
+    distinct_countries = len({r.get("beneficiary_country_code") for r in rows})
+
+    # Top 5 country+range combos by transaction count
+    top_combos = sorted(rows, key=lambda r: int(r.get("total_transactions") or 0), reverse=True)[:5]
+
+    return {
+        "total_rows": total_rows,
+        "total_transactions": total_txs,
+        "total_usd": total_usd,
+        "distinct_countries": distinct_countries,
+        "top_combos": [
+            {
+                "country": r.get("beneficiary_country_code"),
+                "range": r.get("amount_range_usd"),
+                "count": r.get("total_transactions"),
+                "usd": r.get("total_amount_usd"),
+            }
+            for r in top_combos
+        ],
+    }
+
+
+def _summary_top_customers(rows: list[dict]) -> dict:
+    total_rows = len(rows)
+    distinct_customers = len({r.get("customer_id") for r in rows})
+    distinct_countries = len({r.get("beneficiary_country_code") for r in rows})
+    total_usd = sum(float(r.get("total_amount_usd") or 0) for r in rows)
+
+    # Top 5 customers by total transactions
+    top_customers = sorted(rows, key=lambda r: int(r.get("total_transactions") or 0), reverse=True)[:5]
+
+    return {
+        "total_rows": total_rows,
+        "distinct_customers": distinct_customers,
+        "distinct_countries": distinct_countries,
+        "total_usd": total_usd,
+        "top_customers": [
+            {
+                "customer_id": r.get("customer_id"),
+                "email": r.get("customer_email"),
+                "country": r.get("beneficiary_country_code"),
+                "range": r.get("amount_range_usd"),
+                "count": r.get("total_transactions"),
+                "usd": r.get("total_amount_usd"),
+            }
+            for r in top_customers
+        ],
+    }
+
+
+def _summary_generic(rows: list[dict]) -> dict:
+    return {"total_rows": len(rows)}
+
+
 def build_excel(rows: list[dict]) -> bytes:
     wb = Workbook()
     ws = wb.active
-    ws.title = "Transactions"
+    ws.title = "Data"
 
     if not rows:
-        ws["A1"] = "No transactions found for the selected period."
+        ws["A1"] = "No data found for the selected period."
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
@@ -349,29 +456,61 @@ def send_email(html_body: str, xlsx_bytes: bytes, xlsx_filename: str, subject: s
     logger.info("Email sent to %s", SES_TO)
 
 
-def post_slack(summary: dict, params: dict, s3_url: str) -> None:
+def post_slack(summary: dict, params: dict, s3_url: str, report_name: str) -> None:
     if not SLACK_SECRET_ARN:
         logger.info("No Slack secret configured, skipping Slack notification")
         return
 
     secret = secrets.get_secret_value(SecretId=SLACK_SECRET_ARN)
     webhook_url = secret["SecretString"].strip()
+    display_name = REPORT_CONFIGS.get(report_name, {}).get("display_name", report_name)
+    generated_at = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
-    text_lines = [
-        f"*Compliance Report — High-Risk Countries Transactions*",
-        f"Period since: `{params['since_date']}`  •  Generated: {dt.datetime.utcnow():%Y-%m-%d %H:%M UTC}",
-        "",
-        f"• Total transactions: *{summary['total_transactions']:,}*",
-        f"• Total USD: *${summary['total_usd']:,.2f}*",
-        f"• Distinct countries: *{summary['distinct_countries']}*",
-        f"• SWIFT/country mismatches: *{summary['swift_country_mismatches']}* :warning:",
-        "",
-        "*Top 5 countries by USD:*",
-    ]
-    for c in summary["top_countries"][:5]:
-        text_lines.append(f"  • {c['country']}: {c['count']} tx — ${c['usd']:,.2f}")
-    text_lines.append("")
-    text_lines.append(f"<{s3_url}|Download full report (expires in 24h)>")
+    text_lines = [f"*Compliance Report — {display_name}*", f"Generated: {generated_at}", ""]
+
+    if report_name == "high_risk_countries":
+        text_lines += [
+            f"Period since: `{params['since_date']}`",
+            f"• Total transactions: *{summary['total_transactions']:,}*",
+            f"• Total USD: *${summary['total_usd']:,.2f}*",
+            f"• Distinct countries: *{summary['distinct_countries']}*",
+            f"• SWIFT/country mismatches: *{summary['swift_country_mismatches']}* :warning:",
+            "",
+            "*Top 5 countries by USD:*",
+        ]
+        for c in summary["top_countries"][:5]:
+            text_lines.append(f"  • {c['country']}: {c['count']} tx — ${c['usd']:,.2f}")
+
+    elif report_name == "amount_ranges_by_country":
+        text_lines += [
+            f"• Combinations country × range: *{summary['total_rows']:,}*",
+            f"• Total transactions: *{summary['total_transactions']:,}*",
+            f"• Total USD: *${summary['total_usd']:,.2f}*",
+            f"• Distinct countries: *{summary['distinct_countries']}*",
+            "",
+            "*Top 5 combos by transaction count:*",
+        ]
+        for c in summary.get("top_combos", []):
+            text_lines.append(f"  • {c['country']} / {c['range']}: {c['count']} tx — ${float(c['usd'] or 0):,.2f}")
+
+    elif report_name == "top_customers_by_range_country":
+        text_lines += [
+            f"• Total rows: *{summary['total_rows']:,}*",
+            f"• Distinct customers: *{summary['distinct_customers']:,}*",
+            f"• Distinct countries: *{summary['distinct_countries']}*",
+            f"• Total USD: *${summary['total_usd']:,.2f}*",
+            "",
+            "*Top 5 customers by transaction count:*",
+        ]
+        for c in summary.get("top_customers", []):
+            text_lines.append(
+                f"  • {c['customer_id']} ({c['country']} / {c['range']}): {c['count']} tx"
+            )
+
+    else:
+        text_lines.append(f"• Total rows: *{summary.get('total_rows', '?'):,}*")
+
+    text_lines += ["", f"<{s3_url}|Download full report (expires in 24h)>"]
 
     payload = json.dumps({"text": "\n".join(text_lines)}).encode("utf-8")
     req = urllib.request.Request(
@@ -391,17 +530,29 @@ def post_slack(summary: dict, params: dict, s3_url: str) -> None:
 def handler(event, context):  # noqa: ARG001
     logger.info("Event: %s", json.dumps(event, default=str))
 
-    # --- resolve params (CLI/manual invoke override the defaults) ---
+    # report_name: from event payload (EventBridge or manual invoke) → fallback to env var
+    report_name = event.get("report_name") or REPORT_NAME
+    if report_name not in REPORT_CONFIGS:
+        raise ValueError(f"Unknown report '{report_name}'. Valid: {list(REPORT_CONFIGS)}")
+
+    config = REPORT_CONFIGS[report_name]
+    display_name = config["display_name"]
+    logger.info("Running report: %s", display_name)
+
+    # Resolve optional params (only used by high_risk_countries today)
     today = dt.date.today()
     default_since = today.replace(day=1).isoformat()
     since_date = event.get("since_date") or default_since
     only_successful = bool(event.get("only_successful", False))
 
-    countries = load_country_codes()
-    country_codes = [c["code"] for c in countries]
+    country_codes: list[str] = []
+    if config["needs_country_filter"]:
+        countries = load_country_codes()
+        country_codes = [c["code"] for c in countries]
 
     params = {
-        "since_date": since_date,
+        "report_name": report_name,
+        "since_date": since_date if config["needs_since_date"] else "last_7_days",
         "only_successful": only_successful,
         "country_count": len(country_codes),
     }
@@ -409,34 +560,44 @@ def handler(event, context):  # noqa: ARG001
     try:
         ensure_cluster_available()
 
-        sql = render_query(since_date, only_successful, country_codes)
-        rows = execute_query(sql, since_date)
+        sql, api_params = render_query(report_name, since_date, only_successful, country_codes)
+        rows = execute_query(sql, api_params)
 
-        summary = build_summary(rows)
+        summary = build_summary(rows, report_name)
         xlsx_bytes = build_excel(rows)
 
         run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-        key = f"{REPORT_NAME}/{run_ts}_since-{since_date}.xlsx"
-        s3_url = upload_to_s3(xlsx_bytes, key, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        # Key includes since_date for high_risk_countries; just timestamp for others
+        if config["needs_since_date"]:
+            key = f"{report_name}/{run_ts}_since-{since_date}.xlsx"
+        else:
+            key = f"{report_name}/{run_ts}.xlsx"
 
-        subject = f"[Compliance] High-Risk Countries Tx — since {since_date} — {summary['total_transactions']} tx"
+        s3_url = upload_to_s3(
+            xlsx_bytes, key,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        total_rows = summary.get("total_transactions") or summary.get("total_rows", 0)
+        subject = f"[Compliance] {display_name} — {total_rows} rows"
         html = render_email_html(summary, params, s3_url)
 
         # Email is best-effort: SES identity may not be verified yet.
-        # A failure here does NOT abort the run — report is already in S3 + Slack.
         try:
             send_email(html, xlsx_bytes, Path(key).name, subject)
         except Exception as e:  # noqa: BLE001
             logger.warning("Email delivery failed (non-blocking): %s", e)
 
-        post_slack(summary, params, s3_url)
+        post_slack(summary, params, s3_url, report_name)
 
         return {
             "status": "ok",
-            "rows": summary["total_transactions"],
+            "report_name": report_name,
+            "rows": total_rows,
             "s3_key": key,
             "params": params,
         }
+
     finally:
         if AUTO_PAUSE:
             pause_cluster()

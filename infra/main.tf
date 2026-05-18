@@ -253,3 +253,51 @@ resource "aws_lambda_permission" "allow_events" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.schedule.arn
 }
+
+# ---------------------------------------------------------------------------
+# EventBridge — Amount Ranges by Country (Mon-Fri 08:00 UTC)
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_event_rule" "amount_ranges_schedule" {
+  name                = "${var.project_name}-amount-ranges-schedule"
+  description         = "Triggers amount ranges by country report (Mon-Fri)"
+  schedule_expression = "cron(0 8 ? * MON-FRI *)"
+}
+
+resource "aws_cloudwatch_event_target" "amount_ranges_lambda" {
+  rule      = aws_cloudwatch_event_rule.amount_ranges_schedule.name
+  target_id = "lambda"
+  arn       = aws_lambda_function.report.arn
+  input     = jsonencode({ report_name = "amount_ranges_by_country" })
+}
+
+resource "aws_lambda_permission" "allow_events_amount_ranges" {
+  statement_id  = "AllowEventBridgeInvokeAmountRanges"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.report.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.amount_ranges_schedule.arn
+}
+
+# ---------------------------------------------------------------------------
+# EventBridge — Top Customers by Range & Country (Mon-Fri 08:10 UTC)
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_event_rule" "top_customers_schedule" {
+  name                = "${var.project_name}-top-customers-schedule"
+  description         = "Triggers top customers by range & country report (Mon-Fri)"
+  schedule_expression = "cron(10 8 ? * MON-FRI *)"
+}
+
+resource "aws_cloudwatch_event_target" "top_customers_lambda" {
+  rule      = aws_cloudwatch_event_rule.top_customers_schedule.name
+  target_id = "lambda"
+  arn       = aws_lambda_function.report.arn
+  input     = jsonencode({ report_name = "top_customers_by_range_country" })
+}
+
+resource "aws_lambda_permission" "allow_events_top_customers" {
+  statement_id  = "AllowEventBridgeInvokeTopCustomers"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.report.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.top_customers_schedule.arn
+}
