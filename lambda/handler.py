@@ -407,7 +407,14 @@ def handler(event, context):  # noqa: ARG001
 
         subject = f"[Compliance] High-Risk Countries Tx — since {since_date} — {summary['total_transactions']} tx"
         html = render_email_html(summary, params, s3_url)
-        send_email(html, xlsx_bytes, Path(key).name, subject)
+
+        # Email is best-effort: SES identity may not be verified yet.
+        # A failure here does NOT abort the run — report is already in S3 + Slack.
+        try:
+            send_email(html, xlsx_bytes, Path(key).name, subject)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Email delivery failed (non-blocking): %s", e)
+
         post_slack(summary, params, s3_url)
 
         return {
