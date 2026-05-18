@@ -22,8 +22,8 @@ output "schedule_rule_name" {
 }
 
 output "log_group" {
-  value       = aws_cloudwatch_log_group.lambda.name
-  description = "Tail this log group to debug runs"
+  value       = "/aws/lambda/${var.project_name}"
+  description = "Tail this log group to debug runs (auto-created by Lambda on first invocation)"
 }
 
 output "redshift_cluster_endpoint" {

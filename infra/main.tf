@@ -198,10 +198,11 @@ data "archive_file" "lambda_zip" {
 # ---------------------------------------------------------------------------
 # Lambda function
 # ---------------------------------------------------------------------------
-resource "aws_cloudwatch_log_group" "lambda" {
-  name              = "/aws/lambda/${var.project_name}"
-  retention_in_days = 90
-}
+# Note: Log group is auto-created by Lambda on first invocation (AWSLambdaBasicExecutionRole).
+# compliance_admin role lacks logs:CreateLogGroup so we skip managing it via Terraform.
+# To set 90-day retention after first run:
+#   aws logs put-retention-policy --log-group-name /aws/lambda/compliance-redshift-reports \
+#     --retention-in-days 90 --profile compliance-admin
 
 resource "aws_lambda_function" "report" {
   function_name    = var.project_name
@@ -227,7 +228,7 @@ resource "aws_lambda_function" "report" {
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.lambda]
+  # Log group is auto-created by Lambda runtime on first invocation
 }
 
 # ---------------------------------------------------------------------------
