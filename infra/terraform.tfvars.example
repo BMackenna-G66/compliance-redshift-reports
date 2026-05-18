@@ -1,0 +1,33 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# DO NOT commit terraform.tfvars — it's already in .gitignore.
+
+aws_region                  = "us-east-1"
+aws_account_id              = "561521480266"
+project_name                = "compliance-redshift-reports"
+redshift_cluster_identifier = "compliance-redshift-cluster"
+redshift_database           = "dev"
+redshift_db_user            = "awsuser"
+
+# Must be globally unique. Suggested naming convention:
+# <project>-<account_id>-<region>
+s3_bucket_name = "compliance-redshift-reports-561521480266-us-east-1"
+
+# Must be verified in SES first (see DEPLOY.md step 3)
+ses_from_address = "benjamin.mackenna@global66.com"
+ses_to_addresses = "benjamin.mackenna@global66.com"
+
+# Get this from https://api.slack.com/apps after creating your incoming webhook
+slack_webhook_url = "https://hooks.slack.com/services/REPLACE/ME/PLEASE"
+
+# Every Monday at 08:00 UTC. Change to your preferred cadence.
+# EventBridge cron syntax: cron(min hour day-of-month month day-of-week year)
+schedule_expression = "cron(0 8 ? * MON *)"
+
+auto_pause_cluster = true
+
+tags = {
+  Project     = "compliance-redshift-reports"
+  Environment = "prod"
+  ManagedBy   = "terraform"
+  Owner       = "compliance"
+}

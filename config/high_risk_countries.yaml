@@ -1,0 +1,114 @@
+# High-risk jurisdictions for AML screening.
+#
+# Source: FATF "High-Risk Jurisdictions subject to a Call for Action" and
+# "Jurisdictions under Increased Monitoring" lists + OFAC sanctions.
+#
+# To update: add/remove the ISO 3166-1 alpha-2 code, commit, and the next
+# scheduled run picks it up automatically. Keep the alphabetical order for
+# easy diffing.
+#
+# Last reviewed: 2026-05-17
+
+countries:
+  - code: AF
+    name: Afghanistan
+  - code: AO
+    name: Angola
+  - code: DZ
+    name: Algeria
+  - code: BY
+    name: Belarus
+  - code: BA
+    name: Bosnia and Herzegovina
+  - code: BG
+    name: Bulgaria
+  - code: BF
+    name: Burkina Faso
+  - code: BI
+    name: Burundi
+  - code: CM
+    name: Cameroon
+  - code: CG
+    name: Congo
+  - code: KP
+    name: Korea (DPRK)
+  - code: CI
+    name: Côte d'Ivoire
+  - code: HR
+    name: Croatia
+  - code: CU
+    name: Cuba
+  - code: SI
+    name: Slovenia
+  - code: ET
+    name: Ethiopia
+  - code: PH
+    name: Philippines
+  - code: GW
+    name: Guinea-Bissau
+  - code: HT
+    name: Haiti
+  - code: IQ
+    name: Iraq
+  - code: IR
+    name: Iran
+  - code: KZ
+    name: Kazakhstan
+  - code: KE
+    name: Kenya
+  - code: LB
+    name: Lebanon
+  - code: LR
+    name: Liberia
+  - code: LY
+    name: Libya
+  - code: MK
+    name: North Macedonia
+  - code: ML
+    name: Mali
+  - code: MC
+    name: Monaco
+  - code: ME
+    name: Montenegro
+  - code: MZ
+    name: Mozambique
+  - code: MM
+    name: Myanmar
+  - code: NA
+    name: Namibia
+  - code: NI
+    name: Nicaragua
+  - code: NG
+    name: Nigeria
+  - code: PK
+    name: Pakistan
+  - code: PS
+    name: Palestine
+  - code: CF
+    name: Central African Republic
+  - code: RU
+    name: Russia
+  - code: EH
+    name: Western Sahara
+  - code: RS
+    name: Serbia
+  - code: SY
+    name: Syria
+  - code: SO
+    name: Somalia
+  - code: ZA
+    name: South Africa
+  - code: SD
+    name: Sudan
+  - code: SS
+    name: South Sudan
+  - code: TZ
+    name: Tanzania
+  - code: UA
+    name: Ukraine
+  - code: VN
+    name: Vietnam
+  - code: YE
+    name: Yemen
+  - code: ZW
+    name: Zimbabwe
