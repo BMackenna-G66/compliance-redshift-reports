@@ -458,7 +458,7 @@
       async init() {
         // Load config.json from same CloudFront origin
         try {
-          const r = await fetch('/config.json');
+          const r = await fetch('./config.json');
           if (!r.ok) throw new Error('config not found');
           this.config = await r.json();
         } catch (e) {
