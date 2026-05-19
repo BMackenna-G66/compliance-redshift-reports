@@ -177,6 +177,21 @@ data "aws_iam_policy_document" "lambda_inline" {
     actions   = ["secretsmanager:GetSecretValue"]
     resources = [aws_secretsmanager_secret.slack_webhook.arn]
   }
+
+  # DynamoDB — run history + catalog (defined in frontend.tf)
+  statement {
+    sid    = "DynamoDBRunTracking"
+    effect = "Allow"
+    actions = [
+      "dynamodb:PutItem",
+      "dynamodb:GetItem",
+      "dynamodb:UpdateItem",
+    ]
+    resources = [
+      aws_dynamodb_table.runs.arn,
+      aws_dynamodb_table.catalog.arn,
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda_inline" {
@@ -225,6 +240,8 @@ resource "aws_lambda_function" "report" {
       SLACK_WEBHOOK_SECRET_ARN = aws_secretsmanager_secret.slack_webhook.arn
       REPORT_NAME              = "high_risk_countries"
       AUTO_PAUSE               = tostring(var.auto_pause_cluster)
+      RUNS_TABLE               = aws_dynamodb_table.runs.name
+      CATALOG_TABLE            = aws_dynamodb_table.catalog.name
     }
   }
 

@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Compliance Reports — Global66</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .tab-active { border-bottom: 2px solid #1F4E78; color: #1F4E78; font-weight: 600; }
+    textarea { font-family: 'Courier New', monospace; }
+    .spin { animation: spin 1s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="app()" x-init="init()" x-cloak>
+
+  <!-- Loading splash -->
+  <div x-show="loading" class="flex items-center justify-center min-h-screen">
+    <div class="text-center">
+      <div class="spin text-4xl mb-4">⏳</div>
+      <p class="text-gray-500">Cargando...</p>
+    </div>
+  </div>
+
+  <!-- Authenticated app -->
+  <div x-show="!loading && authenticated">
+
+    <!-- Top bar -->
+    <nav class="bg-white shadow-sm border-b border-gray-200">
+      <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background:#1F4E78">
+            <span class="text-white text-sm font-bold">CR</span>
+          </div>
+          <span class="font-semibold text-gray-800">Compliance Reports</span>
+          <span class="text-gray-300">|</span>
+          <span class="text-sm text-gray-500">Global66</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <span class="text-sm text-gray-600" x-text="userEmail"></span>
+          <button @click="logout()"
+            class="text-sm text-gray-500 hover:text-red-600 border border-gray-200 hover:border-red-300 px-3 py-1 rounded-lg transition">
+            Cerrar sesión
+          </button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Tabs -->
+    <div class="bg-white border-b border-gray-200">
+      <div class="max-w-6xl mx-auto px-4">
+        <div class="flex gap-6">
+          <button @click="tab='reports'; loadReports()"
+            :class="tab==='reports' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
+            class="py-3 text-sm transition border-b-2 border-transparent">
+            📊 Reportes
+          </button>
+          <button @click="tab='history'; loadRuns()"
+            :class="tab==='history' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
+            class="py-3 text-sm transition border-b-2 border-transparent">
+            📋 Historial
+          </button>
+          <button @click="tab='editor'"
+            :class="tab==='editor' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
+            class="py-3 text-sm transition border-b-2 border-transparent">
+            ✏️ Nueva Query
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="max-w-6xl mx-auto px-4 py-6">
+
+      <!-- ===================== TAB: REPORTES ===================== -->
+      <div x-show="tab === 'reports'">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold text-gray-800">Reportes disponibles</h2>
+          <button @click="loadReports()" class="text-sm text-gray-500 hover:text-gray-700">↺ Actualizar</button>
+        </div>
+
+        <!-- Loading state -->
+        <div x-show="reportsLoading" class="text-center py-12 text-gray-400">
+          <div class="spin text-2xl">⏳</div>
+        </div>
+
+        <!-- Report cards grid -->
+        <div x-show="!reportsLoading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <template x-for="r in reports" :key="r.report_name">
+            <div class="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition">
+              <div class="flex items-start justify-between mb-2">
+                <h3 class="font-semibold text-gray-800 text-sm leading-snug" x-text="r.display_name"></h3>
+                <span x-show="r.is_custom"
+                  class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full ml-2 shrink-0">
+                  Custom
+                </span>
+              </div>
+              <p class="text-xs text-gray-500 mb-4 leading-relaxed" x-text="r.description"></p>
+              <div class="flex items-center gap-2">
+                <button @click="openRunModal(r)"
+                  class="flex-1 text-sm font-medium text-white py-2 px-3 rounded-lg transition"
+                  style="background:#1F4E78"
+                  onmouseover="this.style.background='#163a5c'"
+                  onmouseout="this.style.background='#1F4E78'">
+                  ▶ Ejecutar
+                </button>
+                <button x-show="r.is_custom" @click="deleteQuery(r.report_name)"
+                  class="text-sm text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 py-2 px-3 rounded-lg transition">
+                  🗑
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- ===================== TAB: HISTORIAL ===================== -->
+      <div x-show="tab === 'history'">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold text-gray-800">Historial de ejecuciones</h2>
+          <button @click="loadRuns()" class="text-sm text-gray-500 hover:text-gray-700">↺ Actualizar</button>
+        </div>
+
+        <div x-show="runsLoading" class="text-center py-12 text-gray-400">
+          <div class="spin text-2xl">⏳</div>
+        </div>
+
+        <div x-show="!runsLoading && runs.length === 0" class="text-center py-12 text-gray-400">
+          No hay ejecuciones registradas todavía.
+        </div>
+
+        <div x-show="!runsLoading && runs.length > 0" class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th class="text-left px-4 py-3 text-gray-600 font-medium">Reporte</th>
+                <th class="text-left px-4 py-3 text-gray-600 font-medium">Estado</th>
+                <th class="text-left px-4 py-3 text-gray-600 font-medium">Iniciado</th>
+                <th class="text-right px-4 py-3 text-gray-600 font-medium">Filas</th>
+                <th class="text-center px-4 py-3 text-gray-600 font-medium">Acción</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+              <template x-for="run in runs" :key="run.run_id">
+                <tr class="hover:bg-gray-50 transition cursor-pointer" @click="openRunDetail(run.run_id)">
+                  <td class="px-4 py-3 text-gray-700 font-medium" x-text="run.report_name.replace(/_/g,' ')"></td>
+                  <td class="px-4 py-3">
+                    <span :class="statusBadge(run.status)"
+                      class="px-2 py-0.5 rounded-full text-xs font-medium"
+                      x-text="statusLabel(run.status)">
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-gray-500" x-text="formatDate(run.started_at)"></td>
+                  <td class="px-4 py-3 text-gray-700 text-right" x-text="run.row_count ?? '—'"></td>
+                  <td class="px-4 py-3 text-center">
+                    <span class="text-blue-500 text-xs hover:underline">Ver detalle →</span>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ===================== TAB: EDITOR SQL ===================== -->
+      <div x-show="tab === 'editor'">
+        <div class="max-w-3xl">
+          <h2 class="text-lg font-semibold text-gray-800 mb-1">Nueva query personalizada</h2>
+          <p class="text-sm text-gray-500 mb-6">
+            Guardá una query SQL para agregarla al catálogo. Se ejecutará sobre
+            <code class="bg-gray-100 px-1 rounded">"db_prod"."transaction"."transaction"</code>.
+            La query corre sin parámetros adicionales.
+          </p>
+
+          <div class="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">
+                  Nombre interno <span class="text-red-400">*</span>
+                </label>
+                <input x-model="queryForm.report_name" type="text"
+                  placeholder="ej: clientes_frecuentes_mx"
+                  class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200" />
+                <p class="text-xs text-gray-400 mt-1">Solo letras, números y guión bajo.</p>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Nombre visible</label>
+                <input x-model="queryForm.display_name" type="text"
+                  placeholder="ej: Clientes frecuentes MX"
+                  class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200" />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Descripción</label>
+              <input x-model="queryForm.description" type="text"
+                placeholder="¿Qué detecta este reporte?"
+                class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200" />
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">
+                SQL <span class="text-red-400">*</span>
+              </label>
+              <textarea x-model="queryForm.sql" rows="12"
+                placeholder="SELECT ..."
+                class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 resize-y">
+              </textarea>
+            </div>
+
+            <!-- Message -->
+            <div x-show="queryMessage" :class="queryMessage?.type === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'"
+              class="border rounded-lg px-4 py-3 text-sm">
+              <span x-text="queryMessage?.text"></span>
+            </div>
+
+            <button @click="saveQuery()" :disabled="queryLoading"
+              class="w-full py-2.5 text-sm font-medium text-white rounded-lg transition disabled:opacity-50"
+              style="background:#1F4E78"
+              onmouseover="this.style.background='#163a5c'"
+              onmouseout="this.style.background='#1F4E78'">
+              <span x-show="!queryLoading">💾 Guardar query</span>
+              <span x-show="queryLoading"><span class="spin">⏳</span> Guardando...</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </div><!-- /authenticated -->
+
+  <!-- ===================== MODAL: EJECUTAR REPORTE ===================== -->
+  <div x-show="showRunModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/40" @click="closeModal()"></div>
+    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
+
+      <!-- Header -->
+      <div class="flex items-start justify-between mb-4">
+        <div>
+          <h3 class="font-semibold text-gray-800" x-text="selectedReport?.display_name"></h3>
+          <p class="text-xs text-gray-500 mt-0.5" x-text="selectedReport?.description"></p>
+        </div>
+        <button @click="closeModal()" class="text-gray-400 hover:text-gray-600 text-xl leading-none ml-3">×</button>
+      </div>
+
+      <!-- Params (only for high_risk_countries) -->
+      <div x-show="selectedReport?.params?.length > 0" class="space-y-3 mb-4">
+        <template x-for="p in (selectedReport?.params || [])" :key="p.name">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1" x-text="p.label"></label>
+            <input x-show="p.type === 'date'" type="date"
+              :value="runParams[p.name]"
+              @change="runParams[p.name] = $event.target.value"
+              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
+            <label x-show="p.type === 'bool'" class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox"
+                :checked="runParams[p.name]"
+                @change="runParams[p.name] = $event.target.checked"
+                class="w-4 h-4 rounded" />
+              <span class="text-sm text-gray-600" x-text="p.label"></span>
+            </label>
+          </div>
+        </template>
+      </div>
+
+      <!-- No params -->
+      <div x-show="!selectedReport?.params?.length" class="mb-4">
+        <p class="text-sm text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+          Este reporte no requiere parámetros. Usará los últimos 7 días automáticamente.
+        </p>
+      </div>
+
+      <!-- Run status (after execution) -->
+      <div x-show="currentRun" class="mb-4">
+        <div :class="statusBadge(currentRun?.status)" class="rounded-lg px-4 py-3 text-sm">
+          <div class="flex items-center gap-2 font-medium">
+            <span x-show="currentRun?.status === 'RUNNING'" class="spin">⏳</span>
+            <span x-show="currentRun?.status === 'DONE'">✅</span>
+            <span x-show="currentRun?.status === 'ERROR'">❌</span>
+            <span x-text="statusLabel(currentRun?.status)"></span>
+          </div>
+          <div x-show="currentRun?.status === 'RUNNING'" class="text-xs mt-1 opacity-75">
+            Verificando cada 5 segundos...
+          </div>
+          <div x-show="currentRun?.status === 'DONE'" class="mt-2 space-y-1">
+            <p class="text-xs"><strong x-text="currentRun?.row_count"></strong> filas encontradas</p>
+            <a :href="currentRun?.download_url" target="_blank"
+              class="inline-block text-xs underline font-medium">
+              📥 Descargar Excel
+            </a>
+          </div>
+          <div x-show="currentRun?.status === 'ERROR'" class="text-xs mt-1">
+            <span x-text="currentRun?.error_message || 'Error desconocido'"></span>
+          </div>
+        </div>
+
+        <!-- Results preview table -->
+        <div x-show="currentRun?.status === 'DONE' && currentRun?.result_preview?.length" class="mt-3">
+          <p class="text-xs font-medium text-gray-600 mb-1">
+            Preview (<span x-text="currentRun?.result_preview?.length"></span> filas)
+          </p>
+          <div class="overflow-auto max-h-48 border border-gray-200 rounded-lg text-xs">
+            <table class="w-full">
+              <thead class="bg-gray-50 sticky top-0">
+                <tr>
+                  <template x-for="col in previewColumns" :key="col">
+                    <th class="px-2 py-1 text-left text-gray-600 font-medium whitespace-nowrap border-b" x-text="col"></th>
+                  </template>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row, i) in (currentRun?.result_preview || [])" :key="i">
+                  <tr class="border-b border-gray-100 hover:bg-gray-50">
+                    <template x-for="col in previewColumns" :key="col">
+                      <td class="px-2 py-1 text-gray-700 whitespace-nowrap" x-text="row[col] ?? '—'"></td>
+                    </template>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="flex gap-2">
+        <button @click="closeModal()" class="flex-1 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition">
+          Cerrar
+        </button>
+        <button x-show="!currentRun" @click="executeReport()" :disabled="runLoading"
+          class="flex-1 py-2 text-sm font-medium text-white rounded-lg transition disabled:opacity-50"
+          style="background:#1F4E78">
+          <span x-show="!runLoading">▶ Ejecutar ahora</span>
+          <span x-show="runLoading"><span class="spin">⏳</span> Iniciando...</span>
+        </button>
+        <button x-show="currentRun && currentRun.status !== 'RUNNING'" @click="resetRun()"
+          class="flex-1 py-2 text-sm font-medium text-white rounded-lg"
+          style="background:#1F4E78">
+          ↺ Ejecutar de nuevo
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: DETALLE DE RUN ===================== -->
+  <div x-show="showDetailModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/40" @click="showDetailModal=false"></div>
+    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 p-6 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-start justify-between mb-4">
+        <h3 class="font-semibold text-gray-800">Detalle de ejecución</h3>
+        <button @click="showDetailModal=false" class="text-gray-400 hover:text-gray-600 text-xl">×</button>
+      </div>
+
+      <div x-show="detailLoading" class="text-center py-8 text-gray-400">
+        <div class="spin text-2xl">⏳</div>
+      </div>
+
+      <div x-show="!detailLoading && runDetail">
+        <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4">
+          <div>
+            <dt class="text-gray-500 text-xs">Reporte</dt>
+            <dd class="font-medium text-gray-800" x-text="runDetail?.report_name?.replace(/_/g,' ')"></dd>
+          </div>
+          <div>
+            <dt class="text-gray-500 text-xs">Estado</dt>
+            <dd>
+              <span :class="statusBadge(runDetail?.status)"
+                class="px-2 py-0.5 rounded-full text-xs font-medium"
+                x-text="statusLabel(runDetail?.status)"></span>
+            </dd>
+          </div>
+          <div>
+            <dt class="text-gray-500 text-xs">Iniciado</dt>
+            <dd class="text-gray-700" x-text="formatDate(runDetail?.started_at)"></dd>
+          </div>
+          <div>
+            <dt class="text-gray-500 text-xs">Completado</dt>
+            <dd class="text-gray-700" x-text="formatDate(runDetail?.completed_at)"></dd>
+          </div>
+          <div>
+            <dt class="text-gray-500 text-xs">Filas</dt>
+            <dd class="text-gray-700" x-text="runDetail?.row_count ?? '—'"></dd>
+          </div>
+          <div x-show="runDetail?.download_url">
+            <dt class="text-gray-500 text-xs">Excel</dt>
+            <dd><a :href="runDetail?.download_url" target="_blank" class="text-blue-600 underline text-xs">📥 Descargar</a></dd>
+          </div>
+        </dl>
+
+        <div x-show="runDetail?.error_message"
+          class="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-700 mb-4">
+          <span x-text="runDetail?.error_message"></span>
+        </div>
+
+        <!-- Preview table -->
+        <div x-show="runDetail?.result_preview?.length">
+          <p class="text-xs font-medium text-gray-600 mb-2">
+            Preview — primeras <span x-text="runDetail?.result_preview?.length"></span> filas
+          </p>
+          <div class="overflow-auto max-h-64 border border-gray-200 rounded-lg text-xs">
+            <table class="w-full">
+              <thead class="bg-gray-50 sticky top-0">
+                <tr>
+                  <template x-for="col in detailColumns" :key="col">
+                    <th class="px-2 py-1 text-left text-gray-600 font-medium whitespace-nowrap border-b" x-text="col"></th>
+                  </template>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row, i) in (runDetail?.result_preview || [])" :key="i">
+                  <tr class="border-b border-gray-100 hover:bg-gray-50">
+                    <template x-for="col in detailColumns" :key="col">
+                      <td class="px-2 py-1 text-gray-700 whitespace-nowrap" x-text="row[col] ?? '—'"></td>
+                    </template>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  function app() {
+    return {
+      loading: true,
+      authenticated: false,
+      config: null,
+      token: null,
+      userClaims: {},
+
+      tab: 'reports',
+      reports: [],
+      reportsLoading: false,
+      runs: [],
+      runsLoading: false,
+
+      showRunModal: false,
+      selectedReport: null,
+      runParams: {},
+      runLoading: false,
+      currentRun: null,
+      pollInterval: null,
+
+      showDetailModal: false,
+      runDetail: null,
+      detailLoading: false,
+
+      queryForm: { report_name: '', display_name: '', description: '', sql: '' },
+      queryLoading: false,
+      queryMessage: null,
+
+      // ---- Init ----
+      async init() {
+        // Load config.json from same CloudFront origin
+        try {
+          const r = await fetch('/config.json');
+          if (!r.ok) throw new Error('config not found');
+          this.config = await r.json();
+        } catch (e) {
+          console.error('Could not load config.json', e);
+          this.loading = false;
+          return;
+        }
+
+        // Check for auth code (returning from Cognito)
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+        if (code) {
+          const verifier = sessionStorage.getItem('pkce_verifier');
+          if (verifier) {
+            try {
+              const tokens = await this.exchangeCode(code, verifier);
+              localStorage.setItem('access_token', tokens.access_token);
+              localStorage.setItem('id_token', tokens.id_token || '');
+              sessionStorage.removeItem('pkce_verifier');
+              window.history.replaceState({}, '', '/');
+            } catch (e) {
+              console.error('Token exchange failed:', e);
+            }
+          }
+        }
+
+        // Check stored token
+        const token = localStorage.getItem('access_token');
+        if (token && this.isTokenValid(token)) {
+          this.token = token;
+          this.userClaims = this.parseJwt(localStorage.getItem('id_token') || token);
+          this.authenticated = true;
+          await Promise.all([this.loadReports(), this.loadRuns()]);
+        } else {
+          // Redirect to Cognito login
+          await this.login();
+          return;
+        }
+
+        this.loading = false;
+      },
+
+      // ---- Auth ----
+      async login() {
+        const { verifier, challenge } = await this.generatePKCE();
+        sessionStorage.setItem('pkce_verifier', verifier);
+        const url = new URL(`${this.config.cognitoDomain}/login`);
+        url.searchParams.set('response_type', 'code');
+        url.searchParams.set('client_id', this.config.clientId);
+        url.searchParams.set('redirect_uri', window.location.origin + '/');
+        url.searchParams.set('scope', 'email openid profile');
+        url.searchParams.set('code_challenge', challenge);
+        url.searchParams.set('code_challenge_method', 'S256');
+        window.location.href = url.toString();
+      },
+
+      logout() {
+        localStorage.removeItem('access_token');
+        localStorage.removeItem('id_token');
+        const url = new URL(`${this.config.cognitoDomain}/logout`);
+        url.searchParams.set('client_id', this.config.clientId);
+        url.searchParams.set('logout_uri', window.location.origin + '/');
+        window.location.href = url.toString();
+      },
+
+      async exchangeCode(code, verifier) {
+        const body = new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: this.config.clientId,
+          code,
+          redirect_uri: window.location.origin + '/',
+          code_verifier: verifier,
+        });
+        const r = await fetch(`${this.config.cognitoDomain}/oauth2/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+        });
+        if (!r.ok) { const t = await r.text(); throw new Error(t); }
+        return r.json();
+      },
+
+      async generatePKCE() {
+        const arr = new Uint8Array(32);
+        crypto.getRandomValues(arr);
+        const verifier = btoa(String.fromCharCode(...arr))
+          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        const data = new TextEncoder().encode(verifier);
+        const hash = await crypto.subtle.digest('SHA-256', data);
+        const challenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
+          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        return { verifier, challenge };
+      },
+
+      parseJwt(token) {
+        try { return JSON.parse(atob(token.split('.')[1])); } catch { return {}; }
+      },
+
+      isTokenValid(token) {
+        const c = this.parseJwt(token);
+        return c.exp && c.exp * 1000 > Date.now() + 60000;
+      },
+
+      get userEmail() {
+        return this.userClaims.email || this.userClaims['cognito:username'] || 'Usuario';
+      },
+
+      // ---- API ----
+      async api(method, path, body = null) {
+        const r = await fetch(`${this.config.apiUrl}${path}`, {
+          method,
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (r.status === 401) { this.login(); return null; }
+        return r.json();
+      },
+
+      async loadReports() {
+        this.reportsLoading = true;
+        const data = await this.api('GET', '/reports');
+        this.reports = data?.reports || [];
+        this.reportsLoading = false;
+      },
+
+      async loadRuns() {
+        this.runsLoading = true;
+        const data = await this.api('GET', '/runs');
+        this.runs = data?.runs || [];
+        this.runsLoading = false;
+      },
+
+      // ---- Execute ----
+      openRunModal(report) {
+        this.selectedReport = report;
+        const today = new Date();
+        const firstDay = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-01`;
+        this.runParams = {};
+        for (const p of (report.params || [])) {
+          this.runParams[p.name] = p.type === 'date' ? firstDay : p.default ?? false;
+        }
+        this.currentRun = null;
+        this.showRunModal = true;
+      },
+
+      closeModal() {
+        if (this.pollInterval) { clearInterval(this.pollInterval); this.pollInterval = null; }
+        this.showRunModal = false;
+        this.currentRun = null;
+      },
+
+      resetRun() {
+        this.currentRun = null;
+        this.runLoading = false;
+      },
+
+      async executeReport() {
+        this.runLoading = true;
+        const payload = { report_name: this.selectedReport.report_name, ...this.runParams };
+        const data = await this.api('POST', '/execute', payload);
+        if (data?.run_id) {
+          this.currentRun = { run_id: data.run_id, status: 'RUNNING' };
+          this.startPolling(data.run_id);
+        }
+        this.runLoading = false;
+      },
+
+      startPolling(run_id) {
+        if (this.pollInterval) clearInterval(this.pollInterval);
+        this.pollInterval = setInterval(async () => {
+          const data = await this.api('GET', `/runs/${run_id}`);
+          if (data && !data.error) {
+            this.currentRun = data;
+            if (data.status === 'DONE' || data.status === 'ERROR') {
+              clearInterval(this.pollInterval);
+              this.pollInterval = null;
+              this.loadRuns();
+            }
+          }
+        }, 5000);
+      },
+
+      get previewColumns() {
+        const p = this.currentRun?.result_preview;
+        return p?.length ? Object.keys(p[0]) : [];
+      },
+
+      // ---- Run detail ----
+      async openRunDetail(run_id) {
+        this.showDetailModal = true;
+        this.detailLoading = true;
+        this.runDetail = null;
+        const data = await this.api('GET', `/runs/${run_id}`);
+        this.runDetail = data;
+        this.detailLoading = false;
+      },
+
+      get detailColumns() {
+        const p = this.runDetail?.result_preview;
+        return p?.length ? Object.keys(p[0]) : [];
+      },
+
+      // ---- SQL editor ----
+      async saveQuery() {
+        this.queryLoading = true;
+        this.queryMessage = null;
+        const data = await this.api('POST', '/queries', this.queryForm);
+        if (data?.report_name) {
+          this.queryMessage = { type: 'success', text: `✅ Query "${data.report_name}" guardada. Ya aparece en el catálogo.` };
+          this.queryForm = { report_name: '', display_name: '', description: '', sql: '' };
+          this.loadReports();
+        } else {
+          this.queryMessage = { type: 'error', text: `❌ ${data?.error || 'Error al guardar'}` };
+        }
+        this.queryLoading = false;
+      },
+
+      async deleteQuery(report_name) {
+        if (!confirm(`¿Eliminar el reporte "${report_name}"?`)) return;
+        await this.api('DELETE', `/queries/${report_name}`);
+        this.loadReports();
+      },
+
+      // ---- Helpers ----
+      statusBadge(s) {
+        return {
+          RUNNING: 'bg-yellow-100 text-yellow-800',
+          DONE:    'bg-green-100 text-green-800',
+          ERROR:   'bg-red-100 text-red-800',
+        }[s] || 'bg-gray-100 text-gray-800';
+      },
+
+      statusLabel(s) {
+        return { RUNNING: '⏳ Ejecutando', DONE: '✅ Completado', ERROR: '❌ Error' }[s] || s || '—';
+      },
+
+      formatDate(iso) {
+        if (!iso) return '—';
+        return new Date(iso).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' });
+      },
+    };
+  }
+  </script>
+</body>
+</html>

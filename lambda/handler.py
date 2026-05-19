@@ -25,6 +25,8 @@ Environment variables expected (set by Terraform):
   SLACK_WEBHOOK_SECRET_ARN — Secrets Manager ARN holding the Slack webhook URL
   REPORT_NAME              — default report if not passed in event
   AUTO_PAUSE               — "true" to pause cluster after run
+  RUNS_TABLE               — DynamoDB table name for run history (optional)
+  CATALOG_TABLE            — DynamoDB table name for custom query catalog (optional)
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ redshift_data = boto3.client("redshift-data")
 s3 = boto3.client("s3")
 ses = boto3.client("ses")
 secrets = boto3.client("secretsmanager")
+dynamodb = boto3.resource("dynamodb")
 
 # ---------------------------------------------------------------------------
 # Config from environment
@@ -73,6 +76,8 @@ SES_TO = [e.strip() for e in os.environ["SES_TO_ADDRESSES"].split(",") if e.stri
 SLACK_SECRET_ARN = os.environ.get("SLACK_WEBHOOK_SECRET_ARN", "")
 REPORT_NAME = os.environ.get("REPORT_NAME", "high_risk_countries")
 AUTO_PAUSE = os.environ.get("AUTO_PAUSE", "true").lower() == "true"
+RUNS_TABLE_NAME = os.environ.get("RUNS_TABLE", "")
+CATALOG_TABLE_NAME = os.environ.get("CATALOG_TABLE", "")
 
 BASE_DIR = Path(__file__).parent
 QUERIES_DIR = BASE_DIR / "queries"
@@ -181,18 +186,29 @@ def render_query(
     only_successful: bool,
     country_codes: list[str],
 ) -> tuple[str, list[dict]]:
-    """Return (sql_string, data_api_params_list) for the given report."""
-    config = REPORT_CONFIGS[report_name]
-    sql = (QUERIES_DIR / config["sql_file"]).read_text(encoding="utf-8")
+    """Return (sql_string, data_api_params_list) for the given report.
+
+    For built-in reports, reads from the queries/ directory.
+    For custom reports, reads SQL from the DynamoDB catalog.
+    """
     api_params: list[dict] = []
 
-    if config["needs_country_filter"]:
-        quoted = ",".join(f"'{c}'" for c in country_codes)
-        sql = sql.replace("{country_codes}", quoted)
-        sql = sql.replace("{only_successful}", "TRUE" if only_successful else "FALSE")
+    if report_name in REPORT_CONFIGS:
+        config = REPORT_CONFIGS[report_name]
+        sql = (QUERIES_DIR / config["sql_file"]).read_text(encoding="utf-8")
 
-    if config["needs_since_date"]:
-        api_params.append({"name": "since_date", "value": since_date})
+        if config["needs_country_filter"]:
+            quoted = ",".join(f"'{c}'" for c in country_codes)
+            sql = sql.replace("{country_codes}", quoted)
+            sql = sql.replace("{only_successful}", "TRUE" if only_successful else "FALSE")
+
+        if config["needs_since_date"]:
+            api_params.append({"name": "since_date", "value": since_date})
+    else:
+        # Custom query from DynamoDB catalog
+        sql = _load_custom_sql(report_name)
+        if not sql:
+            raise ValueError(f"Report '{report_name}' not found in built-in registry or catalog")
 
     return sql, api_params
 
@@ -261,6 +277,41 @@ def _unwrap_value(cell: dict):
         if key in cell:
             return cell[key]
     return None
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB run tracking  (no-ops when RUNS_TABLE_NAME is empty)
+# ---------------------------------------------------------------------------
+def _update_run(run_id: str | None, **attrs) -> None:
+    """Best-effort DynamoDB update — failures are logged but never propagate."""
+    if not run_id or not RUNS_TABLE_NAME:
+        return
+    try:
+        table = dynamodb.Table(RUNS_TABLE_NAME)
+        update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in attrs)
+        expr_names = {f"#{k}": k for k in attrs}
+        expr_values = {f":{k}": v for k, v in attrs.items()}
+        table.update_item(
+            Key={"run_id": run_id},
+            UpdateExpression=update_expr,
+            ExpressionAttributeNames=expr_names,
+            ExpressionAttributeValues=expr_values,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("DynamoDB update_run failed (non-blocking): %s", e)
+
+
+def _load_custom_sql(report_name: str) -> str | None:
+    """Fetch SQL from the DynamoDB catalog for custom queries. Returns None if not found."""
+    if not CATALOG_TABLE_NAME:
+        return None
+    try:
+        table = dynamodb.Table(CATALOG_TABLE_NAME)
+        item = table.get_item(Key={"report_name": report_name}).get("Item")
+        return item.get("sql") if item else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("DynamoDB catalog lookup failed: %s", e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -530,14 +581,22 @@ def post_slack(summary: dict, params: dict, s3_url: str, report_name: str) -> No
 def handler(event, context):  # noqa: ARG001
     logger.info("Event: %s", json.dumps(event, default=str))
 
-    # report_name: from event payload (EventBridge or manual invoke) → fallback to env var
+    # report_name: from event payload (EventBridge / API / manual invoke) → fallback to env var
     report_name = event.get("report_name") or REPORT_NAME
-    if report_name not in REPORT_CONFIGS:
-        raise ValueError(f"Unknown report '{report_name}'. Valid: {list(REPORT_CONFIGS)}")
+    # run_id is injected by api_handler when a user triggers via the frontend
+    run_id: str | None = event.get("run_id")
 
-    config = REPORT_CONFIGS[report_name]
-    display_name = config["display_name"]
-    logger.info("Running report: %s", display_name)
+    # Validate: built-in OR exists in DynamoDB catalog
+    is_builtin = report_name in REPORT_CONFIGS
+    if not is_builtin and not _load_custom_sql(report_name):
+        err = f"Unknown report '{report_name}'. Valid built-ins: {list(REPORT_CONFIGS)}"
+        _update_run(run_id, status="ERROR", error_message=err,
+                    completed_at=dt.datetime.utcnow().isoformat())
+        raise ValueError(err)
+
+    config = REPORT_CONFIGS.get(report_name, {})
+    display_name = config.get("display_name", report_name)
+    logger.info("Running report: %s (run_id=%s)", display_name, run_id)
 
     # Resolve optional params (only used by high_risk_countries today)
     today = dt.date.today()
@@ -546,13 +605,13 @@ def handler(event, context):  # noqa: ARG001
     only_successful = bool(event.get("only_successful", False))
 
     country_codes: list[str] = []
-    if config["needs_country_filter"]:
+    if config.get("needs_country_filter"):
         countries = load_country_codes()
         country_codes = [c["code"] for c in countries]
 
     params = {
         "report_name": report_name,
-        "since_date": since_date if config["needs_since_date"] else "last_7_days",
+        "since_date": since_date if config.get("needs_since_date") else "last_7_days",
         "only_successful": only_successful,
         "country_count": len(country_codes),
     }
@@ -568,7 +627,7 @@ def handler(event, context):  # noqa: ARG001
 
         run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         # Key includes since_date for high_risk_countries; just timestamp for others
-        if config["needs_since_date"]:
+        if config.get("needs_since_date"):
             key = f"{report_name}/{run_ts}_since-{since_date}.xlsx"
         else:
             key = f"{report_name}/{run_ts}.xlsx"
@@ -590,6 +649,17 @@ def handler(event, context):  # noqa: ARG001
 
         post_slack(summary, params, s3_url, report_name)
 
+        # Update DynamoDB run record to DONE (best-effort)
+        result_preview = rows[:10]  # first 10 rows for in-browser preview
+        _update_run(
+            run_id,
+            status="DONE",
+            completed_at=dt.datetime.utcnow().isoformat(),
+            s3_key=key,
+            row_count=total_rows,
+            result_preview=json.dumps(result_preview, default=str),
+        )
+
         return {
             "status": "ok",
             "report_name": report_name,
@@ -597,6 +667,16 @@ def handler(event, context):  # noqa: ARG001
             "s3_key": key,
             "params": params,
         }
+
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Report run failed: %s", e)
+        _update_run(
+            run_id,
+            status="ERROR",
+            completed_at=dt.datetime.utcnow().isoformat(),
+            error_message=str(e),
+        )
+        raise
 
     finally:
         if AUTO_PAUSE:

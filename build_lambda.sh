@@ -16,6 +16,7 @@ mkdir -p "$BUILD_DIR"
 
 echo "→ Copying source files"
 cp lambda/handler.py "$BUILD_DIR/"
+cp lambda/api_handler.py "$BUILD_DIR/"
 cp lambda/email_template.html "$BUILD_DIR/"
 mkdir -p "$BUILD_DIR/queries" "$BUILD_DIR/config"
 cp queries/*.sql "$BUILD_DIR/queries/"
