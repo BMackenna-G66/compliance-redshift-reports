@@ -24,27 +24,18 @@
     </div>
   </div>
 
-  <!-- Authenticated app -->
-  <div x-show="!loading && authenticated">
+  <!-- App -->
+  <div x-show="!loading">
 
     <!-- Top bar -->
     <nav class="bg-white shadow-sm border-b border-gray-200">
-      <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background:#1F4E78">
-            <span class="text-white text-sm font-bold">CR</span>
-          </div>
-          <span class="font-semibold text-gray-800">Compliance Reports</span>
-          <span class="text-gray-300">|</span>
-          <span class="text-sm text-gray-500">Global66</span>
+      <div class="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background:#1F4E78">
+          <span class="text-white text-sm font-bold">CR</span>
         </div>
-        <div class="flex items-center gap-3">
-          <span class="text-sm text-gray-600" x-text="userEmail"></span>
-          <button @click="logout()"
-            class="text-sm text-gray-500 hover:text-red-600 border border-gray-200 hover:border-red-300 px-3 py-1 rounded-lg transition">
-            Cerrar sesión
-          </button>
-        </div>
+        <span class="font-semibold text-gray-800">Compliance Reports</span>
+        <span class="text-gray-300">|</span>
+        <span class="text-sm text-gray-500">Global66</span>
       </div>
     </nav>
 
@@ -74,6 +65,13 @@
     <!-- Content -->
     <div class="max-w-6xl mx-auto px-4 py-6">
 
+      <!-- Error banner -->
+      <div x-show="errorMsg"
+        class="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm flex items-center justify-between">
+        <span x-text="errorMsg"></span>
+        <button @click="errorMsg=null" class="text-red-400 hover:text-red-600 ml-4">×</button>
+      </div>
+
       <!-- ===================== TAB: REPORTES ===================== -->
       <div x-show="tab === 'reports'">
         <div class="flex items-center justify-between mb-4">
@@ -81,12 +79,14 @@
           <button @click="loadReports()" class="text-sm text-gray-500 hover:text-gray-700">↺ Actualizar</button>
         </div>
 
-        <!-- Loading state -->
         <div x-show="reportsLoading" class="text-center py-12 text-gray-400">
           <div class="spin text-2xl">⏳</div>
         </div>
 
-        <!-- Report cards grid -->
+        <div x-show="!reportsLoading && reports.length === 0" class="text-center py-12 text-gray-400">
+          No hay reportes disponibles.
+        </div>
+
         <div x-show="!reportsLoading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <template x-for="r in reports" :key="r.report_name">
             <div class="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition">
@@ -171,7 +171,6 @@
           <p class="text-sm text-gray-500 mb-6">
             Guardá una query SQL para agregarla al catálogo. Se ejecutará sobre
             <code class="bg-gray-100 px-1 rounded">"db_prod"."transaction"."transaction"</code>.
-            La query corre sin parámetros adicionales.
           </p>
 
           <div class="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
@@ -210,8 +209,8 @@
               </textarea>
             </div>
 
-            <!-- Message -->
-            <div x-show="queryMessage" :class="queryMessage?.type === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'"
+            <div x-show="queryMessage"
+              :class="queryMessage?.type === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'"
               class="border rounded-lg px-4 py-3 text-sm">
               <span x-text="queryMessage?.text"></span>
             </div>
@@ -229,14 +228,13 @@
       </div>
 
     </div><!-- /content -->
-  </div><!-- /authenticated -->
+  </div><!-- /app -->
 
   <!-- ===================== MODAL: EJECUTAR REPORTE ===================== -->
   <div x-show="showRunModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center">
     <div class="absolute inset-0 bg-black/40" @click="closeModal()"></div>
     <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
 
-      <!-- Header -->
       <div class="flex items-start justify-between mb-4">
         <div>
           <h3 class="font-semibold text-gray-800" x-text="selectedReport?.display_name"></h3>
@@ -245,7 +243,7 @@
         <button @click="closeModal()" class="text-gray-400 hover:text-gray-600 text-xl leading-none ml-3">×</button>
       </div>
 
-      <!-- Params (only for high_risk_countries) -->
+      <!-- Params -->
       <div x-show="selectedReport?.params?.length > 0" class="space-y-3 mb-4">
         <template x-for="p in (selectedReport?.params || [])" :key="p.name">
           <div>
@@ -265,14 +263,13 @@
         </template>
       </div>
 
-      <!-- No params -->
       <div x-show="!selectedReport?.params?.length" class="mb-4">
         <p class="text-sm text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
           Este reporte no requiere parámetros. Usará los últimos 7 días automáticamente.
         </p>
       </div>
 
-      <!-- Run status (after execution) -->
+      <!-- Run status -->
       <div x-show="currentRun" class="mb-4">
         <div :class="statusBadge(currentRun?.status)" class="rounded-lg px-4 py-3 text-sm">
           <div class="flex items-center gap-2 font-medium">
@@ -296,7 +293,6 @@
           </div>
         </div>
 
-        <!-- Results preview table -->
         <div x-show="currentRun?.status === 'DONE' && currentRun?.result_preview?.length" class="mt-3">
           <p class="text-xs font-medium text-gray-600 mb-1">
             Preview (<span x-text="currentRun?.result_preview?.length"></span> filas)
@@ -324,7 +320,6 @@
         </div>
       </div>
 
-      <!-- Actions -->
       <div class="flex gap-2">
         <button @click="closeModal()" class="flex-1 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition">
           Cerrar
@@ -394,7 +389,6 @@
           <span x-text="runDetail?.error_message"></span>
         </div>
 
-        <!-- Preview table -->
         <div x-show="runDetail?.result_preview?.length">
           <p class="text-xs font-medium text-gray-600 mb-2">
             Preview — primeras <span x-text="runDetail?.result_preview?.length"></span> filas
@@ -428,10 +422,8 @@
   function app() {
     return {
       loading: true,
-      authenticated: false,
       config: null,
-      token: null,
-      userClaims: {},
+      errorMsg: null,
 
       tab: 'reports',
       reports: [],
@@ -456,129 +448,37 @@
 
       // ---- Init ----
       async init() {
-        // Load config.json from same CloudFront origin
         try {
           const r = await fetch('./config.json');
           if (!r.ok) throw new Error('config not found');
           this.config = await r.json();
         } catch (e) {
-          console.error('Could not load config.json', e);
+          this.errorMsg = 'No se pudo cargar la configuracion. Recarga la pagina.';
           this.loading = false;
           return;
         }
-
-        // Check for auth code (returning from Cognito)
-        const params = new URLSearchParams(window.location.search);
-        const code = params.get('code');
-        if (code) {
-          const verifier = sessionStorage.getItem('pkce_verifier');
-          if (verifier) {
-            try {
-              const tokens = await this.exchangeCode(code, verifier);
-              localStorage.setItem('access_token', tokens.access_token);
-              localStorage.setItem('id_token', tokens.id_token || '');
-              sessionStorage.removeItem('pkce_verifier');
-              window.history.replaceState({}, '', window.location.pathname);
-            } catch (e) {
-              console.error('Token exchange failed:', e);
-            }
-          }
-        }
-
-        // Check stored token
-        const token = localStorage.getItem('access_token');
-        if (token && this.isTokenValid(token)) {
-          this.token = token;
-          this.userClaims = this.parseJwt(localStorage.getItem('id_token') || token);
-          this.authenticated = true;
-          await Promise.all([this.loadReports(), this.loadRuns()]);
-        } else {
-          // Redirect to Cognito login
-          await this.login();
-          return;
-        }
-
+        await Promise.all([this.loadReports(), this.loadRuns()]);
         this.loading = false;
-      },
-
-      // ---- Auth ----
-      async login() {
-        const { verifier, challenge } = await this.generatePKCE();
-        sessionStorage.setItem('pkce_verifier', verifier);
-        // Use /oauth2/authorize — the proper OAuth2 endpoint (not /login)
-        const url = new URL(`${this.config.cognitoDomain}/oauth2/authorize`);
-        url.searchParams.set('response_type', 'code');
-        url.searchParams.set('client_id', this.config.clientId);
-        url.searchParams.set('redirect_uri', window.location.href.split('?')[0]);
-        url.searchParams.set('scope', 'email openid profile');
-        url.searchParams.set('code_challenge', challenge);
-        url.searchParams.set('code_challenge_method', 'S256');
-        window.location.href = url.toString();
-      },
-
-      logout() {
-        localStorage.removeItem('access_token');
-        localStorage.removeItem('id_token');
-        const url = new URL(`${this.config.cognitoDomain}/logout`);
-        url.searchParams.set('client_id', this.config.clientId);
-        url.searchParams.set('logout_uri', window.location.href.split('?')[0]);
-        window.location.href = url.toString();
-      },
-
-      async exchangeCode(code, verifier) {
-        const body = new URLSearchParams({
-          grant_type: 'authorization_code',
-          client_id: this.config.clientId,
-          code,
-          redirect_uri: window.location.href.split('?')[0],
-          code_verifier: verifier,
-        });
-        const r = await fetch(`${this.config.cognitoDomain}/oauth2/token`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: body.toString(),
-        });
-        if (!r.ok) { const t = await r.text(); throw new Error(t); }
-        return r.json();
-      },
-
-      async generatePKCE() {
-        const arr = new Uint8Array(32);
-        crypto.getRandomValues(arr);
-        const verifier = btoa(String.fromCharCode(...arr))
-          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-        const data = new TextEncoder().encode(verifier);
-        const hash = await crypto.subtle.digest('SHA-256', data);
-        const challenge = btoa(String.fromCharCode(...new Uint8Array(hash)))
-          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-        return { verifier, challenge };
-      },
-
-      parseJwt(token) {
-        try { return JSON.parse(atob(token.split('.')[1])); } catch { return {}; }
-      },
-
-      isTokenValid(token) {
-        const c = this.parseJwt(token);
-        return c.exp && c.exp * 1000 > Date.now() + 60000;
-      },
-
-      get userEmail() {
-        return this.userClaims.email || this.userClaims['cognito:username'] || 'Usuario';
       },
 
       // ---- API ----
       async api(method, path, body = null) {
-        const r = await fetch(`${this.config.apiUrl}${path}`, {
-          method,
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            'Content-Type': 'application/json',
-          },
-          body: body ? JSON.stringify(body) : undefined,
-        });
-        if (r.status === 401) { this.login(); return null; }
-        return r.json();
+        try {
+          const r = await fetch(`${this.config.apiUrl}${path}`, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            body: body ? JSON.stringify(body) : undefined,
+          });
+          const data = await r.json();
+          if (!r.ok) {
+            this.errorMsg = data?.error || `Error ${r.status}`;
+            return null;
+          }
+          return data;
+        } catch (e) {
+          this.errorMsg = 'Error de red al conectar con la API.';
+          return null;
+        }
       },
 
       async loadReports() {
@@ -671,17 +571,17 @@
         this.queryMessage = null;
         const data = await this.api('POST', '/queries', this.queryForm);
         if (data?.report_name) {
-          this.queryMessage = { type: 'success', text: `✅ Query "${data.report_name}" guardada. Ya aparece en el catálogo.` };
+          this.queryMessage = { type: 'success', text: `Query "${data.report_name}" guardada. Ya aparece en el catalogo.` };
           this.queryForm = { report_name: '', display_name: '', description: '', sql: '' };
           this.loadReports();
         } else {
-          this.queryMessage = { type: 'error', text: `❌ ${data?.error || 'Error al guardar'}` };
+          this.queryMessage = { type: 'error', text: `Error: ${data?.error || 'No se pudo guardar'}` };
         }
         this.queryLoading = false;
       },
 
       async deleteQuery(report_name) {
-        if (!confirm(`¿Eliminar el reporte "${report_name}"?`)) return;
+        if (!confirm(`Eliminar el reporte "${report_name}"?`)) return;
         await this.api('DELETE', `/queries/${report_name}`);
         this.loadReports();
       },
@@ -696,7 +596,7 @@
       },
 
       statusLabel(s) {
-        return { RUNNING: '⏳ Ejecutando', DONE: '✅ Completado', ERROR: '❌ Error' }[s] || s || '—';
+        return { RUNNING: 'Ejecutando', DONE: 'Completado', ERROR: 'Error' }[s] || s || '—';
       },
 
       formatDate(iso) {
