@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "frontend/**"
+  workflow_dispatch:   # permite disparar manualmente desde Actions → Run workflow
 
 permissions:
   contents: read
