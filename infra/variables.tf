@@ -87,3 +87,17 @@ variable "tags" {
     Owner       = "compliance"
   }
 }
+
+variable "google_client_id" {
+  description = "Google OAuth Client ID for Cognito federated login. Leave empty to skip."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth Client Secret for Cognito federated login. Leave empty to skip."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

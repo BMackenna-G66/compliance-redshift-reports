@@ -88,7 +88,7 @@ resource "aws_cognito_user_pool_client" "frontend" {
   callback_urls = ["https://${aws_cloudfront_distribution.frontend.domain_name}"]
   logout_urls   = ["https://${aws_cloudfront_distribution.frontend.domain_name}"]
 
-  supported_identity_providers = ["COGNITO"]
+  supported_identity_providers = compact(["COGNITO", var.google_client_id != "" ? "Google" : ""])
 
   explicit_auth_flows = [
     "ALLOW_USER_SRP_AUTH",

@@ -1,0 +1,53 @@
+name: Deploy Frontend to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "frontend/**"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate config.json from secrets
+        run: |
+          mkdir -p _site
+          cat > _site/config.json <<'EOF'
+          {
+            "apiUrl": "${{ secrets.API_URL }}",
+            "userPoolId": "${{ secrets.COGNITO_USER_POOL_ID }}",
+            "clientId": "${{ secrets.COGNITO_CLIENT_ID }}",
+            "cognitoDomain": "${{ secrets.COGNITO_DOMAIN }}",
+            "region": "${{ secrets.AWS_REGION }}"
+          }
+          EOF
+
+      - name: Stage frontend assets
+        run: |
+          cp frontend/index.html _site/index.html
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
