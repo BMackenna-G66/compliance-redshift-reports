@@ -2,17 +2,14 @@ name: Deploy Frontend to GitHub Pages
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - "frontend/**"
-  workflow_dispatch:   # permite disparar manualmente desde Actions → Run workflow
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
-  administration: write   # necesario para enablement: true
+  administration: write
 
 jobs:
   deploy:
@@ -22,36 +19,37 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Generate config.json from secrets
+      - name: Build site
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          COGNITO_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID }}
+          COGNITO_CLIENT_ID: ${{ secrets.COGNITO_CLIENT_ID }}
+          COGNITO_DOMAIN: ${{ secrets.COGNITO_DOMAIN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           mkdir -p _site
-          cat > _site/config.json <<'EOF'
-          {
-            "apiUrl": "${{ secrets.API_URL }}",
-            "userPoolId": "${{ secrets.COGNITO_USER_POOL_ID }}",
-            "clientId": "${{ secrets.COGNITO_CLIENT_ID }}",
-            "cognitoDomain": "${{ secrets.COGNITO_DOMAIN }}",
-            "region": "${{ secrets.AWS_REGION }}"
-          }
-          EOF
-
-      - name: Stage frontend assets
-        run: |
           cp frontend/index.html _site/index.html
+          python3 -c "
+          import json, os
+          cfg = {
+            'apiUrl':        os.environ['API_URL'],
+            'userPoolId':    os.environ['COGNITO_USER_POOL_ID'],
+            'clientId':      os.environ['COGNITO_CLIENT_ID'],
+            'cognitoDomain': os.environ['COGNITO_DOMAIN'],
+            'region':        os.environ['AWS_REGION'],
+          }
+          open('_site/config.json','w').write(json.dumps(cfg, indent=2))
+          "
 
-      - name: Setup GitHub Pages
-        uses: actions/configure-pages@v4
+      - uses: actions/configure-pages@v4
         with:
-          enablement: true   # habilita Pages automáticamente si no estaba activado
+          enablement: true
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
-      - name: Deploy to GitHub Pages
-        id: deployment
+      - id: deployment
         uses: actions/deploy-pages@v4
