@@ -26,7 +26,6 @@
     </div>
   </div>
 
-  <!-- App -->
   <div x-show="!loading">
 
     <!-- Top bar -->
@@ -38,53 +37,35 @@
         <span class="font-semibold text-gray-800">Compliance Reports</span>
         <span class="text-gray-300">|</span>
         <span class="text-sm text-gray-500">Global66</span>
-
-        <!-- Cluster control -->
         <div class="ml-auto flex items-center gap-2">
           <span x-show="clusterStatus"
-            :class="{
-              'bg-green-100 text-green-700': clusterStatus === 'available',
-              'bg-yellow-100 text-yellow-700': ['resuming','pausing'].includes(clusterStatus),
-              'bg-gray-100 text-gray-500': clusterStatus === 'paused',
-            }"
-            class="text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1">
-            <span x-show="clusterStatus === 'available'">🟢 Cluster activo</span>
-            <span x-show="clusterStatus === 'paused'">⚫ Cluster pausado</span>
-            <span x-show="clusterStatus === 'resuming'"><span class="spin inline-block">⏳</span> Despertando...</span>
-            <span x-show="clusterStatus === 'pausing'"><span class="spin inline-block">⏳</span> Pausando...</span>
+            :class="{'bg-green-100 text-green-700': clusterStatus==='available','bg-yellow-100 text-yellow-700': ['resuming','pausing'].includes(clusterStatus),'bg-gray-100 text-gray-500': clusterStatus==='paused'}"
+            class="text-xs px-2 py-1 rounded-full font-medium">
+            <span x-show="clusterStatus==='available'">🟢 Cluster activo</span>
+            <span x-show="clusterStatus==='paused'">⚫ Cluster pausado</span>
+            <span x-show="clusterStatus==='resuming'"><span class="spin">⏳</span> Despertando...</span>
+            <span x-show="clusterStatus==='pausing'"><span class="spin">⏳</span> Pausando...</span>
           </span>
-          <button @click="wakeCluster()" x-show="clusterStatus === 'paused'"
-            :disabled="clusterActionLoading"
-            class="text-xs px-3 py-1 rounded-lg text-white font-medium disabled:opacity-50"
-            style="background:#16a34a">▶ Encender</button>
-          <button @click="pauseCluster()" x-show="clusterStatus === 'available'"
-            :disabled="clusterActionLoading"
-            class="text-xs px-3 py-1 rounded-lg text-white font-medium disabled:opacity-50"
-            style="background:#dc2626">⏸ Apagar</button>
+          <button @click="wakeCluster()" x-show="clusterStatus==='paused'" :disabled="clusterActionLoading"
+            class="text-xs px-3 py-1 rounded-lg text-white font-medium disabled:opacity-50" style="background:#16a34a">▶ Encender</button>
+          <button @click="pauseCluster()" x-show="clusterStatus==='available'" :disabled="clusterActionLoading"
+            class="text-xs px-3 py-1 rounded-lg text-white font-medium disabled:opacity-50" style="background:#dc2626">⏸ Apagar</button>
         </div>
       </div>
     </nav>
 
     <!-- Tabs -->
     <div class="bg-white border-b border-gray-200">
-      <div class="max-w-7xl mx-auto px-4">
-        <div class="flex gap-6">
-          <button @click="tab='reports'; if(!resultsView) loadReports()"
-            :class="tab==='reports' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
-            class="py-3 text-sm transition border-b-2 border-transparent">
-            📊 Reportes
-          </button>
-          <button @click="tab='history'; loadRuns()"
-            :class="tab==='history' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
-            class="py-3 text-sm transition border-b-2 border-transparent">
-            📋 Historial
-          </button>
-          <button @click="tab='editor'"
-            :class="tab==='editor' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
-            class="py-3 text-sm transition border-b-2 border-transparent">
-            ✏️ Nueva Query
-          </button>
-        </div>
+      <div class="max-w-7xl mx-auto px-4 flex gap-6">
+        <button @click="tab='reports'; if(!resultsView) loadReports()"
+          :class="tab==='reports'?'tab-active':'text-gray-500 hover:text-gray-700'"
+          class="py-3 text-sm transition border-b-2 border-transparent">📊 Reportes</button>
+        <button @click="tab='history'; loadRuns()"
+          :class="tab==='history'?'tab-active':'text-gray-500 hover:text-gray-700'"
+          class="py-3 text-sm transition border-b-2 border-transparent">📋 Historial</button>
+        <button @click="tab='editor'"
+          :class="tab==='editor'?'tab-active':'text-gray-500 hover:text-gray-700'"
+          class="py-3 text-sm transition border-b-2 border-transparent">✏️ Nueva Query</button>
       </div>
     </div>
 
@@ -92,117 +73,118 @@
     <div class="max-w-7xl mx-auto px-4 py-6">
 
       <!-- Error banner -->
-      <div x-show="errorMsg"
-        class="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm flex items-center justify-between">
+      <div x-show="errorMsg" class="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm flex items-center justify-between">
         <span x-text="errorMsg"></span>
         <button @click="errorMsg=null" class="text-red-400 hover:text-red-600 ml-4 text-lg leading-none">×</button>
       </div>
 
-      <!-- ===================== TAB: REPORTES ===================== -->
-      <div x-show="tab === 'reports'">
+      <!-- ===== TAB: REPORTES ===== -->
+      <div x-show="tab==='reports'">
 
-        <!-- Results view (full table after running) -->
+        <!-- Results view -->
         <div x-show="resultsView">
-          <!-- Header -->
           <div class="flex items-center gap-3 mb-4">
-            <button @click="resultsView = null; loadReports()"
-              class="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1">
-              ← Volver
-            </button>
+            <button @click="resultsView=null; loadReports()" class="text-sm text-gray-500 hover:text-gray-700">← Volver</button>
             <h2 class="text-lg font-semibold text-gray-800" x-text="resultsView?.display_name"></h2>
-            <span class="text-xs text-gray-400" x-text="'(' + (resultsView?.row_count ?? 0) + ' filas en total, mostrando preview de ' + (resultsView?.rows?.length ?? 0) + ')'"></span>
+            <span class="text-xs text-gray-400" x-text="'('+( resultsView?.row_count??0)+' filas totales, preview de '+(resultsView?.rows?.length??0)+')'"></span>
             <div class="ml-auto flex items-center gap-2">
               <a x-show="resultsView?.download_url" :href="resultsView?.download_url" target="_blank"
-                class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition">
-                📥 Descargar Excel
-              </a>
-              <button @click="analyzeWithAI()"
-                :disabled="aiAnalysis.loading"
-                class="text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50 flex items-center gap-1"
-                style="background:#7c3aed">
+                class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">📥 Excel</a>
+              <button @click="analyzeWithAI()" :disabled="aiAnalysis.loading"
+                class="text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50" style="background:#7c3aed">
                 <span x-show="!aiAnalysis.loading">🤖 Analizar con IA</span>
                 <span x-show="aiAnalysis.loading"><span class="spin">⏳</span> Analizando...</span>
               </button>
             </div>
           </div>
 
-          <!-- AI Analysis panel -->
-          <div x-show="aiAnalysis.text || aiAnalysis.error" class="mb-4 bg-purple-50 border border-purple-200 rounded-xl p-4">
+          <!-- AI panel -->
+          <div x-show="aiAnalysis.text||aiAnalysis.error" class="mb-4 bg-purple-50 border border-purple-200 rounded-xl p-4">
             <div class="flex items-center justify-between mb-2">
-              <span class="text-xs font-semibold text-purple-700">🤖 Análisis de Gemini AI</span>
-              <button @click="aiAnalysis.text=''; aiAnalysis.error=''" class="text-purple-400 hover:text-purple-600 text-lg leading-none">×</button>
+              <span class="text-xs font-semibold text-purple-700">🤖 Análisis Gemini AI</span>
+              <button @click="aiAnalysis={loading:false,text:'',error:''}" class="text-purple-400 hover:text-purple-600 text-lg">×</button>
             </div>
             <div x-show="aiAnalysis.error" class="text-sm text-red-600" x-text="aiAnalysis.error"></div>
             <div x-show="aiAnalysis.text" class="text-sm text-gray-700 ai-prose" x-text="aiAnalysis.text"></div>
           </div>
 
-          <!-- Column filters -->
-          <div x-show="resultsView?.columns?.length" class="bg-white rounded-t-xl border border-b-0 border-gray-200 px-3 pt-3 pb-2">
+          <!-- Filters -->
+          <div class="bg-white rounded-t-xl border border-b-0 border-gray-200 px-3 pt-3 pb-2">
             <div class="flex items-center gap-2 mb-2">
               <span class="text-xs font-medium text-gray-500">🔍 Filtros por columna:</span>
-              <button @click="tableFilters = {}" class="text-xs text-gray-400 hover:text-gray-600">Limpiar</button>
+              <button @click="tableFilters={}; currentPage=1" class="text-xs text-gray-400 hover:text-gray-600">Limpiar</button>
             </div>
             <div class="flex flex-wrap gap-2 col-filter">
-              <template x-for="col in (resultsView?.columns || [])" :key="col">
+              <template x-for="col in (resultsView?.columns||[])" :key="col">
                 <div class="flex flex-col gap-0.5">
                   <span class="text-gray-400 truncate max-w-[120px]" style="font-size:10px" x-text="col"></span>
-                  <input type="text" :placeholder="'Filtrar...'"
-                    x-model="tableFilters[col]"
+                  <input type="text" placeholder="Filtrar..." x-model="tableFilters[col]" @input="currentPage=1"
                     class="border border-gray-200 rounded px-2 py-1 w-28 focus:outline-none focus:ring-1 focus:ring-blue-200" />
                 </div>
               </template>
             </div>
           </div>
 
-          <!-- Results table -->
-          <div class="overflow-auto border border-gray-200 rounded-b-xl bg-white" style="max-height: calc(100vh - 340px)">
+          <!-- Table -->
+          <div class="overflow-auto border border-gray-200 bg-white" style="max-height:calc(100vh - 390px)">
             <table class="w-full text-xs">
               <thead class="bg-gray-50 sticky top-0 z-10">
                 <tr>
-                  <template x-for="col in (resultsView?.columns || [])" :key="col">
+                  <template x-for="col in (resultsView?.columns||[])" :key="col">
                     <th class="px-3 py-2 text-left text-gray-600 font-medium whitespace-nowrap border-b border-r border-gray-200 cursor-pointer hover:bg-gray-100"
-                      @click="sortTable(col)">
+                      @click="sortTable(col); currentPage=1">
                       <span x-text="col"></span>
-                      <span x-show="sortCol === col" x-text="sortDir === 'asc' ? ' ↑' : ' ↓'" class="text-blue-500"></span>
+                      <span x-show="sortCol===col" x-text="sortDir==='asc'?' ↑':' ↓'" class="text-blue-500"></span>
                     </th>
                   </template>
                 </tr>
               </thead>
               <tbody>
-                <template x-for="(row, i) in filteredRows" :key="i">
-                  <tr class="border-b border-gray-100 hover:bg-blue-50 transition">
-                    <template x-for="col in (resultsView?.columns || [])" :key="col">
-                      <td class="px-3 py-1.5 text-gray-700 whitespace-nowrap border-r border-gray-100" x-text="row[col] ?? '—'"></td>
+                <template x-for="(row,i) in paginatedRows" :key="i">
+                  <tr class="border-b border-gray-100 hover:bg-blue-50">
+                    <template x-for="col in (resultsView?.columns||[])" :key="col">
+                      <td class="px-3 py-1.5 text-gray-700 whitespace-nowrap border-r border-gray-100" x-text="row[col]??'—'"></td>
                     </template>
                   </tr>
                 </template>
-                <tr x-show="filteredRows.length === 0">
-                  <td :colspan="resultsView?.columns?.length || 1" class="text-center py-8 text-gray-400">
-                    Sin resultados con los filtros aplicados.
-                  </td>
+                <tr x-show="filteredRows.length===0">
+                  <td :colspan="resultsView?.columns?.length||1" class="text-center py-8 text-gray-400">Sin resultados.</td>
                 </tr>
               </tbody>
             </table>
           </div>
-          <div class="text-xs text-gray-400 mt-2 text-right"
-            x-text="filteredRows.length + ' de ' + (resultsView?.rows?.length ?? 0) + ' filas mostradas (preview de 50 max)'">
+
+          <!-- Pagination -->
+          <div class="flex items-center justify-between px-4 py-2.5 bg-white border border-t-0 border-gray-200 rounded-b-xl">
+            <div class="flex items-center gap-3 text-xs text-gray-500">
+              <span>Filas por página:</span>
+              <select x-model.number="pageSize" @change="currentPage=1" class="border border-gray-200 rounded px-2 py-1 text-xs">
+                <option value="25">25</option><option value="50">50</option><option value="100">100</option>
+              </select>
+              <span x-text="`Mostrando ${filteredRows.length===0?0:(currentPage-1)*pageSize+1}–${Math.min(currentPage*pageSize,filteredRows.length)} de ${filteredRows.length}`"></span>
+            </div>
+            <div class="flex items-center gap-1">
+              <button @click="currentPage=1" :disabled="currentPage===1" class="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-40">«</button>
+              <button @click="currentPage--" :disabled="currentPage===1" class="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-40">‹</button>
+              <template x-for="p in pageNumbers(currentPage,totalResultsPages)" :key="'rp'+p">
+                <button @click="typeof p==='number' && (currentPage=p)"
+                  :class="p===currentPage?'bg-blue-600 text-white border-blue-600':typeof p!=='number'?'cursor-default text-gray-400':'hover:bg-gray-50'"
+                  class="px-2.5 py-1 text-xs border border-gray-200 rounded min-w-[2rem]" x-text="p"></button>
+              </template>
+              <button @click="currentPage++" :disabled="currentPage>=totalResultsPages" class="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-40">›</button>
+              <button @click="currentPage=totalResultsPages" :disabled="currentPage>=totalResultsPages" class="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-40">»</button>
+            </div>
           </div>
         </div>
 
-        <!-- Report cards (hidden when results view active) -->
+        <!-- Report cards -->
         <div x-show="!resultsView">
           <div class="flex items-center justify-between mb-4">
             <h2 class="text-lg font-semibold text-gray-800">Reportes disponibles</h2>
             <button @click="loadReports()" class="text-sm text-gray-500 hover:text-gray-700">↺ Actualizar</button>
           </div>
-
-          <div x-show="reportsLoading" class="text-center py-12 text-gray-400">
-            <div class="spin text-2xl">⏳</div>
-          </div>
-          <div x-show="!reportsLoading && reports.length === 0" class="text-center py-12 text-gray-400">
-            No hay reportes disponibles.
-          </div>
-
+          <div x-show="reportsLoading" class="text-center py-12 text-gray-400"><div class="spin text-2xl">⏳</div></div>
+          <div x-show="!reportsLoading&&reports.length===0" class="text-center py-12 text-gray-400">No hay reportes disponibles.</div>
           <div x-show="!reportsLoading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <template x-for="r in reports" :key="r.report_name">
               <div class="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition">
@@ -212,17 +194,10 @@
                 </div>
                 <p class="text-xs text-gray-500 mb-4 leading-relaxed" x-text="r.description"></p>
                 <div class="flex items-center gap-2">
-                  <button @click="openRunModal(r)"
-                    class="flex-1 text-sm font-medium text-white py-2 px-3 rounded-lg transition"
-                    style="background:#1F4E78"
-                    onmouseover="this.style.background='#163a5c'"
-                    onmouseout="this.style.background='#1F4E78'">
-                    ▶ Ejecutar
-                  </button>
+                  <button @click="openRunModal(r)" class="flex-1 text-sm font-medium text-white py-2 px-3 rounded-lg"
+                    style="background:#1F4E78" onmouseover="this.style.background='#163a5c'" onmouseout="this.style.background='#1F4E78'">▶ Ejecutar</button>
                   <button x-show="r.is_custom" @click="deleteQuery(r.report_name)"
-                    class="text-sm text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 py-2 px-3 rounded-lg transition">
-                    🗑
-                  </button>
+                    class="text-sm text-red-400 hover:text-red-600 border border-red-200 py-2 px-3 rounded-lg">🗑</button>
                 </div>
               </div>
             </template>
@@ -230,58 +205,171 @@
         </div>
       </div>
 
-      <!-- ===================== TAB: HISTORIAL ===================== -->
-      <div x-show="tab === 'history'">
+      <!-- ===== TAB: HISTORIAL ===== -->
+      <div x-show="tab==='history'">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-semibold text-gray-800">Historial de ejecuciones</h2>
           <button @click="loadRuns()" class="text-sm text-gray-500 hover:text-gray-700">↺ Actualizar</button>
         </div>
 
-        <div x-show="runsLoading" class="text-center py-12 text-gray-400">
-          <div class="spin text-2xl">⏳</div>
-        </div>
-        <div x-show="!runsLoading && runs.length === 0" class="text-center py-12 text-gray-400">
-          No hay ejecuciones registradas todavía.
-        </div>
+        <div x-show="runsLoading" class="text-center py-12 text-gray-400"><div class="spin text-2xl">⏳</div></div>
+        <div x-show="!runsLoading&&runs.length===0" class="text-center py-12 text-gray-400">No hay ejecuciones registradas.</div>
 
-        <div x-show="!runsLoading && runs.length > 0" class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <!-- Runs list — compact when a run is selected -->
+        <div x-show="!runsLoading&&runs.length>0"
+          class="bg-white rounded-xl border border-gray-200 overflow-hidden mb-4"
+          :class="historyView ? 'overflow-y-auto' : ''"
+          :style="historyView ? 'max-height:220px' : ''">
           <table class="w-full text-sm">
-            <thead class="bg-gray-50 border-b border-gray-200">
+            <thead class="bg-gray-50 border-b border-gray-200 sticky top-0">
               <tr>
                 <th class="text-left px-4 py-3 text-gray-600 font-medium">Reporte</th>
                 <th class="text-left px-4 py-3 text-gray-600 font-medium">Estado</th>
                 <th class="text-left px-4 py-3 text-gray-600 font-medium">Iniciado</th>
                 <th class="text-right px-4 py-3 text-gray-600 font-medium">Filas</th>
-                <th class="text-center px-4 py-3 text-gray-600 font-medium">Acción</th>
+                <th class="text-center px-4 py-3 text-gray-600 font-medium">Datos</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100">
               <template x-for="run in runs" :key="run.run_id">
-                <tr class="hover:bg-gray-50 transition cursor-pointer" @click="openRunDetail(run.run_id)">
-                  <td class="px-4 py-3 text-gray-700 font-medium" x-text="run.report_name.replace(/_/g,' ')"></td>
-                  <td class="px-4 py-3">
+                <tr class="hover:bg-blue-50 transition cursor-pointer"
+                  :class="historyView?.run_id===run.run_id ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''"
+                  @click="loadHistoryDetail(run.run_id)">
+                  <td class="px-4 py-2.5 text-gray-700 font-medium" x-text="run.report_name.replace(/_/g,' ')"></td>
+                  <td class="px-4 py-2.5">
                     <span :class="statusBadge(run.status)" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="statusLabel(run.status)"></span>
                   </td>
-                  <td class="px-4 py-3 text-gray-500" x-text="formatDate(run.started_at)"></td>
-                  <td class="px-4 py-3 text-gray-700 text-right" x-text="run.row_count ?? '—'"></td>
-                  <td class="px-4 py-3 text-center">
-                    <span class="text-blue-500 text-xs hover:underline">Ver detalle →</span>
+                  <td class="px-4 py-2.5 text-gray-500 text-xs" x-text="formatDate(run.started_at)"></td>
+                  <td class="px-4 py-2.5 text-gray-700 text-right text-xs" x-text="run.row_count??'—'"></td>
+                  <td class="px-4 py-2.5 text-center">
+                    <span class="text-blue-500 text-xs" x-text="historyView?.run_id===run.run_id ? '▲ Cerrar' : '▼ Ver datos'"></span>
                   </td>
                 </tr>
               </template>
             </tbody>
           </table>
         </div>
+
+        <!-- History loading -->
+        <div x-show="historyLoading" class="text-center py-8 text-gray-400"><div class="spin text-2xl">⏳</div></div>
+
+        <!-- History inline detail -->
+        <div x-show="historyView&&!historyLoading">
+
+          <!-- Detail header -->
+          <div class="flex flex-wrap items-center gap-3 mb-3 bg-white rounded-xl border border-gray-200 px-4 py-3">
+            <span class="font-semibold text-gray-800 text-sm" x-text="historyView?.display_name"></span>
+            <span :class="statusBadge(historyView?.status)" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="statusLabel(historyView?.status)"></span>
+            <span class="text-xs text-gray-400" x-text="(historyView?.row_count??0)+' filas totales · preview '+( historyView?.rows?.length??0)"></span>
+            <span class="text-xs text-gray-400" x-text="formatDate(historyView?.started_at)"></span>
+            <div class="ml-auto flex items-center gap-2">
+              <a x-show="historyView?.download_url" :href="historyView?.download_url" target="_blank"
+                class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50">📥 Excel</a>
+              <button @click="analyzeHistoryWithAI()" :disabled="historyAI.loading"
+                class="text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50" style="background:#7c3aed">
+                <span x-show="!historyAI.loading">🤖 Analizar con IA</span>
+                <span x-show="historyAI.loading"><span class="spin">⏳</span> Analizando...</span>
+              </button>
+              <button @click="historyView=null; historyAI={loading:false,text:'',error:''}"
+                class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50">× Cerrar</button>
+            </div>
+          </div>
+
+          <!-- AI panel (history) -->
+          <div x-show="historyAI.text||historyAI.error" class="mb-3 bg-purple-50 border border-purple-200 rounded-xl p-4">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold text-purple-700">🤖 Análisis Gemini AI</span>
+              <button @click="historyAI={loading:false,text:'',error:''}" class="text-purple-400 hover:text-purple-600 text-lg">×</button>
+            </div>
+            <div x-show="historyAI.error" class="text-sm text-red-600" x-text="historyAI.error"></div>
+            <div x-show="historyAI.text" class="text-sm text-gray-700 ai-prose" x-text="historyAI.text"></div>
+          </div>
+
+          <!-- Error msg -->
+          <div x-show="historyView?.error_message" class="mb-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-700" x-text="historyView?.error_message"></div>
+
+          <!-- No data msg -->
+          <div x-show="!historyView?.rows?.length&&!historyView?.error_message" class="mb-3 bg-gray-50 border border-gray-200 rounded-lg px-3 py-4 text-sm text-gray-500 text-center">
+            Sin datos de preview para esta ejecución.
+          </div>
+
+          <!-- Filters (history) -->
+          <div x-show="historyView?.columns?.length" class="bg-white rounded-t-xl border border-b-0 border-gray-200 px-3 pt-3 pb-2">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-xs font-medium text-gray-500">🔍 Filtros por columna:</span>
+              <button @click="historyFilters={}; historyPage=1" class="text-xs text-gray-400 hover:text-gray-600">Limpiar</button>
+            </div>
+            <div class="flex flex-wrap gap-2 col-filter">
+              <template x-for="col in historyColumns" :key="col">
+                <div class="flex flex-col gap-0.5">
+                  <span class="text-gray-400 truncate max-w-[120px]" style="font-size:10px" x-text="col"></span>
+                  <input type="text" placeholder="Filtrar..." x-model="historyFilters[col]" @input="historyPage=1"
+                    class="border border-gray-200 rounded px-2 py-1 w-28 focus:outline-none focus:ring-1 focus:ring-blue-200" />
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- History table -->
+          <div x-show="historyView?.columns?.length" class="overflow-auto border border-gray-200 bg-white" style="max-height:calc(100vh - 460px)">
+            <table class="w-full text-xs">
+              <thead class="bg-gray-50 sticky top-0 z-10">
+                <tr>
+                  <template x-for="col in historyColumns" :key="col">
+                    <th class="px-3 py-2 text-left text-gray-600 font-medium whitespace-nowrap border-b border-r border-gray-200 cursor-pointer hover:bg-gray-100"
+                      @click="sortHistoryTable(col); historyPage=1">
+                      <span x-text="col"></span>
+                      <span x-show="historySortCol===col" x-text="historySortDir==='asc'?' ↑':' ↓'" class="text-blue-500"></span>
+                    </th>
+                  </template>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row,i) in historyPaginatedRows" :key="i">
+                  <tr class="border-b border-gray-100 hover:bg-blue-50">
+                    <template x-for="col in historyColumns" :key="col">
+                      <td class="px-3 py-1.5 text-gray-700 whitespace-nowrap border-r border-gray-100" x-text="row[col]??'—'"></td>
+                    </template>
+                  </tr>
+                </template>
+                <tr x-show="historyFilteredRows.length===0&&historyView?.rows?.length">
+                  <td :colspan="historyColumns.length||1" class="text-center py-8 text-gray-400">Sin resultados con los filtros.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination (history) -->
+          <div x-show="historyView?.columns?.length" class="flex items-center justify-between px-4 py-2.5 bg-white border border-t-0 border-gray-200 rounded-b-xl">
+            <div class="flex items-center gap-3 text-xs text-gray-500">
+              <span>Filas por página:</span>
+              <select x-model.number="historyPageSize" @change="historyPage=1" class="border border-gray-200 rounded px-2 py-1 text-xs">
+                <option value="25">25</option><option value="50">50</option><option value="100">100</option>
+              </select>
+              <span x-text="`Mostrando ${historyFilteredRows.length===0?0:(historyPage-1)*historyPageSize+1}–${Math.min(historyPage*historyPageSize,historyFilteredRows.length)} de ${historyFilteredRows.length}`"></span>
+            </div>
+            <div class="flex items-center gap-1">
+              <button @click="historyPage=1" :disabled="historyPage===1" class="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-40">«</button>
+              <button @click="historyPage--" :disabled="historyPage===1" class="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-40">‹</button>
+              <template x-for="p in pageNumbers(historyPage,totalHistoryPages)" :key="'hp'+p">
+                <button @click="typeof p==='number'&&(historyPage=p)"
+                  :class="p===historyPage?'bg-blue-600 text-white border-blue-600':typeof p!=='number'?'cursor-default text-gray-400':'hover:bg-gray-50'"
+                  class="px-2.5 py-1 text-xs border border-gray-200 rounded min-w-[2rem]" x-text="p"></button>
+              </template>
+              <button @click="historyPage++" :disabled="historyPage>=totalHistoryPages" class="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-40">›</button>
+              <button @click="historyPage=totalHistoryPages" :disabled="historyPage>=totalHistoryPages" class="px-2 py-1 text-xs border border-gray-200 rounded hover:bg-gray-50 disabled:opacity-40">»</button>
+            </div>
+          </div>
+
+        </div>
       </div>
 
-      <!-- ===================== TAB: EDITOR SQL ===================== -->
-      <div x-show="tab === 'editor'">
+      <!-- ===== TAB: EDITOR SQL ===== -->
+      <div x-show="tab==='editor'">
         <div class="max-w-3xl">
           <h2 class="text-lg font-semibold text-gray-800 mb-1">Nueva query personalizada</h2>
-          <p class="text-sm text-gray-500 mb-6">
-            Guardá una query SQL para agregarla al catálogo. Se ejecutará sobre
-            <code class="bg-gray-100 px-1 rounded">"db_prod"."transaction"."transaction"</code>.
-          </p>
+          <p class="text-sm text-gray-500 mb-6">Guardá una query SQL para agregarla al catálogo. Se ejecutará sobre
+            <code class="bg-gray-100 px-1 rounded">"db_prod"."transaction"."transaction"</code>.</p>
           <div class="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
             <div class="grid grid-cols-2 gap-4">
               <div>
@@ -307,15 +395,11 @@
                 class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 resize-y"></textarea>
             </div>
             <div x-show="queryMessage"
-              :class="queryMessage?.type === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'"
-              class="border rounded-lg px-4 py-3 text-sm">
-              <span x-text="queryMessage?.text"></span>
-            </div>
+              :class="queryMessage?.type==='success'?'bg-green-50 border-green-200 text-green-700':'bg-red-50 border-red-200 text-red-700'"
+              class="border rounded-lg px-4 py-3 text-sm" x-text="queryMessage?.text"></div>
             <button @click="saveQuery()" :disabled="queryLoading"
-              class="w-full py-2.5 text-sm font-medium text-white rounded-lg transition disabled:opacity-50"
-              style="background:#1F4E78"
-              onmouseover="this.style.background='#163a5c'"
-              onmouseout="this.style.background='#1F4E78'">
+              class="w-full py-2.5 text-sm font-medium text-white rounded-lg disabled:opacity-50"
+              style="background:#1F4E78" onmouseover="this.style.background='#163a5c'" onmouseout="this.style.background='#1F4E78'">
               <span x-show="!queryLoading">💾 Guardar query</span>
               <span x-show="queryLoading"><span class="spin">⏳</span> Guardando...</span>
             </button>
@@ -323,75 +407,57 @@
         </div>
       </div>
 
-    </div><!-- /content -->
-  </div><!-- /app -->
+    </div>
+  </div>
 
-  <!-- ===================== MODAL: EJECUTAR REPORTE ===================== -->
+  <!-- ===== MODAL: EJECUTAR REPORTE ===== -->
   <div x-show="showRunModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center">
     <div class="absolute inset-0 bg-black/40" @click="closeModal()"></div>
     <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 p-6">
-
       <div class="flex items-start justify-between mb-4">
         <div>
           <h3 class="font-semibold text-gray-800" x-text="selectedReport?.display_name"></h3>
           <p class="text-xs text-gray-500 mt-0.5" x-text="selectedReport?.description"></p>
         </div>
-        <button @click="closeModal()" class="text-gray-400 hover:text-gray-600 text-xl leading-none ml-3">×</button>
+        <button @click="closeModal()" class="text-gray-400 hover:text-gray-600 text-xl ml-3">×</button>
       </div>
 
-      <!-- Params -->
-      <div x-show="selectedReport?.params?.length > 0" class="space-y-3 mb-4">
-        <template x-for="p in (selectedReport?.params || [])" :key="p.name">
+      <div x-show="selectedReport?.params?.length>0" class="space-y-3 mb-4">
+        <template x-for="p in (selectedReport?.params||[])" :key="p.name">
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1" x-text="p.label"></label>
-            <input x-show="p.type === 'date'" type="date"
-              :value="runParams[p.name]"
-              @change="runParams[p.name] = $event.target.value"
-              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
-            <label x-show="p.type === 'bool'" class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox"
-                :checked="runParams[p.name]"
-                @change="runParams[p.name] = $event.target.checked"
-                class="w-4 h-4 rounded" />
+            <input x-show="p.type==='date'" type="date" :value="runParams[p.name]"
+              @change="runParams[p.name]=$event.target.value" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
+            <label x-show="p.type==='bool'" class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" :checked="runParams[p.name]" @change="runParams[p.name]=$event.target.checked" class="w-4 h-4 rounded" />
               <span class="text-sm text-gray-600" x-text="p.label"></span>
             </label>
           </div>
         </template>
       </div>
       <div x-show="!selectedReport?.params?.length" class="mb-4">
-        <p class="text-sm text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-          Este reporte no requiere parámetros. Usará los últimos 7 días automáticamente.
-        </p>
+        <p class="text-sm text-gray-500 bg-gray-50 rounded-lg px-3 py-2">Este reporte no requiere parámetros. Usará los últimos 7 días automáticamente.</p>
       </div>
 
-      <!-- Run status -->
       <div x-show="currentRun" class="mb-4">
         <div :class="statusBadge(currentRun?.status)" class="rounded-lg px-4 py-3 text-sm">
           <div class="flex items-center gap-2 font-medium">
             <span x-show="['RUNNING','RESUMING'].includes(currentRun?.status)" class="spin">⏳</span>
-            <span x-show="currentRun?.status === 'DONE'">✅</span>
-            <span x-show="currentRun?.status === 'ERROR'">❌</span>
+            <span x-show="currentRun?.status==='DONE'">✅</span>
+            <span x-show="currentRun?.status==='ERROR'">❌</span>
             <span x-text="statusLabel(currentRun?.status)"></span>
           </div>
-          <div x-show="currentRun?.status === 'RESUMING'" class="text-xs mt-1 opacity-75">
-            El cluster estaba pausado — despertando (3-5 min la primera vez)...
-          </div>
-          <div x-show="currentRun?.status === 'RUNNING'" class="text-xs mt-1 opacity-75">
-            Ejecutando query en Redshift...
-          </div>
-          <div x-show="currentRun?.status === 'DONE'" class="mt-2 space-y-1 text-xs">
+          <div x-show="currentRun?.status==='RESUMING'" class="text-xs mt-1 opacity-75">El cluster estaba pausado — despertando (3-5 min)...</div>
+          <div x-show="currentRun?.status==='RUNNING'" class="text-xs mt-1 opacity-75">Ejecutando query en Redshift...</div>
+          <div x-show="currentRun?.status==='DONE'" class="mt-2 space-y-1 text-xs">
             <p><strong x-text="currentRun?.row_count"></strong> filas encontradas</p>
             <a :href="currentRun?.download_url" target="_blank" class="underline font-medium">📥 Descargar Excel</a>
           </div>
-          <div x-show="currentRun?.status === 'ERROR'" class="text-xs mt-1">
-            <span x-text="currentRun?.error_message || 'Error desconocido'"></span>
-          </div>
+          <div x-show="currentRun?.status==='ERROR'" class="text-xs mt-1" x-text="currentRun?.error_message||'Error desconocido'"></div>
         </div>
-
-        <!-- Mini preview in modal -->
-        <div x-show="currentRun?.status === 'DONE' && currentRun?.result_preview?.length" class="mt-3">
-          <p class="text-xs text-gray-500 mb-1">Preview rápida (<span x-text="currentRun?.result_preview?.length"></span> filas)</p>
-          <div class="overflow-auto max-h-32 border border-gray-200 rounded-lg text-xs">
+        <div x-show="currentRun?.status==='DONE'&&currentRun?.result_preview?.length" class="mt-3">
+          <p class="text-xs text-gray-500 mb-1">Preview (<span x-text="currentRun?.result_preview?.length"></span> filas)</p>
+          <div class="overflow-auto max-h-40 border border-gray-200 rounded-lg text-xs">
             <table class="w-full">
               <thead class="bg-gray-50 sticky top-0">
                 <tr>
@@ -401,10 +467,10 @@
                 </tr>
               </thead>
               <tbody>
-                <template x-for="(row, i) in (currentRun?.result_preview || [])" :key="i">
+                <template x-for="(row,i) in (currentRun?.result_preview||[])" :key="i">
                   <tr class="border-b border-gray-100">
                     <template x-for="col in previewColumns" :key="col">
-                      <td class="px-2 py-1 text-gray-700 whitespace-nowrap" x-text="row[col] ?? '—'"></td>
+                      <td class="px-2 py-1 text-gray-700 whitespace-nowrap" x-text="row[col]??'—'"></td>
                     </template>
                   </tr>
                 </template>
@@ -414,122 +480,19 @@
         </div>
       </div>
 
-      <!-- Actions -->
       <div class="flex gap-2 flex-wrap">
-        <button @click="closeModal()" class="py-2 px-4 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition">
-          Cerrar
-        </button>
+        <button @click="closeModal()" class="py-2 px-4 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50">Cerrar</button>
         <button x-show="!currentRun" @click="executeReport()" :disabled="runLoading"
-          class="flex-1 py-2 text-sm font-medium text-white rounded-lg transition disabled:opacity-50"
-          style="background:#1F4E78">
+          class="flex-1 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50" style="background:#1F4E78">
           <span x-show="!runLoading">▶ Ejecutar ahora</span>
           <span x-show="runLoading"><span class="spin">⏳</span> Iniciando...</span>
         </button>
-        <!-- Ver tabla completa — appears when done with preview data -->
-        <button
-          x-show="currentRun?.status === 'DONE' && currentRun?.result_preview?.length"
-          @click="openResultsView()"
-          class="flex-1 py-2 text-sm font-medium text-white rounded-lg transition"
-          style="background:#059669">
+        <button x-show="currentRun?.status==='DONE'&&currentRun?.result_preview?.length"
+          @click="openResultsView()" class="flex-1 py-2 text-sm font-medium text-white rounded-lg" style="background:#059669">
           📊 Ver tabla completa
         </button>
-        <button x-show="currentRun && !['RUNNING','RESUMING'].includes(currentRun?.status)" @click="resetRun()"
-          class="py-2 px-4 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition">
-          ↺ Volver a ejecutar
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===================== MODAL: DETALLE DE RUN (HISTORIAL) ===================== -->
-  <div x-show="showDetailModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div class="absolute inset-0 bg-black/40" @click="showDetailModal=false"></div>
-    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-5xl mx-auto flex flex-col" style="max-height: 90vh">
-
-      <!-- Modal header -->
-      <div class="flex items-center justify-between p-5 border-b border-gray-200 shrink-0">
-        <h3 class="font-semibold text-gray-800">Detalle de ejecución</h3>
-        <div class="flex items-center gap-2">
-          <button x-show="runDetail?.result_preview?.length"
-            @click="openResultsViewFromDetail()"
-            class="text-xs px-3 py-1.5 text-white rounded-lg font-medium"
-            style="background:#059669">
-            📊 Ver tabla completa
-          </button>
-          <button @click="showDetailModal=false" class="text-gray-400 hover:text-gray-600 text-2xl leading-none ml-2">×</button>
-        </div>
-      </div>
-
-      <!-- Modal body -->
-      <div class="overflow-y-auto p-5 flex-1">
-        <div x-show="detailLoading" class="text-center py-12 text-gray-400">
-          <div class="spin text-2xl">⏳</div>
-        </div>
-
-        <div x-show="!detailLoading && runDetail">
-          <!-- Metadata grid -->
-          <dl class="grid grid-cols-3 gap-x-6 gap-y-3 text-sm mb-5 bg-gray-50 rounded-xl p-4">
-            <div>
-              <dt class="text-gray-400 text-xs mb-0.5">Reporte</dt>
-              <dd class="font-medium text-gray-800" x-text="runDetail?.report_name?.replace(/_/g,' ')"></dd>
-            </div>
-            <div>
-              <dt class="text-gray-400 text-xs mb-0.5">Estado</dt>
-              <dd>
-                <span :class="statusBadge(runDetail?.status)" class="px-2 py-0.5 rounded-full text-xs font-medium"
-                  x-text="statusLabel(runDetail?.status)"></span>
-              </dd>
-            </div>
-            <div>
-              <dt class="text-gray-400 text-xs mb-0.5">Filas</dt>
-              <dd class="font-medium text-gray-800" x-text="runDetail?.row_count ?? '—'"></dd>
-            </div>
-            <div>
-              <dt class="text-gray-400 text-xs mb-0.5">Iniciado</dt>
-              <dd class="text-gray-700" x-text="formatDate(runDetail?.started_at)"></dd>
-            </div>
-            <div>
-              <dt class="text-gray-400 text-xs mb-0.5">Completado</dt>
-              <dd class="text-gray-700" x-text="formatDate(runDetail?.completed_at)"></dd>
-            </div>
-            <div x-show="runDetail?.download_url">
-              <dt class="text-gray-400 text-xs mb-0.5">Excel</dt>
-              <dd><a :href="runDetail?.download_url" target="_blank" class="text-blue-600 underline text-xs">📥 Descargar</a></dd>
-            </div>
-          </dl>
-
-          <div x-show="runDetail?.error_message"
-            class="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-700 mb-4">
-            <span x-text="runDetail?.error_message"></span>
-          </div>
-
-          <!-- Preview table — larger -->
-          <div x-show="runDetail?.result_preview?.length">
-            <p class="text-xs font-medium text-gray-500 mb-2">
-              Preview — primeras <span x-text="runDetail?.result_preview?.length"></span> filas
-            </p>
-            <div class="overflow-auto border border-gray-200 rounded-xl" style="max-height: 50vh">
-              <table class="w-full text-xs">
-                <thead class="bg-gray-50 sticky top-0">
-                  <tr>
-                    <template x-for="col in detailColumns" :key="col">
-                      <th class="px-3 py-2 text-left text-gray-600 font-medium whitespace-nowrap border-b border-r border-gray-200" x-text="col"></th>
-                    </template>
-                  </tr>
-                </thead>
-                <tbody>
-                  <template x-for="(row, i) in (runDetail?.result_preview || [])" :key="i">
-                    <tr class="border-b border-gray-100 hover:bg-blue-50 transition">
-                      <template x-for="col in detailColumns" :key="col">
-                        <td class="px-3 py-2 text-gray-700 whitespace-nowrap border-r border-gray-100" x-text="row[col] ?? '—'"></td>
-                      </template>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        <button x-show="currentRun&&!['RUNNING','RESUMING'].includes(currentRun?.status)" @click="resetRun()"
+          class="py-2 px-4 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50">↺ Volver a ejecutar</button>
       </div>
     </div>
   </div>
@@ -539,361 +502,299 @@
 
   function app() {
     return {
-      loading: true,
-      config: null,
-      errorMsg: null,
-      clusterStatus: null,
-      clusterActionLoading: false,
-      clusterPollInterval: null,
-
-      tab: 'reports',
-      reports: [],
-      reportsLoading: false,
-      runs: [],
-      runsLoading: false,
+      loading: true, config: null, errorMsg: null,
+      clusterStatus: null, clusterActionLoading: false, clusterPollInterval: null,
+      tab: 'reports', reports: [], reportsLoading: false, runs: [], runsLoading: false,
 
       // Run modal
-      showRunModal: false,
-      selectedReport: null,
-      runParams: {},
-      runLoading: false,
-      currentRun: null,
-      pollInterval: null,
+      showRunModal: false, selectedReport: null, runParams: {},
+      runLoading: false, currentRun: null, pollInterval: null,
 
-      // Detail modal (history)
-      showDetailModal: false,
-      runDetail: null,
-      detailLoading: false,
-
-      // Full results view
-      resultsView: null,      // { display_name, report_name, rows, columns, download_url, row_count }
-      tableFilters: {},
-      sortCol: null,
-      sortDir: 'asc',
+      // Results view (Reports tab)
+      resultsView: null, tableFilters: {}, sortCol: null, sortDir: 'asc',
+      currentPage: 1, pageSize: 50,
       aiAnalysis: { loading: false, text: '', error: '' },
+
+      // History inline view
+      historyView: null, historyLoading: false, historyFilters: {},
+      historySortCol: null, historySortDir: 'asc',
+      historyPage: 1, historyPageSize: 50,
+      historyAI: { loading: false, text: '', error: '' },
 
       // SQL editor
       queryForm: { report_name: '', display_name: '', description: '', sql: '' },
-      queryLoading: false,
-      queryMessage: null,
+      queryLoading: false, queryMessage: null,
 
-      // ---- Init ----
       async init() {
         try {
           const r = await fetch('./config.json');
-          if (!r.ok) throw new Error('config not found');
+          if (!r.ok) throw new Error();
           this.config = await r.json();
-        } catch (e) {
+        } catch {
           this.errorMsg = 'No se pudo cargar la configuracion. Recarga la pagina.';
-          this.loading = false;
-          return;
+          this.loading = false; return;
         }
         await Promise.all([this.loadReports(), this.loadRuns(), this.loadClusterStatus()]);
         this.loading = false;
       },
 
-      // ---- API ----
       async api(method, path, body = null) {
         try {
           const base = this.config.apiUrl.replace(/\/$/, '');
           const r = await fetch(`${base}${path}`, {
-            method,
+            method, credentials: 'omit',
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'omit',
             body: body ? JSON.stringify(body) : undefined,
           });
           const data = await r.json();
           if (!r.ok) { this.errorMsg = data?.error || `Error ${r.status}`; return null; }
           return data;
-        } catch (e) {
-          this.errorMsg = 'Error de red al conectar con la API.';
-          return null;
-        }
+        } catch { this.errorMsg = 'Error de red al conectar con la API.'; return null; }
       },
 
       async loadReports() {
         this.reportsLoading = true;
-        const data = await this.api('GET', '/reports');
-        this.reports = data?.reports || [];
+        const d = await this.api('GET', '/reports');
+        this.reports = d?.reports || [];
         this.reportsLoading = false;
       },
 
       async loadRuns() {
         this.runsLoading = true;
-        const data = await this.api('GET', '/runs');
-        this.runs = data?.runs || [];
+        const d = await this.api('GET', '/runs');
+        this.runs = d?.runs || [];
         this.runsLoading = false;
       },
 
       async loadClusterStatus() {
-        const data = await this.api('GET', '/cluster/status');
-        this.clusterStatus = data?.status || null;
+        const d = await this.api('GET', '/cluster/status');
+        this.clusterStatus = d?.status || null;
         if (this.clusterPollInterval) clearInterval(this.clusterPollInterval);
         this.clusterPollInterval = setInterval(async () => {
-          const d = await this.api('GET', '/cluster/status');
-          this.clusterStatus = d?.status || null;
+          const x = await this.api('GET', '/cluster/status');
+          this.clusterStatus = x?.status || null;
         }, 15000);
       },
 
       async wakeCluster() {
         this.clusterActionLoading = true;
-        const data = await this.api('POST', '/cluster/wake');
-        this.clusterStatus = data?.status || 'resuming';
+        const d = await this.api('POST', '/cluster/wake');
+        this.clusterStatus = d?.status || 'resuming';
         this.clusterActionLoading = false;
       },
 
       async pauseCluster() {
-        if (!confirm('¿Pausar el cluster Redshift? Los reportes en curso pueden fallar.')) return;
+        if (!confirm('¿Pausar el cluster? Los reportes en curso pueden fallar.')) return;
         this.clusterActionLoading = true;
-        const data = await this.api('POST', '/cluster/pause');
-        this.clusterStatus = data?.status || 'pausing';
+        const d = await this.api('POST', '/cluster/pause');
+        this.clusterStatus = d?.status || 'pausing';
         this.clusterActionLoading = false;
       },
 
-      // ---- Run modal ----
       openRunModal(report) {
         this.selectedReport = report;
         const today = new Date();
         const firstDay = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-01`;
         this.runParams = {};
-        for (const p of (report.params || [])) {
-          this.runParams[p.name] = p.type === 'date' ? firstDay : (p.default ?? false);
-        }
+        for (const p of (report.params || [])) this.runParams[p.name] = p.type==='date' ? firstDay : (p.default??false);
         this.currentRun = null;
         this.showRunModal = true;
       },
 
       closeModal() {
         if (this.pollInterval) { clearInterval(this.pollInterval); this.pollInterval = null; }
-        this.showRunModal = false;
-        this.currentRun = null;
+        this.showRunModal = false; this.currentRun = null;
       },
 
       resetRun() { this.currentRun = null; this.runLoading = false; },
 
       async executeReport() {
         this.runLoading = true;
-        const payload = { report_name: this.selectedReport.report_name, ...this.runParams };
-        const data = await this.api('POST', '/execute', payload);
-        if (data?.run_id) {
-          this.currentRun = { run_id: data.run_id, status: 'RUNNING' };
-          this.startPolling(data.run_id);
-        }
+        const d = await this.api('POST', '/execute', { report_name: this.selectedReport.report_name, ...this.runParams });
+        if (d?.run_id) { this.currentRun = { run_id: d.run_id, status: 'RUNNING' }; this.startPolling(d.run_id); }
         this.runLoading = false;
       },
 
       startPolling(run_id) {
         if (this.pollInterval) clearInterval(this.pollInterval);
         this.pollInterval = setInterval(async () => {
-          const data = await this.api('GET', `/runs/${run_id}`);
-          if (data && !data.error) {
-            this.currentRun = data;
-            if (data.status === 'DONE' || data.status === 'ERROR') {
-              clearInterval(this.pollInterval);
-              this.pollInterval = null;
-              this.loadRuns();
-            }
+          const d = await this.api('GET', `/runs/${run_id}`);
+          if (d && !d.error) {
+            this.currentRun = d;
+            if (d.status==='DONE'||d.status==='ERROR') { clearInterval(this.pollInterval); this.pollInterval=null; this.loadRuns(); }
           }
         }, 5000);
       },
 
-      get previewColumns() {
-        const p = this.currentRun?.result_preview;
-        return p?.length ? Object.keys(p[0]) : [];
-      },
+      get previewColumns() { const p=this.currentRun?.result_preview; return p?.length?Object.keys(p[0]):[]; },
 
-      // ---- Full results view ----
       openResultsView() {
         const preview = this.currentRun?.result_preview || [];
         const cols = preview.length ? Object.keys(preview[0]) : [];
         this.resultsView = {
           display_name: this.selectedReport?.display_name || this.currentRun?.report_name,
           report_name: this.currentRun?.report_name,
-          rows: preview,
-          columns: cols,
+          rows: preview, columns: cols,
           download_url: this.currentRun?.download_url,
           row_count: this.currentRun?.row_count,
         };
-        this.tableFilters = {};
-        this.sortCol = null;
+        this.tableFilters = {}; this.sortCol = null; this.currentPage = 1;
         this.aiAnalysis = { loading: false, text: '', error: '' };
-        this.closeModal();
-        this.tab = 'reports';
+        this.closeModal(); this.tab = 'reports';
       },
 
-      openResultsViewFromDetail() {
-        const preview = this.runDetail?.result_preview || [];
-        const cols = preview.length ? Object.keys(preview[0]) : [];
-        this.resultsView = {
-          display_name: this.runDetail?.report_name?.replace(/_/g,' '),
-          report_name: this.runDetail?.report_name,
-          rows: preview,
-          columns: cols,
-          download_url: this.runDetail?.download_url,
-          row_count: this.runDetail?.row_count,
-        };
-        this.tableFilters = {};
-        this.sortCol = null;
-        this.aiAnalysis = { loading: false, text: '', error: '' };
-        this.showDetailModal = false;
-        this.tab = 'reports';
-      },
-
+      // Results view computed
       get filteredRows() {
         if (!this.resultsView?.rows) return [];
         let rows = this.resultsView.rows;
-        // Apply column filters
         for (const [col, val] of Object.entries(this.tableFilters)) {
-          if (val && val.trim()) {
-            const q = val.trim().toLowerCase();
-            rows = rows.filter(r => String(r[col] ?? '').toLowerCase().includes(q));
-          }
+          if (val?.trim()) { const q=val.trim().toLowerCase(); rows=rows.filter(r=>String(r[col]??'').toLowerCase().includes(q)); }
         }
-        // Apply sort
         if (this.sortCol) {
-          const dir = this.sortDir === 'asc' ? 1 : -1;
-          rows = [...rows].sort((a, b) => {
-            const av = a[this.sortCol] ?? '';
-            const bv = b[this.sortCol] ?? '';
-            return String(av).localeCompare(String(bv), undefined, { numeric: true }) * dir;
-          });
+          const dir = this.sortDir==='asc'?1:-1;
+          rows = [...rows].sort((a,b)=>String(a[this.sortCol]??'').localeCompare(String(b[this.sortCol]??''),undefined,{numeric:true})*dir);
         }
         return rows;
       },
+      get paginatedRows() { const s=(this.currentPage-1)*this.pageSize; return this.filteredRows.slice(s,s+this.pageSize); },
+      get totalResultsPages() { return Math.max(1,Math.ceil(this.filteredRows.length/this.pageSize)); },
+      sortTable(col) { if(this.sortCol===col) this.sortDir=this.sortDir==='asc'?'desc':'asc'; else{this.sortCol=col;this.sortDir='asc';} },
 
-      sortTable(col) {
-        if (this.sortCol === col) {
-          this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
-        } else {
-          this.sortCol = col;
-          this.sortDir = 'asc';
+      // History inline view
+      async loadHistoryDetail(run_id) {
+        if (this.historyView?.run_id===run_id) { this.historyView=null; return; }
+        this.historyLoading = true; this.historyView = null;
+        this.historyFilters = {}; this.historySortCol = null; this.historyPage = 1;
+        this.historyAI = { loading: false, text: '', error: '' };
+        const d = await this.api('GET', `/runs/${run_id}`);
+        if (d) {
+          const preview = d.result_preview || [];
+          const cols = preview.length ? Object.keys(preview[0]) : [];
+          this.historyView = {
+            run_id, report_name: d.report_name,
+            display_name: d.report_name?.replace(/_/g,' '),
+            rows: preview, columns: cols,
+            row_count: d.row_count, download_url: d.download_url,
+            started_at: d.started_at, completed_at: d.completed_at,
+            status: d.status, error_message: d.error_message,
+          };
         }
+        this.historyLoading = false;
       },
 
-      // ---- AI Analysis ----
-      async analyzeWithAI() {
-        if (!this.resultsView?.rows?.length) return;
-        this.aiAnalysis = { loading: true, text: '', error: '' };
-
-        const rows = this.resultsView.rows;
-        const cols = this.resultsView.columns;
-        const sample = rows.slice(0, 50);
-        const reportName = this.resultsView.display_name;
-        const totalRows = this.resultsView.row_count;
-
-        // Compute quick aggregate stats from the preview sample
-        const totalAmountCol = cols.find(c => /total_amount|monto|amount_usd/i.test(c));
-        const txCountCol = cols.find(c => /total_trx|total_transactions|count|cantidad/i.test(c));
-        const countryCol = cols.find(c => /country|pais/i.test(c));
-        const customerCol = cols.find(c => /customer|cliente/i.test(c));
-
-        let statsBlock = '';
-        if (totalAmountCol) {
-          const totalUSD = rows.reduce((s, r) => s + (parseFloat(r[totalAmountCol]) || 0), 0);
-          statsBlock += `\n- Suma total ${totalAmountCol} en muestra: USD ${totalUSD.toLocaleString('es-CL', {maximumFractionDigits:2})}`;
+      get historyColumns() { return this.historyView?.columns||[]; },
+      get historyFilteredRows() {
+        if (!this.historyView?.rows) return [];
+        let rows = this.historyView.rows;
+        for (const [col,val] of Object.entries(this.historyFilters)) {
+          if (val?.trim()) { const q=val.trim().toLowerCase(); rows=rows.filter(r=>String(r[col]??'').toLowerCase().includes(q)); }
         }
-        if (txCountCol) {
-          const totalTrx = rows.reduce((s, r) => s + (parseInt(r[txCountCol]) || 0), 0);
-          statsBlock += `\n- Total TRX en muestra: ${totalTrx.toLocaleString('es-CL')}`;
+        if (this.historySortCol) {
+          const dir=this.historySortDir==='asc'?1:-1;
+          rows=[...rows].sort((a,b)=>String(a[this.historySortCol]??'').localeCompare(String(b[this.historySortCol]??''),undefined,{numeric:true})*dir);
         }
-        if (countryCol) {
-          const countries = [...new Set(rows.map(r => r[countryCol]).filter(Boolean))];
-          statsBlock += `\n- Países/jurisdicciones en muestra: ${countries.join(', ')}`;
-        }
-        if (customerCol) {
-          const uniqueCustomers = new Set(rows.map(r => r[customerCol]).filter(Boolean)).size;
-          statsBlock += `\n- Clientes únicos en muestra: ${uniqueCustomers}`;
-        }
+        return rows;
+      },
+      get historyPaginatedRows() { const s=(this.historyPage-1)*this.historyPageSize; return this.historyFilteredRows.slice(s,s+this.historyPageSize); },
+      get totalHistoryPages() { return Math.max(1,Math.ceil(this.historyFilteredRows.length/this.historyPageSize)); },
+      sortHistoryTable(col) { if(this.historySortCol===col) this.historySortDir=this.historySortDir==='asc'?'desc':'asc'; else{this.historySortCol=col;this.historySortDir='asc';} },
 
-        const prompt = `Eres un analista senior de compliance AML (Anti-Money Laundering) en Global66, fintech de remesas internacionales en LATAM regulada bajo normativa FATF/OFAC/UAF.
+      // Shared AI helpers
+      _buildAMLPrompt(displayName, totalRows, cols, rows) {
+        const totalAmountCol = cols.find(c=>/total_amount|monto|amount_usd/i.test(c));
+        const txCountCol     = cols.find(c=>/total_trx|total_transactions|count|cantidad/i.test(c));
+        const countryCol     = cols.find(c=>/country|pais/i.test(c));
+        const customerCol    = cols.find(c=>/customer|cliente/i.test(c));
+        let stats = '';
+        if (totalAmountCol) stats += `\n- Suma total ${totalAmountCol}: USD ${rows.reduce((s,r)=>s+(parseFloat(r[totalAmountCol])||0),0).toLocaleString('es-CL',{maximumFractionDigits:2})}`;
+        if (txCountCol)     stats += `\n- Total TRX en muestra: ${rows.reduce((s,r)=>s+(parseInt(r[txCountCol])||0),0).toLocaleString('es-CL')}`;
+        if (countryCol)     stats += `\n- Países: ${[...new Set(rows.map(r=>r[countryCol]).filter(Boolean))].join(', ')}`;
+        if (customerCol)    stats += `\n- Clientes únicos: ${new Set(rows.map(r=>r[customerCol]).filter(Boolean)).size}`;
+        const sample = rows.slice(0,50);
+        return `Eres un analista senior de compliance AML en Global66, fintech de remesas LATAM regulada bajo FATF/OFAC/UAF.
 
-REPORTE: "${reportName}"
-FILAS TOTALES: ${totalRows ?? 'N/D'}
-COLUMNAS DISPONIBLES: ${cols.join(', ')}
-ESTADÍSTICAS RÁPIDAS (muestra de ${rows.length} filas):${statsBlock || ' (no calculadas)'}
+REPORTE: "${displayName}" | FILAS TOTALES: ${totalRows??'N/D'}
+COLUMNAS: ${cols.join(', ')}
+ESTADÍSTICAS (muestra ${rows.length} filas):${stats||' N/D'}
 
-MUESTRA DE DATOS (hasta ${rows.length} registros):
-${JSON.stringify(sample, null, 2)}
+MUESTRA (hasta ${sample.length} registros):
+${JSON.stringify(sample,null,2)}
 
 ---
-Realiza un análisis AML profundo estructurado así:
+Análisis AML estructurado:
 
 **1. VOLUMEN Y MAGNITUD**
-- Total de transacciones y montos en el reporte completo (${totalRows} filas)
-- Distribución por montos: ¿hay concentración en rangos específicos?
-- Comparación con lo esperado para el período
+- Total TRX y montos del reporte completo (${totalRows} filas)
+- Distribución por rangos de monto: ¿hay concentración inusual?
 
 **2. PATRONES AML DETECTADOS**
-- Estructuración / Smurfing: transacciones fraccionadas para evadir umbrales
-- Layering geográfico: uso de múltiples países/jurisdicciones de alto riesgo
+- Estructuración/Smurfing: operaciones fraccionadas bajo umbrales
+- Layering geográfico: uso de múltiples jurisdicciones de riesgo
 - Concentración: clientes o países con volumen desproporcionado
-- Mismatch SWIFT: si aplica, analizar inconsistencias banco vs país declarado
-- Frecuencia inusual: clientes con cantidad de TRX fuera de rango normal
+- Mismatch SWIFT: inconsistencias banco vs país declarado
+- Frecuencia inusual: clientes con número de TRX fuera de rango
 
 **3. CASOS BORDE Y ALERTAS PRIORITARIAS**
 - Los 3-5 registros/clientes más sospechosos con justificación específica
-- Outliers de monto o frecuencia que requieren revisión inmediata
+- Outliers de monto o frecuencia para revisión inmediata
 - Combinaciones de riesgo (país FATF + monto alto + mismatch)
 
 **4. COMPORTAMIENTO POR SEGMENTO**
 - Diferencias entre países/jurisdicciones
-- Segmentos de clientes con comportamiento atípico
+- Clientes con comportamiento atípico vs el resto
 
 **5. RECOMENDACIONES ACCIONABLES**
-- Qué casos escalar a revisión manual inmediata
-- Qué alertas configurar o actualizar
+- Casos a escalar a revisión manual inmediata
+- Alertas a configurar o actualizar
 - Si se justifica un SAR (Suspicious Activity Report)
 
 Sé directo, técnico y orientado a decisiones. Responde en español.`;
+      },
 
-
+      async _callGemini(prompt, stateKey) {
         try {
           const res = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key=${GEMINI_KEY}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { temperature: 0.3, maxOutputTokens: 2048 }
-              })
-            }
+            { method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({ contents:[{parts:[{text:prompt}]}], generationConfig:{temperature:0.3,maxOutputTokens:2048} }) }
           );
           const json = await res.json();
-          if (!res.ok) throw new Error(json?.error?.message || 'Error de Gemini API');
-          const text = json?.candidates?.[0]?.content?.parts?.[0]?.text || 'Sin respuesta';
-          this.aiAnalysis = { loading: false, text, error: '' };
-        } catch (e) {
-          this.aiAnalysis = { loading: false, text: '', error: `Error al contactar Gemini: ${e.message}` };
+          if (!res.ok) throw new Error(json?.error?.message||'Error Gemini API');
+          this[stateKey] = { loading:false, text: json?.candidates?.[0]?.content?.parts?.[0]?.text||'Sin respuesta', error:'' };
+        } catch(e) {
+          this[stateKey] = { loading:false, text:'', error:`Error al contactar Gemini: ${e.message}` };
         }
       },
 
-      // ---- Detail modal ----
-      async openRunDetail(run_id) {
-        this.showDetailModal = true;
-        this.detailLoading = true;
-        this.runDetail = null;
-        const data = await this.api('GET', `/runs/${run_id}`);
-        this.runDetail = data;
-        this.detailLoading = false;
+      async analyzeWithAI() {
+        if (!this.resultsView?.rows?.length) return;
+        this.aiAnalysis = { loading:true, text:'', error:'' };
+        await this._callGemini(this._buildAMLPrompt(this.resultsView.display_name, this.resultsView.row_count, this.resultsView.columns, this.resultsView.rows), 'aiAnalysis');
       },
 
-      get detailColumns() {
-        const p = this.runDetail?.result_preview;
-        return p?.length ? Object.keys(p[0]) : [];
+      async analyzeHistoryWithAI() {
+        if (!this.historyView?.rows?.length) return;
+        this.historyAI = { loading:true, text:'', error:'' };
+        await this._callGemini(this._buildAMLPrompt(this.historyView.display_name, this.historyView.row_count, this.historyView.columns, this.historyView.rows), 'historyAI');
       },
 
-      // ---- SQL editor ----
+      // Pagination page numbers with ellipsis
+      pageNumbers(current, total) {
+        if (total<=7) return Array.from({length:total},(_,i)=>i+1);
+        if (current<=4) return [1,2,3,4,5,'...',total];
+        if (current>=total-3) return [1,'...',total-4,total-3,total-2,total-1,total];
+        return [1,'...',current-1,current,current+1,'...',total];
+      },
+
       async saveQuery() {
-        this.queryLoading = true;
-        this.queryMessage = null;
-        const data = await this.api('POST', '/queries', this.queryForm);
-        if (data?.report_name) {
-          this.queryMessage = { type: 'success', text: `Query "${data.report_name}" guardada. Ya aparece en el catalogo.` };
-          this.queryForm = { report_name: '', display_name: '', description: '', sql: '' };
+        this.queryLoading = true; this.queryMessage = null;
+        const d = await this.api('POST', '/queries', this.queryForm);
+        if (d?.report_name) {
+          this.queryMessage = { type:'success', text:`Query "${d.report_name}" guardada.` };
+          this.queryForm = { report_name:'', display_name:'', description:'', sql:'' };
           this.loadReports();
         } else {
-          this.queryMessage = { type: 'error', text: `Error: ${data?.error || 'No se pudo guardar'}` };
+          this.queryMessage = { type:'error', text:`Error: ${d?.error||'No se pudo guardar'}` };
         }
         this.queryLoading = false;
       },
@@ -904,29 +805,9 @@ Sé directo, técnico y orientado a decisiones. Responde en español.`;
         this.loadReports();
       },
 
-      // ---- Helpers ----
-      statusBadge(s) {
-        return {
-          RESUMING: 'bg-blue-100 text-blue-800',
-          RUNNING:  'bg-yellow-100 text-yellow-800',
-          DONE:     'bg-green-100 text-green-800',
-          ERROR:    'bg-red-100 text-red-800',
-        }[s] || 'bg-gray-100 text-gray-800';
-      },
-
-      statusLabel(s) {
-        return {
-          RESUMING: '⚡ Despertando cluster',
-          RUNNING:  '⏳ Ejecutando query',
-          DONE:     '✅ Completado',
-          ERROR:    '❌ Error',
-        }[s] || s || '—';
-      },
-
-      formatDate(iso) {
-        if (!iso) return '—';
-        return new Date(iso).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' });
-      },
+      statusBadge(s) { return {RESUMING:'bg-blue-100 text-blue-800',RUNNING:'bg-yellow-100 text-yellow-800',DONE:'bg-green-100 text-green-800',ERROR:'bg-red-100 text-red-800'}[s]||'bg-gray-100 text-gray-800'; },
+      statusLabel(s) { return {RESUMING:'⚡ Despertando cluster',RUNNING:'⏳ Ejecutando query',DONE:'✅ Completado',ERROR:'❌ Error'}[s]||s||'—'; },
+      formatDate(iso) { if(!iso) return '—'; return new Date(iso).toLocaleString('es-CL',{dateStyle:'short',timeStyle:'short'}); },
     };
   }
   </script>
