@@ -155,6 +155,10 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["cluster", "wake"]:
             return wake_cluster()
 
+        # POST /cluster/pause
+        if method == "POST" and parts == ["cluster", "pause"]:
+            return pause_cluster_api()
+
         return resp(404, {"error": "Not found", "path": path, "method": method})
 
     except Exception as e:  # noqa: BLE001
@@ -289,8 +293,20 @@ def wake_cluster():
         status = r["Clusters"][0]["ClusterStatus"]
         if status == "paused":
             redshift.resume_cluster(ClusterIdentifier=CLUSTER_ID)
-            return resp(200, {"status": "resuming", "message": "Cluster está despertando (3-5 min)"})
+            return resp(200, {"status": "resuming", "message": "Cluster despertando (3-5 min)"})
         return resp(200, {"status": status, "message": "Cluster ya está disponible"})
+    except Exception as e:
+        return resp(500, {"error": str(e)})
+
+
+def pause_cluster_api():
+    try:
+        r = redshift.describe_clusters(ClusterIdentifier=CLUSTER_ID)
+        status = r["Clusters"][0]["ClusterStatus"]
+        if status == "available":
+            redshift.pause_cluster(ClusterIdentifier=CLUSTER_ID)
+            return resp(200, {"status": "pausing", "message": "Cluster pausándose..."})
+        return resp(200, {"status": status, "message": f"Cluster en estado: {status}"})
     except Exception as e:
         return resp(500, {"error": str(e)})
 

@@ -36,17 +36,39 @@
         <span class="font-semibold text-gray-800">Compliance Reports</span>
         <span class="text-gray-300">|</span>
         <span class="text-sm text-gray-500">Global66</span>
+
+        <!-- Cluster control panel -->
         <div class="ml-auto flex items-center gap-2">
-          <span x-show="clusterStatus" :class="clusterStatus==='available' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'"
-            class="text-xs px-2 py-1 rounded-full font-medium">
-            <span x-show="clusterStatus==='available'">🟢 Cluster activo</span>
-            <span x-show="clusterStatus!=='available'" class="spin">⏳</span>
-            <span x-show="clusterStatus!=='available'" x-text="clusterStatus==='paused' ? 'Cluster pausado' : 'Despertando...'"></span>
+          <!-- Status badge -->
+          <span x-show="clusterStatus"
+            :class="{
+              'bg-green-100 text-green-700': clusterStatus === 'available',
+              'bg-yellow-100 text-yellow-700': ['resuming','pausing'].includes(clusterStatus),
+              'bg-gray-100 text-gray-500': clusterStatus === 'paused',
+            }"
+            class="text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1">
+            <span x-show="clusterStatus === 'available'">🟢 Cluster activo</span>
+            <span x-show="clusterStatus === 'paused'">⚫ Cluster pausado</span>
+            <span x-show="clusterStatus === 'resuming'"><span class="spin inline-block">⏳</span> Despertando...</span>
+            <span x-show="clusterStatus === 'pausing'"><span class="spin inline-block">⏳</span> Pausando...</span>
           </span>
-          <button @click="wakeCluster()" x-show="clusterStatus==='paused'"
-            class="text-xs px-3 py-1 rounded-lg text-white font-medium"
-            style="background:#1F4E78">
-            ⚡ Despertar cluster
+
+          <!-- Wake button (only when paused) -->
+          <button @click="wakeCluster()"
+            x-show="clusterStatus === 'paused'"
+            :disabled="clusterActionLoading"
+            class="text-xs px-3 py-1 rounded-lg text-white font-medium disabled:opacity-50"
+            style="background:#16a34a">
+            ▶ Encender
+          </button>
+
+          <!-- Pause button (only when available) -->
+          <button @click="pauseCluster()"
+            x-show="clusterStatus === 'available'"
+            :disabled="clusterActionLoading"
+            class="text-xs px-3 py-1 rounded-lg text-white font-medium disabled:opacity-50"
+            style="background:#dc2626">
+            ⏸ Apagar
           </button>
         </div>
       </div>
@@ -441,6 +463,8 @@
       config: null,
       errorMsg: null,
       clusterStatus: null,
+      clusterActionLoading: false,
+      clusterPollInterval: null,
 
       tab: 'reports',
       reports: [],
@@ -518,17 +542,27 @@
       async loadClusterStatus() {
         const data = await this.api('GET', '/cluster/status');
         this.clusterStatus = data?.status || null;
+        // Keep polling every 15s so status stays current
+        if (this.clusterPollInterval) clearInterval(this.clusterPollInterval);
+        this.clusterPollInterval = setInterval(async () => {
+          const d = await this.api('GET', '/cluster/status');
+          this.clusterStatus = d?.status || null;
+        }, 15000);
       },
 
       async wakeCluster() {
-        this.clusterStatus = 'resuming';
-        await this.api('POST', '/cluster/wake');
-        // Poll until available
-        const poll = setInterval(async () => {
-          const data = await this.api('GET', '/cluster/status');
-          this.clusterStatus = data?.status || null;
-          if (data?.status === 'available') clearInterval(poll);
-        }, 10000);
+        this.clusterActionLoading = true;
+        const data = await this.api('POST', '/cluster/wake');
+        this.clusterStatus = data?.status || 'resuming';
+        this.clusterActionLoading = false;
+      },
+
+      async pauseCluster() {
+        if (!confirm('¿Pausar el cluster Redshift? Los reportes en curso pueden fallar.')) return;
+        this.clusterActionLoading = true;
+        const data = await this.api('POST', '/cluster/pause');
+        this.clusterStatus = data?.status || 'pausing';
+        this.clusterActionLoading = false;
       },
 
       // ---- Execute ----
