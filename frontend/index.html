@@ -36,6 +36,19 @@
         <span class="font-semibold text-gray-800">Compliance Reports</span>
         <span class="text-gray-300">|</span>
         <span class="text-sm text-gray-500">Global66</span>
+        <div class="ml-auto flex items-center gap-2">
+          <span x-show="clusterStatus" :class="clusterStatus==='available' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'"
+            class="text-xs px-2 py-1 rounded-full font-medium">
+            <span x-show="clusterStatus==='available'">🟢 Cluster activo</span>
+            <span x-show="clusterStatus!=='available'" class="spin">⏳</span>
+            <span x-show="clusterStatus!=='available'" x-text="clusterStatus==='paused' ? 'Cluster pausado' : 'Despertando...'"></span>
+          </span>
+          <button @click="wakeCluster()" x-show="clusterStatus==='paused'"
+            class="text-xs px-3 py-1 rounded-lg text-white font-medium"
+            style="background:#1F4E78">
+            ⚡ Despertar cluster
+          </button>
+        </div>
       </div>
     </nav>
 
@@ -273,13 +286,16 @@
       <div x-show="currentRun" class="mb-4">
         <div :class="statusBadge(currentRun?.status)" class="rounded-lg px-4 py-3 text-sm">
           <div class="flex items-center gap-2 font-medium">
-            <span x-show="currentRun?.status === 'RUNNING'" class="spin">⏳</span>
+            <span x-show="['RUNNING','RESUMING'].includes(currentRun?.status)" class="spin">⏳</span>
             <span x-show="currentRun?.status === 'DONE'">✅</span>
             <span x-show="currentRun?.status === 'ERROR'">❌</span>
             <span x-text="statusLabel(currentRun?.status)"></span>
           </div>
+          <div x-show="currentRun?.status === 'RESUMING'" class="text-xs mt-1 opacity-75">
+            El cluster Redshift estaba pausado — despertando (3-5 min la primera vez)...
+          </div>
           <div x-show="currentRun?.status === 'RUNNING'" class="text-xs mt-1 opacity-75">
-            Verificando cada 5 segundos...
+            Ejecutando query en Redshift...
           </div>
           <div x-show="currentRun?.status === 'DONE'" class="mt-2 space-y-1">
             <p class="text-xs"><strong x-text="currentRun?.row_count"></strong> filas encontradas</p>
@@ -424,6 +440,7 @@
       loading: true,
       config: null,
       errorMsg: null,
+      clusterStatus: null,
 
       tab: 'reports',
       reports: [],
@@ -457,7 +474,7 @@
           this.loading = false;
           return;
         }
-        await Promise.all([this.loadReports(), this.loadRuns()]);
+        await Promise.all([this.loadReports(), this.loadRuns(), this.loadClusterStatus()]);
         this.loading = false;
       },
 
@@ -496,6 +513,22 @@
         const data = await this.api('GET', '/runs');
         this.runs = data?.runs || [];
         this.runsLoading = false;
+      },
+
+      async loadClusterStatus() {
+        const data = await this.api('GET', '/cluster/status');
+        this.clusterStatus = data?.status || null;
+      },
+
+      async wakeCluster() {
+        this.clusterStatus = 'resuming';
+        await this.api('POST', '/cluster/wake');
+        // Poll until available
+        const poll = setInterval(async () => {
+          const data = await this.api('GET', '/cluster/status');
+          this.clusterStatus = data?.status || null;
+          if (data?.status === 'available') clearInterval(poll);
+        }, 10000);
       },
 
       // ---- Execute ----
@@ -592,14 +625,20 @@
       // ---- Helpers ----
       statusBadge(s) {
         return {
-          RUNNING: 'bg-yellow-100 text-yellow-800',
-          DONE:    'bg-green-100 text-green-800',
-          ERROR:   'bg-red-100 text-red-800',
+          RESUMING: 'bg-blue-100 text-blue-800',
+          RUNNING:  'bg-yellow-100 text-yellow-800',
+          DONE:     'bg-green-100 text-green-800',
+          ERROR:    'bg-red-100 text-red-800',
         }[s] || 'bg-gray-100 text-gray-800';
       },
 
       statusLabel(s) {
-        return { RUNNING: 'Ejecutando', DONE: 'Completado', ERROR: 'Error' }[s] || s || '—';
+        return {
+          RESUMING: '⚡ Despertando cluster',
+          RUNNING:  '⏳ Ejecutando query',
+          DONE:     '✅ Completado',
+          ERROR:    '❌ Error',
+        }[s] || s || '—';
       },
 
       formatDate(iso) {

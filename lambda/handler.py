@@ -85,8 +85,8 @@ CONFIG_DIR = BASE_DIR / "config"
 TEMPLATES_DIR = BASE_DIR
 
 POLL_INTERVAL_SECONDS = 5
-MAX_WAIT_RESUME_SECONDS = 600   # 10 min
-MAX_WAIT_QUERY_SECONDS = 600    # 10 min
+MAX_WAIT_RESUME_SECONDS = 780   # 13 min (Lambda timeout is 900s)
+MAX_WAIT_QUERY_SECONDS = 540    # 9 min
 
 # ---------------------------------------------------------------------------
 # Report registry
@@ -617,6 +617,8 @@ def handler(event, context):  # noqa: ARG001
     }
 
     try:
+        # Signal the frontend that we're waking the cluster
+        _update_run(run_id, status="RESUMING")
         ensure_cluster_available()
 
         sql, api_params = render_query(report_name, since_date, only_successful, country_codes)

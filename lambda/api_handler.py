@@ -26,6 +26,9 @@ from boto3.dynamodb.conditions import Attr
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
 s3 = boto3.client("s3")
+redshift = boto3.client("redshift")
+
+CLUSTER_ID = os.environ.get("CLUSTER_IDENTIFIER", "compliance-redshift-cluster")
 
 RUNS_TABLE_NAME = os.environ["RUNS_TABLE"]
 CATALOG_TABLE_NAME = os.environ["CATALOG_TABLE"]
@@ -144,6 +147,14 @@ def handler(event, context):  # noqa: ARG001
         if method == "DELETE" and len(parts) == 2 and parts[0] == "queries":
             return delete_query(parts[1])
 
+        # GET /cluster/status
+        if method == "GET" and parts == ["cluster", "status"]:
+            return get_cluster_status()
+
+        # POST /cluster/wake
+        if method == "POST" and parts == ["cluster", "wake"]:
+            return wake_cluster()
+
         return resp(404, {"error": "Not found", "path": path, "method": method})
 
     except Exception as e:  # noqa: BLE001
@@ -261,6 +272,27 @@ def save_query(body: dict, created_by: str):
         "created_by": created_by,
     })
     return resp(201, {"report_name": report_name, "message": "Query guardada correctamente"})
+
+
+def get_cluster_status():
+    try:
+        r = redshift.describe_clusters(ClusterIdentifier=CLUSTER_ID)
+        status = r["Clusters"][0]["ClusterStatus"]
+    except Exception as e:
+        return resp(200, {"status": "unknown", "error": str(e)})
+    return resp(200, {"status": status})
+
+
+def wake_cluster():
+    try:
+        r = redshift.describe_clusters(ClusterIdentifier=CLUSTER_ID)
+        status = r["Clusters"][0]["ClusterStatus"]
+        if status == "paused":
+            redshift.resume_cluster(ClusterIdentifier=CLUSTER_ID)
+            return resp(200, {"status": "resuming", "message": "Cluster está despertando (3-5 min)"})
+        return resp(200, {"status": status, "message": "Cluster ya está disponible"})
+    except Exception as e:
+        return resp(500, {"error": str(e)})
 
 
 def delete_query(report_name: str):
