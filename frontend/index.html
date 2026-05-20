@@ -12,6 +12,8 @@
     textarea { font-family: 'Courier New', monospace; }
     .spin { animation: spin 1s linear infinite; display: inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .col-filter input { font-size: 11px; }
+    .ai-prose { white-space: pre-wrap; line-height: 1.7; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen" x-data="app()" x-init="init()" x-cloak>
@@ -29,17 +31,16 @@
 
     <!-- Top bar -->
     <nav class="bg-white shadow-sm border-b border-gray-200">
-      <div class="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
-        <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background:#1F4E78">
+      <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style="background:#1F4E78">
           <span class="text-white text-sm font-bold">CR</span>
         </div>
         <span class="font-semibold text-gray-800">Compliance Reports</span>
         <span class="text-gray-300">|</span>
         <span class="text-sm text-gray-500">Global66</span>
 
-        <!-- Cluster control panel -->
+        <!-- Cluster control -->
         <div class="ml-auto flex items-center gap-2">
-          <!-- Status badge -->
           <span x-show="clusterStatus"
             :class="{
               'bg-green-100 text-green-700': clusterStatus === 'available',
@@ -52,33 +53,23 @@
             <span x-show="clusterStatus === 'resuming'"><span class="spin inline-block">⏳</span> Despertando...</span>
             <span x-show="clusterStatus === 'pausing'"><span class="spin inline-block">⏳</span> Pausando...</span>
           </span>
-
-          <!-- Wake button (only when paused) -->
-          <button @click="wakeCluster()"
-            x-show="clusterStatus === 'paused'"
+          <button @click="wakeCluster()" x-show="clusterStatus === 'paused'"
             :disabled="clusterActionLoading"
             class="text-xs px-3 py-1 rounded-lg text-white font-medium disabled:opacity-50"
-            style="background:#16a34a">
-            ▶ Encender
-          </button>
-
-          <!-- Pause button (only when available) -->
-          <button @click="pauseCluster()"
-            x-show="clusterStatus === 'available'"
+            style="background:#16a34a">▶ Encender</button>
+          <button @click="pauseCluster()" x-show="clusterStatus === 'available'"
             :disabled="clusterActionLoading"
             class="text-xs px-3 py-1 rounded-lg text-white font-medium disabled:opacity-50"
-            style="background:#dc2626">
-            ⏸ Apagar
-          </button>
+            style="background:#dc2626">⏸ Apagar</button>
         </div>
       </div>
     </nav>
 
     <!-- Tabs -->
     <div class="bg-white border-b border-gray-200">
-      <div class="max-w-6xl mx-auto px-4">
+      <div class="max-w-7xl mx-auto px-4">
         <div class="flex gap-6">
-          <button @click="tab='reports'; loadReports()"
+          <button @click="tab='reports'; if(!resultsView) loadReports()"
             :class="tab==='reports' ? 'tab-active' : 'text-gray-500 hover:text-gray-700'"
             class="py-3 text-sm transition border-b-2 border-transparent">
             📊 Reportes
@@ -98,56 +89,144 @@
     </div>
 
     <!-- Content -->
-    <div class="max-w-6xl mx-auto px-4 py-6">
+    <div class="max-w-7xl mx-auto px-4 py-6">
 
       <!-- Error banner -->
       <div x-show="errorMsg"
         class="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm flex items-center justify-between">
         <span x-text="errorMsg"></span>
-        <button @click="errorMsg=null" class="text-red-400 hover:text-red-600 ml-4">×</button>
+        <button @click="errorMsg=null" class="text-red-400 hover:text-red-600 ml-4 text-lg leading-none">×</button>
       </div>
 
       <!-- ===================== TAB: REPORTES ===================== -->
       <div x-show="tab === 'reports'">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-semibold text-gray-800">Reportes disponibles</h2>
-          <button @click="loadReports()" class="text-sm text-gray-500 hover:text-gray-700">↺ Actualizar</button>
-        </div>
 
-        <div x-show="reportsLoading" class="text-center py-12 text-gray-400">
-          <div class="spin text-2xl">⏳</div>
-        </div>
-
-        <div x-show="!reportsLoading && reports.length === 0" class="text-center py-12 text-gray-400">
-          No hay reportes disponibles.
-        </div>
-
-        <div x-show="!reportsLoading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <template x-for="r in reports" :key="r.report_name">
-            <div class="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition">
-              <div class="flex items-start justify-between mb-2">
-                <h3 class="font-semibold text-gray-800 text-sm leading-snug" x-text="r.display_name"></h3>
-                <span x-show="r.is_custom"
-                  class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full ml-2 shrink-0">
-                  Custom
-                </span>
-              </div>
-              <p class="text-xs text-gray-500 mb-4 leading-relaxed" x-text="r.description"></p>
-              <div class="flex items-center gap-2">
-                <button @click="openRunModal(r)"
-                  class="flex-1 text-sm font-medium text-white py-2 px-3 rounded-lg transition"
-                  style="background:#1F4E78"
-                  onmouseover="this.style.background='#163a5c'"
-                  onmouseout="this.style.background='#1F4E78'">
-                  ▶ Ejecutar
-                </button>
-                <button x-show="r.is_custom" @click="deleteQuery(r.report_name)"
-                  class="text-sm text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 py-2 px-3 rounded-lg transition">
-                  🗑
-                </button>
-              </div>
+        <!-- Results view (full table after running) -->
+        <div x-show="resultsView">
+          <!-- Header -->
+          <div class="flex items-center gap-3 mb-4">
+            <button @click="resultsView = null; loadReports()"
+              class="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1">
+              ← Volver
+            </button>
+            <h2 class="text-lg font-semibold text-gray-800" x-text="resultsView?.display_name"></h2>
+            <span class="text-xs text-gray-400" x-text="'(' + (resultsView?.row_count ?? 0) + ' filas en total, mostrando preview de ' + (resultsView?.rows?.length ?? 0) + ')'"></span>
+            <div class="ml-auto flex items-center gap-2">
+              <a x-show="resultsView?.download_url" :href="resultsView?.download_url" target="_blank"
+                class="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 transition">
+                📥 Descargar Excel
+              </a>
+              <button @click="analyzeWithAI()"
+                :disabled="aiAnalysis.loading"
+                class="text-xs px-3 py-1.5 rounded-lg text-white font-medium disabled:opacity-50 flex items-center gap-1"
+                style="background:#7c3aed">
+                <span x-show="!aiAnalysis.loading">🤖 Analizar con IA</span>
+                <span x-show="aiAnalysis.loading"><span class="spin">⏳</span> Analizando...</span>
+              </button>
             </div>
-          </template>
+          </div>
+
+          <!-- AI Analysis panel -->
+          <div x-show="aiAnalysis.text || aiAnalysis.error" class="mb-4 bg-purple-50 border border-purple-200 rounded-xl p-4">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-semibold text-purple-700">🤖 Análisis de Gemini AI</span>
+              <button @click="aiAnalysis.text=''; aiAnalysis.error=''" class="text-purple-400 hover:text-purple-600 text-lg leading-none">×</button>
+            </div>
+            <div x-show="aiAnalysis.error" class="text-sm text-red-600" x-text="aiAnalysis.error"></div>
+            <div x-show="aiAnalysis.text" class="text-sm text-gray-700 ai-prose" x-text="aiAnalysis.text"></div>
+          </div>
+
+          <!-- Column filters -->
+          <div x-show="resultsView?.columns?.length" class="bg-white rounded-t-xl border border-b-0 border-gray-200 px-3 pt-3 pb-2">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-xs font-medium text-gray-500">🔍 Filtros por columna:</span>
+              <button @click="tableFilters = {}" class="text-xs text-gray-400 hover:text-gray-600">Limpiar</button>
+            </div>
+            <div class="flex flex-wrap gap-2 col-filter">
+              <template x-for="col in (resultsView?.columns || [])" :key="col">
+                <div class="flex flex-col gap-0.5">
+                  <span class="text-gray-400 truncate max-w-[120px]" style="font-size:10px" x-text="col"></span>
+                  <input type="text" :placeholder="'Filtrar...'"
+                    x-model="tableFilters[col]"
+                    class="border border-gray-200 rounded px-2 py-1 w-28 focus:outline-none focus:ring-1 focus:ring-blue-200" />
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Results table -->
+          <div class="overflow-auto border border-gray-200 rounded-b-xl bg-white" style="max-height: calc(100vh - 340px)">
+            <table class="w-full text-xs">
+              <thead class="bg-gray-50 sticky top-0 z-10">
+                <tr>
+                  <template x-for="col in (resultsView?.columns || [])" :key="col">
+                    <th class="px-3 py-2 text-left text-gray-600 font-medium whitespace-nowrap border-b border-r border-gray-200 cursor-pointer hover:bg-gray-100"
+                      @click="sortTable(col)">
+                      <span x-text="col"></span>
+                      <span x-show="sortCol === col" x-text="sortDir === 'asc' ? ' ↑' : ' ↓'" class="text-blue-500"></span>
+                    </th>
+                  </template>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row, i) in filteredRows" :key="i">
+                  <tr class="border-b border-gray-100 hover:bg-blue-50 transition">
+                    <template x-for="col in (resultsView?.columns || [])" :key="col">
+                      <td class="px-3 py-1.5 text-gray-700 whitespace-nowrap border-r border-gray-100" x-text="row[col] ?? '—'"></td>
+                    </template>
+                  </tr>
+                </template>
+                <tr x-show="filteredRows.length === 0">
+                  <td :colspan="resultsView?.columns?.length || 1" class="text-center py-8 text-gray-400">
+                    Sin resultados con los filtros aplicados.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="text-xs text-gray-400 mt-2 text-right"
+            x-text="filteredRows.length + ' de ' + (resultsView?.rows?.length ?? 0) + ' filas mostradas (preview de 50 max)'">
+          </div>
+        </div>
+
+        <!-- Report cards (hidden when results view active) -->
+        <div x-show="!resultsView">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold text-gray-800">Reportes disponibles</h2>
+            <button @click="loadReports()" class="text-sm text-gray-500 hover:text-gray-700">↺ Actualizar</button>
+          </div>
+
+          <div x-show="reportsLoading" class="text-center py-12 text-gray-400">
+            <div class="spin text-2xl">⏳</div>
+          </div>
+          <div x-show="!reportsLoading && reports.length === 0" class="text-center py-12 text-gray-400">
+            No hay reportes disponibles.
+          </div>
+
+          <div x-show="!reportsLoading" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <template x-for="r in reports" :key="r.report_name">
+              <div class="bg-white rounded-xl border border-gray-200 p-5 hover:shadow-md transition">
+                <div class="flex items-start justify-between mb-2">
+                  <h3 class="font-semibold text-gray-800 text-sm leading-snug" x-text="r.display_name"></h3>
+                  <span x-show="r.is_custom" class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full ml-2 shrink-0">Custom</span>
+                </div>
+                <p class="text-xs text-gray-500 mb-4 leading-relaxed" x-text="r.description"></p>
+                <div class="flex items-center gap-2">
+                  <button @click="openRunModal(r)"
+                    class="flex-1 text-sm font-medium text-white py-2 px-3 rounded-lg transition"
+                    style="background:#1F4E78"
+                    onmouseover="this.style.background='#163a5c'"
+                    onmouseout="this.style.background='#1F4E78'">
+                    ▶ Ejecutar
+                  </button>
+                  <button x-show="r.is_custom" @click="deleteQuery(r.report_name)"
+                    class="text-sm text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 py-2 px-3 rounded-lg transition">
+                    🗑
+                  </button>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
       </div>
 
@@ -161,7 +240,6 @@
         <div x-show="runsLoading" class="text-center py-12 text-gray-400">
           <div class="spin text-2xl">⏳</div>
         </div>
-
         <div x-show="!runsLoading && runs.length === 0" class="text-center py-12 text-gray-400">
           No hay ejecuciones registradas todavía.
         </div>
@@ -182,10 +260,7 @@
                 <tr class="hover:bg-gray-50 transition cursor-pointer" @click="openRunDetail(run.run_id)">
                   <td class="px-4 py-3 text-gray-700 font-medium" x-text="run.report_name.replace(/_/g,' ')"></td>
                   <td class="px-4 py-3">
-                    <span :class="statusBadge(run.status)"
-                      class="px-2 py-0.5 rounded-full text-xs font-medium"
-                      x-text="statusLabel(run.status)">
-                    </span>
+                    <span :class="statusBadge(run.status)" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="statusLabel(run.status)"></span>
                   </td>
                   <td class="px-4 py-3 text-gray-500" x-text="formatDate(run.started_at)"></td>
                   <td class="px-4 py-3 text-gray-700 text-right" x-text="run.row_count ?? '—'"></td>
@@ -207,49 +282,35 @@
             Guardá una query SQL para agregarla al catálogo. Se ejecutará sobre
             <code class="bg-gray-100 px-1 rounded">"db_prod"."transaction"."transaction"</code>.
           </p>
-
           <div class="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
             <div class="grid grid-cols-2 gap-4">
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">
-                  Nombre interno <span class="text-red-400">*</span>
-                </label>
-                <input x-model="queryForm.report_name" type="text"
-                  placeholder="ej: clientes_frecuentes_mx"
+                <label class="block text-sm font-medium text-gray-700 mb-1">Nombre interno <span class="text-red-400">*</span></label>
+                <input x-model="queryForm.report_name" type="text" placeholder="ej: clientes_frecuentes_mx"
                   class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200" />
                 <p class="text-xs text-gray-400 mt-1">Solo letras, números y guión bajo.</p>
               </div>
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Nombre visible</label>
-                <input x-model="queryForm.display_name" type="text"
-                  placeholder="ej: Clientes frecuentes MX"
+                <input x-model="queryForm.display_name" type="text" placeholder="ej: Clientes frecuentes MX"
                   class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200" />
               </div>
             </div>
-
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">Descripción</label>
-              <input x-model="queryForm.description" type="text"
-                placeholder="¿Qué detecta este reporte?"
+              <input x-model="queryForm.description" type="text" placeholder="¿Qué detecta este reporte?"
                 class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200" />
             </div>
-
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">
-                SQL <span class="text-red-400">*</span>
-              </label>
-              <textarea x-model="queryForm.sql" rows="12"
-                placeholder="SELECT ..."
-                class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 resize-y">
-              </textarea>
+              <label class="block text-sm font-medium text-gray-700 mb-1">SQL <span class="text-red-400">*</span></label>
+              <textarea x-model="queryForm.sql" rows="12" placeholder="SELECT ..."
+                class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 resize-y"></textarea>
             </div>
-
             <div x-show="queryMessage"
               :class="queryMessage?.type === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'"
               class="border rounded-lg px-4 py-3 text-sm">
               <span x-text="queryMessage?.text"></span>
             </div>
-
             <button @click="saveQuery()" :disabled="queryLoading"
               class="w-full py-2.5 text-sm font-medium text-white rounded-lg transition disabled:opacity-50"
               style="background:#1F4E78"
@@ -297,7 +358,6 @@
           </div>
         </template>
       </div>
-
       <div x-show="!selectedReport?.params?.length" class="mb-4">
         <p class="text-sm text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
           Este reporte no requiere parámetros. Usará los últimos 7 días automáticamente.
@@ -314,28 +374,24 @@
             <span x-text="statusLabel(currentRun?.status)"></span>
           </div>
           <div x-show="currentRun?.status === 'RESUMING'" class="text-xs mt-1 opacity-75">
-            El cluster Redshift estaba pausado — despertando (3-5 min la primera vez)...
+            El cluster estaba pausado — despertando (3-5 min la primera vez)...
           </div>
           <div x-show="currentRun?.status === 'RUNNING'" class="text-xs mt-1 opacity-75">
             Ejecutando query en Redshift...
           </div>
-          <div x-show="currentRun?.status === 'DONE'" class="mt-2 space-y-1">
-            <p class="text-xs"><strong x-text="currentRun?.row_count"></strong> filas encontradas</p>
-            <a :href="currentRun?.download_url" target="_blank"
-              class="inline-block text-xs underline font-medium">
-              📥 Descargar Excel
-            </a>
+          <div x-show="currentRun?.status === 'DONE'" class="mt-2 space-y-1 text-xs">
+            <p><strong x-text="currentRun?.row_count"></strong> filas encontradas</p>
+            <a :href="currentRun?.download_url" target="_blank" class="underline font-medium">📥 Descargar Excel</a>
           </div>
           <div x-show="currentRun?.status === 'ERROR'" class="text-xs mt-1">
             <span x-text="currentRun?.error_message || 'Error desconocido'"></span>
           </div>
         </div>
 
+        <!-- Mini preview in modal -->
         <div x-show="currentRun?.status === 'DONE' && currentRun?.result_preview?.length" class="mt-3">
-          <p class="text-xs font-medium text-gray-600 mb-1">
-            Preview (<span x-text="currentRun?.result_preview?.length"></span> filas)
-          </p>
-          <div class="overflow-auto max-h-48 border border-gray-200 rounded-lg text-xs">
+          <p class="text-xs text-gray-500 mb-1">Preview rápida (<span x-text="currentRun?.result_preview?.length"></span> filas)</p>
+          <div class="overflow-auto max-h-32 border border-gray-200 rounded-lg text-xs">
             <table class="w-full">
               <thead class="bg-gray-50 sticky top-0">
                 <tr>
@@ -346,7 +402,7 @@
               </thead>
               <tbody>
                 <template x-for="(row, i) in (currentRun?.result_preview || [])" :key="i">
-                  <tr class="border-b border-gray-100 hover:bg-gray-50">
+                  <tr class="border-b border-gray-100">
                     <template x-for="col in previewColumns" :key="col">
                       <td class="px-2 py-1 text-gray-700 whitespace-nowrap" x-text="row[col] ?? '—'"></td>
                     </template>
@@ -358,8 +414,9 @@
         </div>
       </div>
 
-      <div class="flex gap-2">
-        <button @click="closeModal()" class="flex-1 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition">
+      <!-- Actions -->
+      <div class="flex gap-2 flex-wrap">
+        <button @click="closeModal()" class="py-2 px-4 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition">
           Cerrar
         </button>
         <button x-show="!currentRun" @click="executeReport()" :disabled="runLoading"
@@ -368,88 +425,109 @@
           <span x-show="!runLoading">▶ Ejecutar ahora</span>
           <span x-show="runLoading"><span class="spin">⏳</span> Iniciando...</span>
         </button>
-        <button x-show="currentRun && currentRun.status !== 'RUNNING'" @click="resetRun()"
-          class="flex-1 py-2 text-sm font-medium text-white rounded-lg"
-          style="background:#1F4E78">
-          ↺ Ejecutar de nuevo
+        <!-- Ver tabla completa — appears when done with preview data -->
+        <button
+          x-show="currentRun?.status === 'DONE' && currentRun?.result_preview?.length"
+          @click="openResultsView()"
+          class="flex-1 py-2 text-sm font-medium text-white rounded-lg transition"
+          style="background:#059669">
+          📊 Ver tabla completa
+        </button>
+        <button x-show="currentRun && !['RUNNING','RESUMING'].includes(currentRun?.status)" @click="resetRun()"
+          class="py-2 px-4 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition">
+          ↺ Volver a ejecutar
         </button>
       </div>
     </div>
   </div>
 
-  <!-- ===================== MODAL: DETALLE DE RUN ===================== -->
-  <div x-show="showDetailModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center">
+  <!-- ===================== MODAL: DETALLE DE RUN (HISTORIAL) ===================== -->
+  <div x-show="showDetailModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
     <div class="absolute inset-0 bg-black/40" @click="showDetailModal=false"></div>
-    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 p-6 max-h-[90vh] overflow-y-auto">
-      <div class="flex items-start justify-between mb-4">
+    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-5xl mx-auto flex flex-col" style="max-height: 90vh">
+
+      <!-- Modal header -->
+      <div class="flex items-center justify-between p-5 border-b border-gray-200 shrink-0">
         <h3 class="font-semibold text-gray-800">Detalle de ejecución</h3>
-        <button @click="showDetailModal=false" class="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        <div class="flex items-center gap-2">
+          <button x-show="runDetail?.result_preview?.length"
+            @click="openResultsViewFromDetail()"
+            class="text-xs px-3 py-1.5 text-white rounded-lg font-medium"
+            style="background:#059669">
+            📊 Ver tabla completa
+          </button>
+          <button @click="showDetailModal=false" class="text-gray-400 hover:text-gray-600 text-2xl leading-none ml-2">×</button>
+        </div>
       </div>
 
-      <div x-show="detailLoading" class="text-center py-8 text-gray-400">
-        <div class="spin text-2xl">⏳</div>
-      </div>
-
-      <div x-show="!detailLoading && runDetail">
-        <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4">
-          <div>
-            <dt class="text-gray-500 text-xs">Reporte</dt>
-            <dd class="font-medium text-gray-800" x-text="runDetail?.report_name?.replace(/_/g,' ')"></dd>
-          </div>
-          <div>
-            <dt class="text-gray-500 text-xs">Estado</dt>
-            <dd>
-              <span :class="statusBadge(runDetail?.status)"
-                class="px-2 py-0.5 rounded-full text-xs font-medium"
-                x-text="statusLabel(runDetail?.status)"></span>
-            </dd>
-          </div>
-          <div>
-            <dt class="text-gray-500 text-xs">Iniciado</dt>
-            <dd class="text-gray-700" x-text="formatDate(runDetail?.started_at)"></dd>
-          </div>
-          <div>
-            <dt class="text-gray-500 text-xs">Completado</dt>
-            <dd class="text-gray-700" x-text="formatDate(runDetail?.completed_at)"></dd>
-          </div>
-          <div>
-            <dt class="text-gray-500 text-xs">Filas</dt>
-            <dd class="text-gray-700" x-text="runDetail?.row_count ?? '—'"></dd>
-          </div>
-          <div x-show="runDetail?.download_url">
-            <dt class="text-gray-500 text-xs">Excel</dt>
-            <dd><a :href="runDetail?.download_url" target="_blank" class="text-blue-600 underline text-xs">📥 Descargar</a></dd>
-          </div>
-        </dl>
-
-        <div x-show="runDetail?.error_message"
-          class="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-700 mb-4">
-          <span x-text="runDetail?.error_message"></span>
+      <!-- Modal body -->
+      <div class="overflow-y-auto p-5 flex-1">
+        <div x-show="detailLoading" class="text-center py-12 text-gray-400">
+          <div class="spin text-2xl">⏳</div>
         </div>
 
-        <div x-show="runDetail?.result_preview?.length">
-          <p class="text-xs font-medium text-gray-600 mb-2">
-            Preview — primeras <span x-text="runDetail?.result_preview?.length"></span> filas
-          </p>
-          <div class="overflow-auto max-h-64 border border-gray-200 rounded-lg text-xs">
-            <table class="w-full">
-              <thead class="bg-gray-50 sticky top-0">
-                <tr>
-                  <template x-for="col in detailColumns" :key="col">
-                    <th class="px-2 py-1 text-left text-gray-600 font-medium whitespace-nowrap border-b" x-text="col"></th>
-                  </template>
-                </tr>
-              </thead>
-              <tbody>
-                <template x-for="(row, i) in (runDetail?.result_preview || [])" :key="i">
-                  <tr class="border-b border-gray-100 hover:bg-gray-50">
+        <div x-show="!detailLoading && runDetail">
+          <!-- Metadata grid -->
+          <dl class="grid grid-cols-3 gap-x-6 gap-y-3 text-sm mb-5 bg-gray-50 rounded-xl p-4">
+            <div>
+              <dt class="text-gray-400 text-xs mb-0.5">Reporte</dt>
+              <dd class="font-medium text-gray-800" x-text="runDetail?.report_name?.replace(/_/g,' ')"></dd>
+            </div>
+            <div>
+              <dt class="text-gray-400 text-xs mb-0.5">Estado</dt>
+              <dd>
+                <span :class="statusBadge(runDetail?.status)" class="px-2 py-0.5 rounded-full text-xs font-medium"
+                  x-text="statusLabel(runDetail?.status)"></span>
+              </dd>
+            </div>
+            <div>
+              <dt class="text-gray-400 text-xs mb-0.5">Filas</dt>
+              <dd class="font-medium text-gray-800" x-text="runDetail?.row_count ?? '—'"></dd>
+            </div>
+            <div>
+              <dt class="text-gray-400 text-xs mb-0.5">Iniciado</dt>
+              <dd class="text-gray-700" x-text="formatDate(runDetail?.started_at)"></dd>
+            </div>
+            <div>
+              <dt class="text-gray-400 text-xs mb-0.5">Completado</dt>
+              <dd class="text-gray-700" x-text="formatDate(runDetail?.completed_at)"></dd>
+            </div>
+            <div x-show="runDetail?.download_url">
+              <dt class="text-gray-400 text-xs mb-0.5">Excel</dt>
+              <dd><a :href="runDetail?.download_url" target="_blank" class="text-blue-600 underline text-xs">📥 Descargar</a></dd>
+            </div>
+          </dl>
+
+          <div x-show="runDetail?.error_message"
+            class="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-700 mb-4">
+            <span x-text="runDetail?.error_message"></span>
+          </div>
+
+          <!-- Preview table — larger -->
+          <div x-show="runDetail?.result_preview?.length">
+            <p class="text-xs font-medium text-gray-500 mb-2">
+              Preview — primeras <span x-text="runDetail?.result_preview?.length"></span> filas
+            </p>
+            <div class="overflow-auto border border-gray-200 rounded-xl" style="max-height: 50vh">
+              <table class="w-full text-xs">
+                <thead class="bg-gray-50 sticky top-0">
+                  <tr>
                     <template x-for="col in detailColumns" :key="col">
-                      <td class="px-2 py-1 text-gray-700 whitespace-nowrap" x-text="row[col] ?? '—'"></td>
+                      <th class="px-3 py-2 text-left text-gray-600 font-medium whitespace-nowrap border-b border-r border-gray-200" x-text="col"></th>
                     </template>
                   </tr>
-                </template>
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  <template x-for="(row, i) in (runDetail?.result_preview || [])" :key="i">
+                    <tr class="border-b border-gray-100 hover:bg-blue-50 transition">
+                      <template x-for="col in detailColumns" :key="col">
+                        <td class="px-3 py-2 text-gray-700 whitespace-nowrap border-r border-gray-100" x-text="row[col] ?? '—'"></td>
+                      </template>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -457,6 +535,8 @@
   </div>
 
   <script>
+  const GEMINI_KEY = 'AIzaSyBHziT8y9cNSNYkKLeFKh0HhetGk7LbCC8';
+
   function app() {
     return {
       loading: true,
@@ -472,6 +552,7 @@
       runs: [],
       runsLoading: false,
 
+      // Run modal
       showRunModal: false,
       selectedReport: null,
       runParams: {},
@@ -479,10 +560,19 @@
       currentRun: null,
       pollInterval: null,
 
+      // Detail modal (history)
       showDetailModal: false,
       runDetail: null,
       detailLoading: false,
 
+      // Full results view
+      resultsView: null,      // { display_name, report_name, rows, columns, download_url, row_count }
+      tableFilters: {},
+      sortCol: null,
+      sortDir: 'asc',
+      aiAnalysis: { loading: false, text: '', error: '' },
+
+      // SQL editor
       queryForm: { report_name: '', display_name: '', description: '', sql: '' },
       queryLoading: false,
       queryMessage: null,
@@ -506,18 +596,14 @@
       async api(method, path, body = null) {
         try {
           const base = this.config.apiUrl.replace(/\/$/, '');
-          const headers = { 'Content-Type': 'application/json' };
           const r = await fetch(`${base}${path}`, {
             method,
-            headers,
+            headers: { 'Content-Type': 'application/json' },
             credentials: 'omit',
             body: body ? JSON.stringify(body) : undefined,
           });
           const data = await r.json();
-          if (!r.ok) {
-            this.errorMsg = data?.error || `Error ${r.status}`;
-            return null;
-          }
+          if (!r.ok) { this.errorMsg = data?.error || `Error ${r.status}`; return null; }
           return data;
         } catch (e) {
           this.errorMsg = 'Error de red al conectar con la API.';
@@ -542,7 +628,6 @@
       async loadClusterStatus() {
         const data = await this.api('GET', '/cluster/status');
         this.clusterStatus = data?.status || null;
-        // Keep polling every 15s so status stays current
         if (this.clusterPollInterval) clearInterval(this.clusterPollInterval);
         this.clusterPollInterval = setInterval(async () => {
           const d = await this.api('GET', '/cluster/status');
@@ -565,14 +650,14 @@
         this.clusterActionLoading = false;
       },
 
-      // ---- Execute ----
+      // ---- Run modal ----
       openRunModal(report) {
         this.selectedReport = report;
         const today = new Date();
         const firstDay = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-01`;
         this.runParams = {};
         for (const p of (report.params || [])) {
-          this.runParams[p.name] = p.type === 'date' ? firstDay : p.default ?? false;
+          this.runParams[p.name] = p.type === 'date' ? firstDay : (p.default ?? false);
         }
         this.currentRun = null;
         this.showRunModal = true;
@@ -584,10 +669,7 @@
         this.currentRun = null;
       },
 
-      resetRun() {
-        this.currentRun = null;
-        this.runLoading = false;
-      },
+      resetRun() { this.currentRun = null; this.runLoading = false; },
 
       async executeReport() {
         this.runLoading = true;
@@ -620,7 +702,122 @@
         return p?.length ? Object.keys(p[0]) : [];
       },
 
-      // ---- Run detail ----
+      // ---- Full results view ----
+      openResultsView() {
+        const preview = this.currentRun?.result_preview || [];
+        const cols = preview.length ? Object.keys(preview[0]) : [];
+        this.resultsView = {
+          display_name: this.selectedReport?.display_name || this.currentRun?.report_name,
+          report_name: this.currentRun?.report_name,
+          rows: preview,
+          columns: cols,
+          download_url: this.currentRun?.download_url,
+          row_count: this.currentRun?.row_count,
+        };
+        this.tableFilters = {};
+        this.sortCol = null;
+        this.aiAnalysis = { loading: false, text: '', error: '' };
+        this.closeModal();
+        this.tab = 'reports';
+      },
+
+      openResultsViewFromDetail() {
+        const preview = this.runDetail?.result_preview || [];
+        const cols = preview.length ? Object.keys(preview[0]) : [];
+        this.resultsView = {
+          display_name: this.runDetail?.report_name?.replace(/_/g,' '),
+          report_name: this.runDetail?.report_name,
+          rows: preview,
+          columns: cols,
+          download_url: this.runDetail?.download_url,
+          row_count: this.runDetail?.row_count,
+        };
+        this.tableFilters = {};
+        this.sortCol = null;
+        this.aiAnalysis = { loading: false, text: '', error: '' };
+        this.showDetailModal = false;
+        this.tab = 'reports';
+      },
+
+      get filteredRows() {
+        if (!this.resultsView?.rows) return [];
+        let rows = this.resultsView.rows;
+        // Apply column filters
+        for (const [col, val] of Object.entries(this.tableFilters)) {
+          if (val && val.trim()) {
+            const q = val.trim().toLowerCase();
+            rows = rows.filter(r => String(r[col] ?? '').toLowerCase().includes(q));
+          }
+        }
+        // Apply sort
+        if (this.sortCol) {
+          const dir = this.sortDir === 'asc' ? 1 : -1;
+          rows = [...rows].sort((a, b) => {
+            const av = a[this.sortCol] ?? '';
+            const bv = b[this.sortCol] ?? '';
+            return String(av).localeCompare(String(bv), undefined, { numeric: true }) * dir;
+          });
+        }
+        return rows;
+      },
+
+      sortTable(col) {
+        if (this.sortCol === col) {
+          this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          this.sortCol = col;
+          this.sortDir = 'asc';
+        }
+      },
+
+      // ---- AI Analysis ----
+      async analyzeWithAI() {
+        if (!this.resultsView?.rows?.length) return;
+        this.aiAnalysis = { loading: true, text: '', error: '' };
+
+        const rows = this.resultsView.rows;
+        const cols = this.resultsView.columns;
+        const sample = rows.slice(0, 20);
+        const reportName = this.resultsView.display_name;
+        const totalRows = this.resultsView.row_count;
+
+        const prompt = `Eres un analista de compliance especializado en AML (Anti-Money Laundering) para Global66, una fintech de remesas internacionales en LATAM.
+
+Analiza los siguientes resultados del reporte "${reportName}":
+- Total de filas en el reporte: ${totalRows}
+- Columnas: ${cols.join(', ')}
+- Muestra de hasta 20 filas:
+${JSON.stringify(sample, null, 2)}
+
+Por favor proporciona:
+1. **Resumen ejecutivo** (2-3 oraciones sobre qué muestran los datos)
+2. **Hallazgos principales** (patrones, valores atípicos, riesgos detectados)
+3. **Recomendaciones** (acciones concretas para el equipo de compliance)
+
+Sé conciso, directo y enfocado en riesgos de compliance/AML. Responde en español.`;
+
+        try {
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: { temperature: 0.3, maxOutputTokens: 1024 }
+              })
+            }
+          );
+          const json = await res.json();
+          if (!res.ok) throw new Error(json?.error?.message || 'Error de Gemini API');
+          const text = json?.candidates?.[0]?.content?.parts?.[0]?.text || 'Sin respuesta';
+          this.aiAnalysis = { loading: false, text, error: '' };
+        } catch (e) {
+          this.aiAnalysis = { loading: false, text: '', error: `Error al contactar Gemini: ${e.message}` };
+        }
+      },
+
+      // ---- Detail modal ----
       async openRunDetail(run_id) {
         this.showDetailModal = true;
         this.detailLoading = true;
