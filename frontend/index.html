@@ -329,7 +329,7 @@
   <!-- ===================== MODAL: EJECUTAR REPORTE ===================== -->
   <div x-show="showRunModal" x-transition class="fixed inset-0 z-50 flex items-center justify-center">
     <div class="absolute inset-0 bg-black/40" @click="closeModal()"></div>
-    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6">
+    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 p-6">
 
       <div class="flex items-start justify-between mb-4">
         <div>
@@ -777,24 +777,75 @@
 
         const rows = this.resultsView.rows;
         const cols = this.resultsView.columns;
-        const sample = rows.slice(0, 20);
+        const sample = rows.slice(0, 50);
         const reportName = this.resultsView.display_name;
         const totalRows = this.resultsView.row_count;
 
-        const prompt = `Eres un analista de compliance especializado en AML (Anti-Money Laundering) para Global66, una fintech de remesas internacionales en LATAM.
+        // Compute quick aggregate stats from the preview sample
+        const totalAmountCol = cols.find(c => /total_amount|monto|amount_usd/i.test(c));
+        const txCountCol = cols.find(c => /total_trx|total_transactions|count|cantidad/i.test(c));
+        const countryCol = cols.find(c => /country|pais/i.test(c));
+        const customerCol = cols.find(c => /customer|cliente/i.test(c));
 
-Analiza los siguientes resultados del reporte "${reportName}":
-- Total de filas en el reporte: ${totalRows}
-- Columnas: ${cols.join(', ')}
-- Muestra de hasta 20 filas:
+        let statsBlock = '';
+        if (totalAmountCol) {
+          const totalUSD = rows.reduce((s, r) => s + (parseFloat(r[totalAmountCol]) || 0), 0);
+          statsBlock += `\n- Suma total ${totalAmountCol} en muestra: USD ${totalUSD.toLocaleString('es-CL', {maximumFractionDigits:2})}`;
+        }
+        if (txCountCol) {
+          const totalTrx = rows.reduce((s, r) => s + (parseInt(r[txCountCol]) || 0), 0);
+          statsBlock += `\n- Total TRX en muestra: ${totalTrx.toLocaleString('es-CL')}`;
+        }
+        if (countryCol) {
+          const countries = [...new Set(rows.map(r => r[countryCol]).filter(Boolean))];
+          statsBlock += `\n- Países/jurisdicciones en muestra: ${countries.join(', ')}`;
+        }
+        if (customerCol) {
+          const uniqueCustomers = new Set(rows.map(r => r[customerCol]).filter(Boolean)).size;
+          statsBlock += `\n- Clientes únicos en muestra: ${uniqueCustomers}`;
+        }
+
+        const prompt = `Eres un analista senior de compliance AML (Anti-Money Laundering) en Global66, fintech de remesas internacionales en LATAM regulada bajo normativa FATF/OFAC/UAF.
+
+REPORTE: "${reportName}"
+FILAS TOTALES: ${totalRows ?? 'N/D'}
+COLUMNAS DISPONIBLES: ${cols.join(', ')}
+ESTADÍSTICAS RÁPIDAS (muestra de ${rows.length} filas):${statsBlock || ' (no calculadas)'}
+
+MUESTRA DE DATOS (hasta ${rows.length} registros):
 ${JSON.stringify(sample, null, 2)}
 
-Por favor proporciona:
-1. **Resumen ejecutivo** (2-3 oraciones sobre qué muestran los datos)
-2. **Hallazgos principales** (patrones, valores atípicos, riesgos detectados)
-3. **Recomendaciones** (acciones concretas para el equipo de compliance)
+---
+Realiza un análisis AML profundo estructurado así:
 
-Sé conciso, directo y enfocado en riesgos de compliance/AML. Responde en español.`;
+**1. VOLUMEN Y MAGNITUD**
+- Total de transacciones y montos en el reporte completo (${totalRows} filas)
+- Distribución por montos: ¿hay concentración en rangos específicos?
+- Comparación con lo esperado para el período
+
+**2. PATRONES AML DETECTADOS**
+- Estructuración / Smurfing: transacciones fraccionadas para evadir umbrales
+- Layering geográfico: uso de múltiples países/jurisdicciones de alto riesgo
+- Concentración: clientes o países con volumen desproporcionado
+- Mismatch SWIFT: si aplica, analizar inconsistencias banco vs país declarado
+- Frecuencia inusual: clientes con cantidad de TRX fuera de rango normal
+
+**3. CASOS BORDE Y ALERTAS PRIORITARIAS**
+- Los 3-5 registros/clientes más sospechosos con justificación específica
+- Outliers de monto o frecuencia que requieren revisión inmediata
+- Combinaciones de riesgo (país FATF + monto alto + mismatch)
+
+**4. COMPORTAMIENTO POR SEGMENTO**
+- Diferencias entre países/jurisdicciones
+- Segmentos de clientes con comportamiento atípico
+
+**5. RECOMENDACIONES ACCIONABLES**
+- Qué casos escalar a revisión manual inmediata
+- Qué alertas configurar o actualizar
+- Si se justifica un SAR (Suspicious Activity Report)
+
+Sé directo, técnico y orientado a decisiones. Responde en español.`;
+
 
         try {
           const res = await fetch(
@@ -804,7 +855,7 @@ Sé conciso, directo y enfocado en riesgos de compliance/AML. Responde en españ
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { temperature: 0.3, maxOutputTokens: 1024 }
+                generationConfig: { temperature: 0.3, maxOutputTokens: 2048 }
               })
             }
           );
