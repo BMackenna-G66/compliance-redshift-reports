@@ -113,6 +113,10 @@ def handler(event, context):  # noqa: ARG001
         body = {}
 
     try:
+        # CORS preflight — return 200 so the browser accepts the request
+        if method == "OPTIONS":
+            return resp(200, {})
+
         # GET /reports
         if method == "GET" and not parts:
             return resp(200, {"message": "Compliance Reports API"})

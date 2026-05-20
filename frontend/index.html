@@ -464,9 +464,12 @@
       // ---- API ----
       async api(method, path, body = null) {
         try {
-          const r = await fetch(`${this.config.apiUrl}${path}`, {
+          const base = this.config.apiUrl.replace(/\/$/, '');
+          const headers = { 'Content-Type': 'application/json' };
+          const r = await fetch(`${base}${path}`, {
             method,
-            headers: { 'Content-Type': 'application/json' },
+            headers,
+            credentials: 'omit',
             body: body ? JSON.stringify(body) : undefined,
           });
           const data = await r.json();
