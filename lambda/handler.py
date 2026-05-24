@@ -851,15 +851,18 @@ def handler(event, context):  # noqa: ARG001
 
         total_rows = summary.get("total_transactions") or summary.get("total_rows", 0)
         subject = f"[Compliance] {display_name} — {total_rows} rows"
-        html = render_email_html(summary, params, s3_url)
 
-        # Email is best-effort: SES identity may not be verified yet.
+        # Email + Slack are best-effort — never fail the run
         try:
+            html = render_email_html(summary, params, s3_url)
             send_email(html, xlsx_bytes, Path(key).name, subject)
         except Exception as e:  # noqa: BLE001
             logger.warning("Email delivery failed (non-blocking): %s", e)
 
-        post_slack(summary, params, s3_url, report_name)
+        try:
+            post_slack(summary, params, s3_url, report_name)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Slack notification failed (non-blocking): %s", e)
 
         # Update DynamoDB run record to DONE (best-effort)
         result_preview = rows[:10]  # first 10 rows for in-browser preview
