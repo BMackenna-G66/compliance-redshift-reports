@@ -462,7 +462,8 @@ def execute_report(body: dict):
     })
 
     # Invoke report Lambda asynchronously (Event type = fire and forget)
-    payload = {**body, "run_id": run_id}
+    # Forward keep_session so the Lambda skips auto-pause when set
+    payload = {**body, "run_id": run_id, "keep_session": bool(body.get("keep_session", False))}
     lambda_client.invoke(
         FunctionName=REPORT_LAMBDA_NAME,
         InvocationType="Event",

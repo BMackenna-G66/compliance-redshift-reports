@@ -894,5 +894,6 @@ def handler(event, context):  # noqa: ARG001
         raise
 
     finally:
-        if AUTO_PAUSE:
+        keep_session = event.get("keep_session", False)
+        if AUTO_PAUSE and not keep_session:
             pause_cluster()
