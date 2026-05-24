@@ -44,6 +44,25 @@ resource "aws_dynamodb_table" "catalog" {
 }
 
 # ---------------------------------------------------------------------------
+# DynamoDB — whitelist
+# ---------------------------------------------------------------------------
+resource "aws_dynamodb_table" "whitelist" {
+  name         = "${var.project_name}-whitelist"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "whitelist_id"
+
+  attribute {
+    name = "whitelist_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Cognito User Pool
 # ---------------------------------------------------------------------------
 resource "aws_cognito_user_pool" "main" {
@@ -154,6 +173,7 @@ data "aws_iam_policy_document" "api_lambda_inline" {
     resources = [
       aws_dynamodb_table.runs.arn,
       aws_dynamodb_table.catalog.arn,
+      aws_dynamodb_table.whitelist.arn,
     ]
   }
 
@@ -194,10 +214,11 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      RUNS_TABLE    = aws_dynamodb_table.runs.name
-      CATALOG_TABLE = aws_dynamodb_table.catalog.name
-      REPORT_LAMBDA = aws_lambda_function.report.function_name
-      S3_BUCKET     = aws_s3_bucket.reports.bucket
+      RUNS_TABLE      = aws_dynamodb_table.runs.name
+      CATALOG_TABLE   = aws_dynamodb_table.catalog.name
+      REPORT_LAMBDA   = aws_lambda_function.report.function_name
+      S3_BUCKET       = aws_s3_bucket.reports.bucket
+      WHITELIST_TABLE = aws_dynamodb_table.whitelist.name
     }
   }
 }

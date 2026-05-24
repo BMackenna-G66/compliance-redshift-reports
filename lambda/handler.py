@@ -78,6 +78,7 @@ REPORT_NAME = os.environ.get("REPORT_NAME", "high_risk_countries")
 AUTO_PAUSE = os.environ.get("AUTO_PAUSE", "true").lower() == "true"
 RUNS_TABLE_NAME = os.environ.get("RUNS_TABLE", "")
 CATALOG_TABLE_NAME = os.environ.get("CATALOG_TABLE", "")
+WHITELIST_TABLE_NAME = os.environ.get("WHITELIST_TABLE", "")
 
 BASE_DIR = Path(__file__).parent
 QUERIES_DIR = BASE_DIR / "queries"
@@ -108,6 +109,162 @@ REPORT_CONFIGS: dict[str, dict] = {
     "top_customers_by_range_country": {
         "display_name": "Top Customers by Range & Country (7d)",
         "sql_file": "top_customers_by_range_country.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "tax_haven_transactions": {
+        "display_name": "Transacciones a Régimen Fiscal Preferencial (90d)",
+        "sql_file": "tax_haven_transactions.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "tax_haven_funding": {
+        "display_name": "Fondeos desde Régimen Fiscal Preferencial (7d)",
+        "sql_file": "tax_haven_funding.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "payin_payout_accumulation": {
+        "display_name": "Acumulación Pay In → Pay Out (7d)",
+        "sql_file": "payin_payout_accumulation.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "small_payin_structuring": {
+        "display_name": "Pay In Pequeños → Pay Out (Smurfing, 7d)",
+        "sql_file": "small_payin_structuring.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "velocity_payin_payout": {
+        "display_name": "Velocity Pay In ↔ Pay Out < 24h (7d)",
+        "sql_file": "velocity_payin_payout.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "external_funder_single": {
+        "display_name": "Tercero que Fondea Una Sola Cuenta (7d)",
+        "sql_file": "external_funder_single.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "external_funder_multiple": {
+        "display_name": "Tercero que Fondea Múltiples Cuentas (7d)",
+        "sql_file": "external_funder_multiple.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "circular_transactions": {
+        "display_name": "Circularidad DNI Cliente ↔ Beneficiario (90d)",
+        "sql_file": "circular_transactions.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "structuring_detection": {
+        "display_name": "Estructuración / Fraccionamiento (7d)",
+        "sql_file": "structuring_detection.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "shared_beneficiary": {
+        "display_name": "Beneficiario Compartido por Múltiples Remitentes (7d)",
+        "sql_file": "shared_beneficiary.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "customer_metrics_7d": {
+        "display_name": "Métricas por Cliente B2C (7d)",
+        "sql_file": "customer_metrics_7d.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "beneficiary_concentration": {
+        "display_name": "Concentración de Beneficiarios (7d)",
+        "sql_file": "beneficiary_concentration.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "beneficiary_dispersion": {
+        "display_name": "Dispersión de Beneficiarios (7d)",
+        "sql_file": "beneficiary_dispersion.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "outbound_bank_change": {
+        "display_name": "Cambio de Banco Outbound (30d vs 7d)",
+        "sql_file": "outbound_bank_change.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "new_corridor_detection": {
+        "display_name": "Corredor Nuevo para el Cliente (7d vs 90d)",
+        "sql_file": "new_corridor_detection.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "high_volume_vs_historical": {
+        "display_name": "Alto Volumen vs Histórico (7d vs 90d)",
+        "sql_file": "high_volume_vs_historical.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "swift_mismatch_detection": {
+        "display_name": "Mismatch SWIFT vs País Beneficiario (30d)",
+        "sql_file": "swift_mismatch_detection.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "jumio_kyc_approval_rates": {
+        "display_name": "Tasas de Aprobación / Rechazo KYC por Flujo",
+        "sql_file": "jumio_kyc_approval_rates.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "jumio_duplicate_flows": {
+        "display_name": "Documentos Jumio Duplicados / Flujos Múltiples",
+        "sql_file": "jumio_duplicate_flows.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "b2c_as_legal_rep": {
+        "display_name": "Clientes B2C como Representantes Legales",
+        "sql_file": "b2c_as_legal_rep.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "top_companies_by_legal_reps": {
+        "display_name": "Top 15 Empresas con Más Representantes Legales",
+        "sql_file": "top_companies_by_legal_reps.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "age_anomaly_customers": {
+        "display_name": "Clientes con Anomalía de Edad (<18 o >90 años)",
+        "sql_file": "age_anomaly_customers.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "crypto_bridge_transactions": {
+        "display_name": "Transacciones Bridge/Crypto (30d)",
+        "sql_file": "crypto_bridge_transactions.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "crypto_bridge_cash_calls": {
+        "display_name": "Cash Calls Bridge/Crypto (30d)",
+        "sql_file": "crypto_bridge_cash_calls.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "crypto_high_risk_destinations": {
+        "display_name": "Crypto hacia Países de Riesgo (30d)",
+        "sql_file": "crypto_high_risk_destinations.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "crypto_full_bridge_activity": {
+        "display_name": "Actividad Completa Bridge (30d)",
+        "sql_file": "crypto_full_bridge_activity.sql",
         "needs_country_filter": False,
         "needs_since_date": False,
     },
@@ -172,6 +329,54 @@ def pause_cluster() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Whitelist support
+# ---------------------------------------------------------------------------
+def fetch_active_whitelist(report_name: str = "") -> list[dict]:
+    """Fetch non-expired whitelist entries. Returns global + report-specific."""
+    if not WHITELIST_TABLE_NAME:
+        return []
+    try:
+        from boto3.dynamodb.conditions import Attr
+        table = dynamodb.Table(WHITELIST_TABLE_NAME)
+        now_ts = int(time.time())
+        result = table.scan(
+            FilterExpression=Attr("expires_at").gt(now_ts)
+        )
+        entries = result.get("Items", [])
+        # Filter: global entries OR entries matching this report
+        return [
+            e for e in entries
+            if e.get("scope") == "global" or e.get("report_name") == report_name
+        ]
+    except Exception as e:  # noqa: BLE001
+        logger.warning("fetch_active_whitelist failed (non-blocking): %s", e)
+        return []
+
+
+def inject_whitelist_exclusions(sql: str, whitelist_entries: list[dict]) -> str:
+    """Wrap SQL in a subquery that excludes whitelisted entities."""
+    if not whitelist_entries:
+        return sql
+    # Group exclusions by field
+    by_field: dict[str, list[str]] = {}
+    for entry in whitelist_entries:
+        field = entry.get("entity_field", "").strip()
+        value = str(entry.get("entity_value", "")).strip()
+        if field and value:
+            by_field.setdefault(field, []).append(value)
+    if not by_field:
+        return sql
+    conditions = []
+    for field, values in by_field.items():
+        quoted = ", ".join(f"'{v.replace(chr(39), chr(39)+chr(39))}'" for v in values)
+        conditions.append(f"CAST({field} AS VARCHAR) NOT IN ({quoted})")
+    where_clause = " AND ".join(conditions)
+    wrapped = f"SELECT * FROM (\n{sql}\n) _wt_base\nWHERE {where_clause}"
+    logger.info("Whitelist injection: excluded %d entries across %d fields", len(whitelist_entries), len(by_field))
+    return wrapped
+
+
+# ---------------------------------------------------------------------------
 # Query rendering + execution
 # ---------------------------------------------------------------------------
 def load_country_codes() -> list[dict]:
@@ -209,6 +414,11 @@ def render_query(
         sql = _load_custom_sql(report_name)
         if not sql:
             raise ValueError(f"Report '{report_name}' not found in built-in registry or catalog")
+
+    # Inject whitelist exclusions
+    whitelist_entries = fetch_active_whitelist(report_name)
+    if whitelist_entries:
+        sql = inject_whitelist_exclusions(sql, whitelist_entries)
 
     return sql, api_params
 

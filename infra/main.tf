@@ -178,7 +178,7 @@ data "aws_iam_policy_document" "lambda_inline" {
     resources = [aws_secretsmanager_secret.slack_webhook.arn]
   }
 
-  # DynamoDB — run history + catalog (defined in frontend.tf)
+  # DynamoDB — run history + catalog + whitelist (defined in frontend.tf)
   statement {
     sid    = "DynamoDBRunTracking"
     effect = "Allow"
@@ -186,10 +186,12 @@ data "aws_iam_policy_document" "lambda_inline" {
       "dynamodb:PutItem",
       "dynamodb:GetItem",
       "dynamodb:UpdateItem",
+      "dynamodb:Scan",
     ]
     resources = [
       aws_dynamodb_table.runs.arn,
       aws_dynamodb_table.catalog.arn,
+      aws_dynamodb_table.whitelist.arn,
     ]
   }
 }
@@ -242,6 +244,7 @@ resource "aws_lambda_function" "report" {
       AUTO_PAUSE               = tostring(var.auto_pause_cluster)
       RUNS_TABLE               = aws_dynamodb_table.runs.name
       CATALOG_TABLE            = aws_dynamodb_table.catalog.name
+      WHITELIST_TABLE          = aws_dynamodb_table.whitelist.name
     }
   }
 
