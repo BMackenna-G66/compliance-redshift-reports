@@ -19,7 +19,7 @@ cp lambda/handler.py "$BUILD_DIR/"
 cp lambda/api_handler.py "$BUILD_DIR/"
 cp lambda/email_template.html "$BUILD_DIR/"
 mkdir -p "$BUILD_DIR/queries" "$BUILD_DIR/config"
-cp queries/*.sql "$BUILD_DIR/queries/"
+cp lambda/queries/*.sql "$BUILD_DIR/queries/"
 cp config/*.yaml "$BUILD_DIR/config/"
 
 echo "→ Installing Python dependencies for Linux/x86_64 (Lambda runtime)"
