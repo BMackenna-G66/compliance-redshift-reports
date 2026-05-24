@@ -579,20 +579,31 @@ def delete_query(report_name: str):
     return resp(200, {"message": f"Query '{report_name}' eliminada"})
 
 
+def _whitelist_table_ready() -> bool:
+    """Return True if the whitelist table resource is configured."""
+    return whitelist_table is not None
+
+
 def get_whitelist():
-    if not whitelist_table:
-        return resp(503, {"error": "Whitelist not configured"})
+    if not _whitelist_table_ready():
+        return resp(200, {"whitelist": [], "warning": "Whitelist table not configured"})
     now = int(dt.datetime.utcnow().timestamp())
-    result = whitelist_table.scan(
-        FilterExpression=Attr("expires_at").gt(now)
-    )
-    items = sorted(result.get("Items", []), key=lambda x: x.get("created_at", ""), reverse=True)
-    return resp(200, {"whitelist": items})
+    try:
+        result = whitelist_table.scan(
+            FilterExpression=Attr("expires_at").gt(now)
+        )
+        items = sorted(result.get("Items", []), key=lambda x: x.get("created_at", ""), reverse=True)
+        return resp(200, {"whitelist": items})
+    except Exception as e:
+        err = str(e)
+        if "ResourceNotFoundException" in err or "resource not found" in err.lower():
+            return resp(200, {"whitelist": [], "warning": "Whitelist table does not exist yet"})
+        raise
 
 
 def add_to_whitelist(body: dict):
-    if not whitelist_table:
-        return resp(503, {"error": "Whitelist not configured"})
+    if not _whitelist_table_ready():
+        return resp(503, {"error": "Whitelist table not configured"})
     entity_field = body.get("entity_field", "").strip()
     entity_value = body.get("entity_value", "").strip()
     duration_days = int(body.get("duration_days", 30))
@@ -610,23 +621,33 @@ def add_to_whitelist(body: dict):
     expires_at = int((now + dt.timedelta(days=duration_days)).timestamp())
     expires_date = (now + dt.timedelta(days=duration_days)).strftime("%Y-%m-%d")
 
-    whitelist_table.put_item(Item={
-        "whitelist_id": whitelist_id,
-        "entity_field": entity_field,
-        "entity_value": entity_value,
-        "duration_days": duration_days,
-        "reason": reason,
-        "scope": scope,
-        "report_name": report_name if scope == "report" else "",
-        "created_at": now.isoformat(),
-        "expires_at": expires_at,
-        "expires_date": expires_date,
-    })
+    try:
+        whitelist_table.put_item(Item={
+            "whitelist_id": whitelist_id,
+            "entity_field": entity_field,
+            "entity_value": entity_value,
+            "duration_days": duration_days,
+            "reason": reason,
+            "scope": scope,
+            "report_name": report_name if scope == "report" else "",
+            "created_at": now.isoformat(),
+            "expires_at": expires_at,
+            "expires_date": expires_date,
+        })
+    except Exception as e:
+        if "ResourceNotFoundException" in str(e):
+            return resp(503, {"error": "Whitelist table does not exist yet. Ask your cloud admin to create it."})
+        raise
     return resp(201, {"whitelist_id": whitelist_id, "expires_date": expires_date})
 
 
 def remove_from_whitelist(whitelist_id: str):
-    if not whitelist_table:
-        return resp(503, {"error": "Whitelist not configured"})
-    whitelist_table.delete_item(Key={"whitelist_id": whitelist_id})
+    if not _whitelist_table_ready():
+        return resp(503, {"error": "Whitelist table not configured"})
+    try:
+        whitelist_table.delete_item(Key={"whitelist_id": whitelist_id})
+    except Exception as e:
+        if "ResourceNotFoundException" in str(e):
+            return resp(503, {"error": "Whitelist table does not exist yet."})
+        raise
     return resp(200, {"message": f"Whitelist entry '{whitelist_id}' removed"})
