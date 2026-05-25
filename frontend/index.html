@@ -459,6 +459,13 @@
                   <h2 class="text-base font-semibold text-white" x-text="cat.label"></h2>
                   <span class="text-xs text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full" x-text="reportsInCategory(cat.key).length"></span>
                   <div class="flex-1 h-px bg-slate-800"></div>
+                  <button
+                    @click="runAllInCategory(cat.key)"
+                    :disabled="batchRun && !batchRun.cancelled && batchRun.doneCount < batchRun.total"
+                    class="flex items-center gap-1.5 text-xs font-semibold text-white bg-slate-700 hover:bg-orange-500 border border-slate-600 hover:border-orange-500 px-3 py-1.5 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
+                    <span>▶▶</span>
+                    <span>Ejecutar todas</span>
+                  </button>
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                   <template x-for="r in reportsInCategory(cat.key)" :key="r.report_name">
@@ -1096,6 +1103,95 @@
     </div>
   </div>
 
+  <!-- ===== BATCH PROGRESS PANEL (fixed bottom drawer) ===== -->
+  <div x-show="batchRun" x-transition:enter="transition ease-out duration-300"
+    x-transition:enter-start="translate-y-full opacity-0" x-transition:enter-end="translate-y-0 opacity-100"
+    class="fixed bottom-0 left-0 right-0 z-50 pointer-events-none">
+    <div class="max-w-3xl mx-auto mb-4 px-4 pointer-events-auto">
+      <div class="bg-slate-900 border border-slate-600 rounded-2xl shadow-2xl overflow-hidden">
+
+        <!-- Header -->
+        <div class="flex items-center gap-3 px-4 py-3 bg-slate-800 border-b border-slate-700 cursor-pointer"
+          @click="batchOpen = !batchOpen">
+          <!-- Progress ring / spinner -->
+          <div class="shrink-0">
+            <template x-if="!batchFinished">
+              <span class="spin text-orange-400 text-base">⏳</span>
+            </template>
+            <template x-if="batchFinished && !batchRun?.cancelled">
+              <span class="text-green-400 text-base">✓</span>
+            </template>
+            <template x-if="batchFinished && batchRun?.cancelled">
+              <span class="text-slate-400 text-base">✕</span>
+            </template>
+          </div>
+          <!-- Label -->
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-semibold text-white truncate" x-text="batchRun?.catLabel || ''"></div>
+            <div class="text-xs text-slate-400 mt-0.5">
+              <span x-text="batchRun?.doneCount || 0"></span>/<span x-text="batchRun?.total || 0"></span>
+              consultas &nbsp;·&nbsp; <span x-text="batchPct"></span>%
+              <template x-if="batchFinished && !batchRun?.cancelled">
+                <span class="text-green-400 ml-1">Completado</span>
+              </template>
+              <template x-if="batchRun?.cancelled">
+                <span class="text-slate-400 ml-1">Cancelado</span>
+              </template>
+            </div>
+          </div>
+          <!-- Progress bar -->
+          <div class="w-24 bg-slate-700 rounded-full h-1.5 shrink-0">
+            <div class="bg-orange-500 h-1.5 rounded-full transition-all duration-500"
+              :style="'width:'+batchPct+'%'"></div>
+          </div>
+          <!-- Buttons -->
+          <button x-show="!batchFinished" @click.stop="cancelBatch()"
+            class="text-xs text-red-400 hover:text-red-300 border border-red-800 hover:bg-red-900/30 px-2 py-1 rounded-lg transition shrink-0">
+            Cancelar
+          </button>
+          <button x-show="batchFinished" @click.stop="batchRun=null; batchOpen=true"
+            class="text-xs text-slate-400 hover:text-white px-2 py-1 rounded-lg transition shrink-0">
+            Cerrar
+          </button>
+          <span class="text-slate-500 text-xs ml-1" x-text="batchOpen ? '▼' : '▲'"></span>
+        </div>
+
+        <!-- Body: log list -->
+        <div x-show="batchOpen" x-transition class="max-h-64 overflow-y-auto">
+          <template x-for="(item, idx) in (batchRun?.items || [])" :key="idx">
+            <div class="flex items-center gap-3 px-4 py-2.5 border-b border-slate-800 last:border-0"
+              :class="{
+                'bg-orange-950/30': item.status==='running',
+                'bg-green-950/20': item.status==='done',
+                'bg-red-950/20': item.status==='error',
+                'opacity-40': item.status==='pending' || item.status==='cancelled',
+              }">
+              <!-- Status icon -->
+              <span class="shrink-0 w-5 text-center text-sm">
+                <template x-if="item.status==='pending'">    <span class="text-slate-500">○</span></template>
+                <template x-if="item.status==='running'">   <span class="spin text-orange-400 inline-block">⏳</span></template>
+                <template x-if="item.status==='done'">      <span class="text-green-400">✓</span></template>
+                <template x-if="item.status==='error'">     <span class="text-red-400">✕</span></template>
+                <template x-if="item.status==='cancelled'"> <span class="text-slate-500">—</span></template>
+              </span>
+              <!-- Name -->
+              <span class="flex-1 text-sm text-slate-300 truncate" x-text="item.display_name"></span>
+              <!-- Row count (when done) -->
+              <span x-show="item.status==='done'" class="text-xs text-slate-500 shrink-0"
+                x-text="item.row_count + ' filas'"></span>
+              <!-- Error (when error) -->
+              <span x-show="item.status==='error'" class="text-xs text-red-400 shrink-0 max-w-[180px] truncate"
+                :title="item.error" x-text="item.error"></span>
+              <!-- Running indicator -->
+              <span x-show="item.status==='running'" class="text-xs text-orange-400 shrink-0">ejecutando...</span>
+            </div>
+          </template>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
   <!-- ===== JAVASCRIPT ===== -->
   <script>
   const GEMINI_KEY = 'AIzaSyBHziT8y9cNSNYkKLeFKh0HhetGk7LbCC8';
@@ -1189,6 +1285,10 @@
       // Session toggle & session results board
       keepSession: false,
       sessionResults: [],
+
+      // Batch run
+      batchRun: null,
+      batchOpen: true,
 
       // -----------------------------------------------
       // INIT
@@ -1846,8 +1946,130 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
         if (!iso) return '—';
         return new Date(iso).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' });
       },
+
+      // -----------------------------------------------
+      // BATCH RUN
+      // -----------------------------------------------
+      defaultParamsForReport(report) {
+        const today = new Date();
+        const firstDay = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-01`;
+        const params = {};
+        for (const p of (report.params || [])) {
+          params[p.name] = p.type === 'date' ? firstDay : (p.default ?? false);
+        }
+        return params;
+      },
+
+      async pollUntilDone(run_id) {
+        return new Promise((resolve) => {
+          const iv = setInterval(async () => {
+            if (this.batchRun?.cancelled) {
+              clearInterval(iv);
+              resolve({ status: 'ERROR', error_message: 'Cancelado por usuario' });
+              return;
+            }
+            const d = await this.api('GET', '/runs/' + run_id);
+            if (d && (d.status === 'DONE' || d.status === 'ERROR')) {
+              clearInterval(iv);
+              resolve(d);
+            }
+          }, 3000);
+        });
+      },
+
+      get batchPct() {
+        if (!this.batchRun || !this.batchRun.total) return 0;
+        return Math.round((this.batchRun.doneCount / this.batchRun.total) * 100);
+      },
+
+      get batchFinished() {
+        if (!this.batchRun) return false;
+        return this.batchRun.cancelled || this.batchRun.doneCount >= this.batchRun.total;
+      },
+
+      cancelBatch() {
+        if (this.batchRun) this.batchRun.cancelled = true;
+      },
+
+      async runAllInCategory(catKey) {
+        // If a batch is already running, do nothing
+        if (this.batchRun && !this.batchFinished) return;
+
+        const cat = this.reportCategories.find(c => c.key === catKey);
+        const reports = this.reportsInCategory(catKey);
+        if (!reports.length) return;
+
+        this.batchRun = {
+          catKey,
+          catLabel: (cat?.icon || '') + ' ' + (cat?.label || catKey),
+          total: reports.length,
+          doneCount: 0,
+          items: reports.map(r => ({
+            report_name: r.report_name,
+            display_name: r.display_name || r.report_name.replace(/_/g,' '),
+            params: this.defaultParamsForReport(r),
+            status: 'pending',   // pending | running | done | error | cancelled
+            run_id: null,
+            error: null,
+            row_count: 0,
+          })),
+          cancelled: false,
+          startedAt: new Date().toISOString(),
+        };
+        this.batchOpen = true;
+
+        // Switch to dashboard so user sees results appear in real-time
+        this.switchTab('dashboard');
+
+        for (const item of this.batchRun.items) {
+          if (this.batchRun.cancelled) { item.status = 'cancelled'; this.batchRun.doneCount++; continue; }
+
+          item.status = 'running';
+          try {
+            const payload = { report_name: item.report_name, ...item.params, keep_session: true };
+            const d = await this.api('POST', '/execute', payload);
+            if (!d?.run_id) {
+              item.status = 'error';
+              item.error = d?.error || 'No se pudo iniciar la ejecución';
+              this.batchRun.doneCount++;
+              continue;
+            }
+            item.run_id = d.run_id;
+
+            const result = await this.pollUntilDone(d.run_id);
+
+            if (result.status === 'DONE') {
+              item.status = 'done';
+              item.row_count = result.row_count || 0;
+              const preview = result.result_preview || [];
+              const cols = preview.length ? Object.keys(preview[0]) : [];
+              this.sessionResults.unshift({
+                id: d.run_id + '_' + Date.now(),
+                run_id: d.run_id,
+                display_name: item.display_name,
+                report_name: item.report_name,
+                rows: preview, columns: cols,
+                row_count: result.row_count || 0,
+                download_url: result.download_url || '',
+                timestamp: new Date().toISOString(),
+                is_alert: false, expanded: false,
+                srFilters: {}, srPage: 1,
+              });
+            } else {
+              item.status = 'error';
+              item.error = result.error_message || 'Error en la ejecución';
+            }
+          } catch(e) {
+            item.status = 'error';
+            item.error = e.message || 'Error inesperado';
+          }
+          this.batchRun.doneCount++;
+        }
+      },
     };
   }
   </script>
+
+
 </body>
 </html>
