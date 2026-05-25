@@ -63,6 +63,20 @@ resource "aws_dynamodb_table" "whitelist" {
 }
 
 # ---------------------------------------------------------------------------
+# DynamoDB — alerts (alertados + ya revisados via status field)
+# ---------------------------------------------------------------------------
+resource "aws_dynamodb_table" "alerts" {
+  name         = "${var.project_name}-alerts"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "alert_id"
+
+  attribute {
+    name = "alert_id"
+    type = "S"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Cognito User Pool
 # ---------------------------------------------------------------------------
 resource "aws_cognito_user_pool" "main" {
@@ -174,6 +188,7 @@ data "aws_iam_policy_document" "api_lambda_inline" {
       aws_dynamodb_table.runs.arn,
       aws_dynamodb_table.catalog.arn,
       aws_dynamodb_table.whitelist.arn,
+      aws_dynamodb_table.alerts.arn,
     ]
   }
 
@@ -219,6 +234,7 @@ resource "aws_lambda_function" "api" {
       REPORT_LAMBDA   = aws_lambda_function.report.function_name
       S3_BUCKET       = aws_s3_bucket.reports.bucket
       WHITELIST_TABLE = aws_dynamodb_table.whitelist.name
+      ALERTS_TABLE    = aws_dynamodb_table.alerts.name
     }
   }
 }

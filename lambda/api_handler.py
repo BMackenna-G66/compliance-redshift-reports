@@ -13,6 +13,11 @@ Routes:
   GET  /whitelist           → list active whitelist entries
   POST /whitelist           → add an entry to the whitelist
   DELETE /whitelist/{id}    → remove a whitelist entry
+  GET  /alerts              → list active alert entries
+  GET  /alerts/reviewed     → list reviewed (ya revisados) entries
+  POST /alerts              → add an alert entry
+  PUT  /alerts/{id}/review  → mark alert as reviewed (move to ya revisados)
+  DELETE /alerts/{id}       → permanently remove an alert
 """
 
 from __future__ import annotations
@@ -38,10 +43,12 @@ CATALOG_TABLE_NAME = os.environ["CATALOG_TABLE"]
 REPORT_LAMBDA_NAME = os.environ["REPORT_LAMBDA"]
 S3_BUCKET = os.environ["S3_BUCKET"]
 WHITELIST_TABLE_NAME = os.environ.get("WHITELIST_TABLE", "")
+ALERTS_TABLE_NAME = os.environ.get("ALERTS_TABLE", "")
 
 runs_table = dynamodb.Table(RUNS_TABLE_NAME)
 catalog_table = dynamodb.Table(CATALOG_TABLE_NAME)
 whitelist_table = dynamodb.Table(WHITELIST_TABLE_NAME) if WHITELIST_TABLE_NAME else None
+alerts_table = dynamodb.Table(ALERTS_TABLE_NAME) if ALERTS_TABLE_NAME else None
 
 # ---------------------------------------------------------------------------
 # Built-in report definitions (mirrors REPORT_CONFIGS in handler.py)
@@ -419,6 +426,22 @@ def handler(event, context):  # noqa: ARG001
         if method == "DELETE" and len(parts) == 2 and parts[0] == "whitelist":
             return remove_from_whitelist(parts[1])
 
+        # GET /alerts/reviewed
+        if method == "GET" and parts == ["alerts", "reviewed"]:
+            return get_alerts(status="reviewed")
+        # GET /alerts
+        if method == "GET" and parts == ["alerts"]:
+            return get_alerts(status="active")
+        # POST /alerts
+        if method == "POST" and parts == ["alerts"]:
+            return add_alert(body)
+        # PUT /alerts/{id}/review
+        if method == "PUT" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "review":
+            return review_alert(parts[1])
+        # DELETE /alerts/{id}
+        if method == "DELETE" and len(parts) == 2 and parts[0] == "alerts":
+            return delete_alert(parts[1])
+
         return resp(404, {"error": "Not found", "path": path, "method": method})
 
     except Exception as e:  # noqa: BLE001
@@ -652,3 +675,91 @@ def remove_from_whitelist(whitelist_id: str):
             return resp(503, {"error": "Whitelist table does not exist yet."})
         raise
     return resp(200, {"message": f"Whitelist entry '{whitelist_id}' removed"})
+
+
+# ---------------------------------------------------------------------------
+# ALERTS (Alertados / Ya Revisados)
+# ---------------------------------------------------------------------------
+
+def _alerts_table_ready() -> bool:
+    return alerts_table is not None
+
+
+def get_alerts(status: str = "active"):
+    if not _alerts_table_ready():
+        return resp(200, {"alerts": [], "warning": "Alerts table not configured"})
+    try:
+        result = alerts_table.scan(FilterExpression=Attr("status").eq(status))
+        items = sorted(result.get("Items", []), key=lambda x: x.get("created_at", ""), reverse=True)
+        return resp(200, {"alerts": items})
+    except Exception as e:
+        err = str(e)
+        if "ResourceNotFoundException" in err or "resource not found" in err.lower():
+            return resp(200, {"alerts": [], "warning": "Alerts table does not exist yet"})
+        raise
+
+
+def add_alert(body: dict):
+    if not _alerts_table_ready():
+        return resp(503, {"error": "Alerts table not configured"})
+    entity_field = body.get("entity_field", "").strip()
+    entity_value = body.get("entity_value", "").strip()
+    reason = body.get("reason", "").strip()
+    report_name = body.get("report_name", "").strip()
+    row_data = body.get("row_data", {})
+
+    if not entity_field or not entity_value:
+        return resp(400, {"error": "entity_field and entity_value are required"})
+
+    alert_id = str(uuid.uuid4())
+    now = dt.datetime.utcnow()
+
+    try:
+        alerts_table.put_item(Item={
+            "alert_id": alert_id,
+            "entity_field": entity_field,
+            "entity_value": entity_value,
+            "reason": reason,
+            "report_name": report_name,
+            "row_data": json.dumps(row_data, default=str),
+            "created_at": now.isoformat(),
+            "status": "active",
+            "reviewed_at": "",
+        })
+    except Exception as e:
+        if "ResourceNotFoundException" in str(e):
+            return resp(503, {"error": "Alerts table does not exist yet. Ask your cloud admin to create it."})
+        raise
+    return resp(201, {"alert_id": alert_id})
+
+
+def review_alert(alert_id: str):
+    """Move an alert from 'active' to 'reviewed' (ya revisados)."""
+    if not _alerts_table_ready():
+        return resp(503, {"error": "Alerts table not configured"})
+    now = dt.datetime.utcnow().isoformat()
+    try:
+        alerts_table.update_item(
+            Key={"alert_id": alert_id},
+            UpdateExpression="SET #s = :reviewed, reviewed_at = :now",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":reviewed": "reviewed", ":now": now},
+        )
+    except Exception as e:
+        if "ResourceNotFoundException" in str(e):
+            return resp(503, {"error": "Alerts table does not exist yet."})
+        raise
+    return resp(200, {"message": f"Alert '{alert_id}' marked as reviewed"})
+
+
+def delete_alert(alert_id: str):
+    """Permanently remove an alert entry."""
+    if not _alerts_table_ready():
+        return resp(503, {"error": "Alerts table not configured"})
+    try:
+        alerts_table.delete_item(Key={"alert_id": alert_id})
+    except Exception as e:
+        if "ResourceNotFoundException" in str(e):
+            return resp(503, {"error": "Alerts table does not exist yet."})
+        raise
+    return resp(200, {"message": f"Alert '{alert_id}' permanently deleted"})

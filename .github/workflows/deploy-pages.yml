@@ -27,6 +27,7 @@ jobs:
           COGNITO_CLIENT_ID: ${{ secrets.COGNITO_CLIENT_ID }}
           COGNITO_DOMAIN: ${{ secrets.COGNITO_DOMAIN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
+          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
         run: |
           mkdir -p _site
           cp frontend/index.html _site/index.html
@@ -38,6 +39,7 @@ jobs:
             'clientId':      os.environ['COGNITO_CLIENT_ID'],
             'cognitoDomain': os.environ['COGNITO_DOMAIN'],
             'region':        os.environ['AWS_REGION'],
+            'geminiKey':     os.environ.get('GEMINI_KEY', ''),
           }
           open('_site/config.json','w').write(json.dumps(cfg, indent=2))
           "

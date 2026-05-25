@@ -69,6 +69,14 @@
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             Historial
           </button>
+          <button @click="switchTab('alertados')"
+            :class="activeTab==='alertados' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
+            <span>⚠️</span> Alertados
+            <span x-show="alerts.length > 0"
+              class="text-xs bg-red-600 text-white rounded-full px-1.5 py-0.5 leading-none"
+              x-text="alerts.length"></span>
+          </button>
           <button @click="switchTab('queries')"
             :class="activeTab==='queries' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
@@ -116,6 +124,11 @@
               <span x-text="keepSession ? 'Sesión activa' : 'Auto-apagar'"></span>
             </span>
           </label>
+          <!-- Settings -->
+          <button @click="settingsOpen=true" title="Configuración"
+            class="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 hover:text-white transition shrink-0 text-sm">
+            ⚙
+          </button>
           <!-- Username placeholder -->
           <div class="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold shrink-0">
             BM
@@ -280,7 +293,7 @@
                             <template x-for="col in result.columns" :key="col">
                               <th class="text-left py-2 pr-3 text-slate-400 font-medium whitespace-nowrap" x-text="col"></th>
                             </template>
-                            <th class="text-left py-2 pr-3 text-slate-400 font-medium whitespace-nowrap">⚑ WL</th>
+                            <th class="text-left py-2 pr-3 text-slate-400 font-medium whitespace-nowrap">Acciones</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -291,9 +304,11 @@
                                 <td class="py-1.5 pr-3 text-slate-300 whitespace-nowrap max-w-xs truncate"
                                   :title="String(row[col]??'')" x-text="row[col]??'—'"></td>
                               </template>
-                              <td class="py-1.5 pr-3">
+                              <td class="py-1.5 pr-2 flex items-center gap-1">
                                 <button @click="openWhitelistRow(row, result.report_name)"
                                   class="text-slate-500 hover:text-orange-400 transition text-sm" title="Agregar a Whitelist">⚑</button>
+                                <button @click="openAlertRow(row, result.report_name)"
+                                  class="text-slate-500 hover:text-red-400 transition text-sm" title="Marcar como Alertado">⚠</button>
                               </td>
                             </tr>
                           </template>
@@ -401,8 +416,12 @@
                 <template x-for="(row,i) in paginatedRows" :key="i">
                   <tr class="border-b border-slate-800 hover:bg-slate-800 transition">
                     <td class="px-2 py-1.5 border-r border-slate-800 text-center">
-                      <button @click="openWhitelistRow(row, resultsView?.report_name)"
-                        class="text-slate-500 hover:text-orange-400 transition text-base" title="Agregar a whitelist">⚑</button>
+                      <div class="flex items-center justify-center gap-1">
+                        <button @click="openWhitelistRow(row, resultsView?.report_name)"
+                          class="text-slate-500 hover:text-orange-400 transition text-base" title="Agregar a whitelist">⚑</button>
+                        <button @click="openAlertRow(row, resultsView?.report_name)"
+                          class="text-slate-500 hover:text-red-400 transition text-base" title="Marcar como Alertado">⚠</button>
+                      </div>
                     </td>
                     <template x-for="col in (resultsView?.columns||[])" :key="col">
                       <td class="px-3 py-1.5 text-slate-300 whitespace-nowrap border-r border-slate-800" x-text="row[col]??'—'"></td>
@@ -552,6 +571,122 @@
         </div>
       </div>
 
+      <!-- ===== TAB: ALERTADOS ===== -->
+      <div x-show="activeTab==='alertados'" x-cloak>
+
+        <div class="flex items-center justify-between mb-6">
+          <h1 class="text-xl font-bold text-white flex items-center gap-2">⚠️ Alertados</h1>
+          <button @click="loadAlerts()" class="text-sm text-slate-400 hover:text-white transition">↺ Actualizar</button>
+        </div>
+
+        <!-- View toggle -->
+        <div class="flex items-center gap-1 mb-5 bg-slate-800 border border-slate-700 rounded-lg p-1 w-fit">
+          <button @click="alertsView='active'"
+            :class="alertsView==='active' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-2 text-sm font-medium rounded-md transition flex items-center gap-2">
+            <span>⚠️ Alertados Activos</span>
+            <span x-show="alerts.length > 0" class="bg-white/20 text-white text-xs rounded-full px-1.5 py-0.5"
+              x-text="alerts.length"></span>
+          </button>
+          <button @click="alertsView='reviewed'"
+            :class="alertsView==='reviewed' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-2 text-sm font-medium rounded-md transition flex items-center gap-2">
+            <span>✅ Ya Revisados</span>
+            <span x-show="reviewedItems.length > 0" class="bg-white/20 text-white text-xs rounded-full px-1.5 py-0.5"
+              x-text="reviewedItems.length"></span>
+          </button>
+        </div>
+
+        <div x-show="alertsLoading" class="text-center py-16 text-slate-400"><span class="spin text-3xl">⏳</span></div>
+
+        <!-- ALERTADOS ACTIVOS -->
+        <div x-show="!alertsLoading && alertsView==='active'">
+          <div x-show="alerts.length === 0" class="text-center py-16 text-slate-500">
+            <p class="text-4xl mb-3">✅</p>
+            <p>No hay alertas activas. Marca filas con ⚠ desde cualquier tabla de resultados.</p>
+          </div>
+          <div x-show="alerts.length > 0" class="overflow-x-auto rounded-xl border border-slate-700">
+            <table class="w-full text-sm">
+              <thead class="bg-slate-800 border-b border-slate-700">
+                <tr>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Campo</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Valor</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Reporte</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Razón</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Fecha</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="a in alerts" :key="a.alert_id">
+                  <tr class="border-b border-slate-800 hover:bg-slate-800/50 transition bg-red-900/5">
+                    <td class="px-4 py-3 text-slate-400 text-xs font-mono" x-text="a.entity_field"></td>
+                    <td class="px-4 py-3 text-white font-semibold" x-text="a.entity_value"></td>
+                    <td class="px-4 py-3 text-slate-400 text-xs" x-text="(a.report_name||'—').replace(/_/g,' ')"></td>
+                    <td class="px-4 py-3 text-slate-300 text-xs max-w-xs truncate" :title="a.reason" x-text="a.reason||'—'"></td>
+                    <td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap" x-text="formatDate(a.created_at)"></td>
+                    <td class="px-4 py-3">
+                      <div class="flex items-center gap-2">
+                        <button @click="reviewAlert(a.alert_id)"
+                          class="text-xs px-3 py-1.5 bg-green-700 hover:bg-green-600 text-white rounded-lg transition font-medium">
+                          ✓ Revisar
+                        </button>
+                        <button @click="deleteAlert(a.alert_id)"
+                          class="text-xs px-2 py-1.5 bg-slate-700 hover:bg-red-900/50 text-red-400 hover:text-red-300 border border-slate-600 hover:border-red-700 rounded-lg transition">
+                          🗑
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- YA REVISADOS -->
+        <div x-show="!alertsLoading && alertsView==='reviewed'">
+          <div x-show="reviewedItems.length === 0" class="text-center py-16 text-slate-500">
+            <p class="text-4xl mb-3">📂</p>
+            <p>Aún no hay elementos revisados. Cuando marques una alerta como revisada aparecerá aquí.</p>
+          </div>
+          <div x-show="reviewedItems.length > 0" class="overflow-x-auto rounded-xl border border-slate-700">
+            <table class="w-full text-sm">
+              <thead class="bg-slate-800 border-b border-slate-700">
+                <tr>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Campo</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Valor</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Reporte</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Razón</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Alertado</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Revisado</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="a in reviewedItems" :key="a.alert_id">
+                  <tr class="border-b border-slate-800 hover:bg-slate-800/50 transition">
+                    <td class="px-4 py-3 text-slate-400 text-xs font-mono" x-text="a.entity_field"></td>
+                    <td class="px-4 py-3 text-slate-300" x-text="a.entity_value"></td>
+                    <td class="px-4 py-3 text-slate-400 text-xs" x-text="(a.report_name||'—').replace(/_/g,' ')"></td>
+                    <td class="px-4 py-3 text-slate-300 text-xs max-w-xs truncate" :title="a.reason" x-text="a.reason||'—'"></td>
+                    <td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap" x-text="formatDate(a.created_at)"></td>
+                    <td class="px-4 py-3 text-green-500 text-xs whitespace-nowrap" x-text="formatDate(a.reviewed_at)"></td>
+                    <td class="px-4 py-3">
+                      <button @click="deleteAlert(a.alert_id)"
+                        class="text-xs px-2 py-1.5 bg-slate-700 hover:bg-red-900/50 text-red-400 hover:text-red-300 border border-slate-600 hover:border-red-700 rounded-lg transition">
+                        🗑 Eliminar
+                      </button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
       <!-- ===== TAB: HISTORIAL ===== -->
       <div x-show="activeTab==='historial'" x-cloak>
         <div class="flex items-center justify-between mb-6">
@@ -698,8 +833,12 @@
                 <template x-for="(row,i) in historyPaginatedRows" :key="i">
                   <tr class="border-b border-slate-800 hover:bg-slate-800 transition">
                     <td class="px-2 py-1.5 border-r border-slate-800 text-center">
-                      <button @click="openWhitelistRow(row, historyView?.report_name)"
-                        class="text-slate-500 hover:text-orange-400 transition text-base" title="Agregar a whitelist">⚑</button>
+                      <div class="flex items-center justify-center gap-1">
+                        <button @click="openWhitelistRow(row, historyView?.report_name)"
+                          class="text-slate-500 hover:text-orange-400 transition text-base" title="Agregar a whitelist">⚑</button>
+                        <button @click="openAlertRow(row, historyView?.report_name)"
+                          class="text-slate-500 hover:text-red-400 transition text-base" title="Marcar como Alertado">⚠</button>
+                      </div>
                     </td>
                     <template x-for="col in historyColumns" :key="col">
                       <td class="px-3 py-1.5 text-slate-300 whitespace-nowrap border-r border-slate-800" x-text="row[col]??'—'"></td>
@@ -984,6 +1123,112 @@
     </div>
   </div>
 
+  <!-- ===== MODAL: ALERTAR DESDE ROW ===== -->
+  <div x-show="alertRowOpen" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="alertRowOpen=false"></div>
+    <div class="relative bg-slate-800 border border-red-900/50 rounded-2xl shadow-2xl w-full max-w-lg mx-auto p-6">
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-lg font-bold text-white flex items-center gap-2">⚠️ Marcar como Alertado</h2>
+        <button @click="alertRowOpen=false" class="text-slate-400 hover:text-white text-2xl leading-none transition">×</button>
+      </div>
+      <div class="space-y-4">
+        <!-- Entity field -->
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-2">Campo de identificación</label>
+          <div class="flex rounded-lg overflow-hidden border border-slate-600 w-fit">
+            <button @click="alertRowData.entity_field='customer_id'"
+              :class="alertRowData.entity_field==='customer_id' ? 'bg-red-600 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700'"
+              class="px-3 py-1.5 text-sm font-medium transition">customer_id</button>
+            <button @click="alertRowData.entity_field='email'"
+              :class="alertRowData.entity_field==='email' ? 'bg-red-600 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700'"
+              class="px-3 py-1.5 text-sm font-medium transition">email</button>
+            <button @click="alertRowData.entity_field='beneficiary_id'"
+              :class="alertRowData.entity_field==='beneficiary_id' ? 'bg-red-600 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700'"
+              class="px-3 py-1.5 text-sm font-medium transition">beneficiary_id</button>
+          </div>
+        </div>
+        <!-- Entity value -->
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Valor</label>
+          <input type="text" x-model="alertRowData.entity_value" placeholder="ID del cliente/beneficiario..."
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+        </div>
+        <!-- Reason -->
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Razón / observación</label>
+          <textarea x-model="alertRowData.reason" rows="3" placeholder="Describe el patrón sospechoso observado..."
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-red-500 resize-none mono"></textarea>
+        </div>
+        <!-- Report context -->
+        <div x-show="alertRowData.report_name" class="text-xs text-slate-500 bg-slate-900/50 rounded-lg px-3 py-2">
+          Reporte: <span class="text-slate-300" x-text="alertRowData.report_name?.replace(/_/g,' ')"></span>
+        </div>
+        <!-- Actions -->
+        <div class="flex gap-3 pt-2">
+          <button @click="alertRowOpen=false"
+            class="flex-1 py-2 text-sm text-slate-400 hover:text-white border border-slate-600 rounded-lg transition">
+            Cancelar
+          </button>
+          <button @click="addAlertFromRow()"
+            class="flex-1 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-500 rounded-lg transition">
+            ⚠️ Marcar como Alertado
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: SETTINGS ===== -->
+  <div x-show="settingsOpen" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="settingsOpen=false"></div>
+    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md mx-auto p-6">
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-lg font-bold text-white flex items-center gap-2">⚙ Configuración</h2>
+        <button @click="settingsOpen=false" class="text-slate-400 hover:text-white text-2xl leading-none transition">×</button>
+      </div>
+      <div class="space-y-5">
+        <!-- Gemini Key -->
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">
+            Gemini API Key
+            <a href="https://aistudio.google.com/app/apikey" target="_blank"
+              class="ml-2 text-xs text-orange-400 hover:underline">Obtener key →</a>
+          </label>
+          <div class="flex gap-2">
+            <input type="password" x-model="geminiKey" placeholder="AIzaSy..."
+              class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-500">
+            <button @click="saveGeminiKey()"
+              :class="geminiKeySaved ? 'bg-green-600' : 'bg-orange-500 hover:bg-orange-600'"
+              class="px-4 py-2 text-sm font-semibold text-white rounded-lg transition">
+              <span x-show="!geminiKeySaved">Guardar</span>
+              <span x-show="geminiKeySaved">✓ Guardado</span>
+            </button>
+          </div>
+          <p class="text-xs text-slate-500 mt-1.5">Se guarda en localStorage de tu navegador. Nunca sale al servidor.</p>
+          <div x-show="geminiKey" class="mt-1.5 flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-green-400 inline-block"></span>
+            <span class="text-xs text-green-400">Key configurada</span>
+          </div>
+          <div x-show="!geminiKey" class="mt-1.5 flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-red-400 inline-block"></span>
+            <span class="text-xs text-red-400">Sin key — el análisis con IA no funcionará</span>
+          </div>
+        </div>
+        <!-- Session results persistence info -->
+        <div class="bg-slate-900/50 rounded-lg p-3 text-xs text-slate-400 space-y-1.5">
+          <p class="font-medium text-slate-300">💾 Persistencia de sesión</p>
+          <p>Los resultados de sesión se guardan automáticamente en localStorage.</p>
+          <button @click="clearSessionResults(); settingsOpen=false"
+            class="text-red-400 hover:text-red-300 transition">Borrar resultados guardados →</button>
+        </div>
+        <button @click="settingsOpen=false"
+          class="w-full py-2 text-sm text-slate-400 hover:text-white border border-slate-600 rounded-lg transition">
+          Cerrar
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== MODAL: WHITELIST DESDE ROW ===== -->
   <div x-show="whitelistRowOpen" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
     <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="whitelistRowOpen=false"></div>
@@ -1194,8 +1439,8 @@
 
   <!-- ===== JAVASCRIPT ===== -->
   <script>
-  const GEMINI_KEY = 'AIzaSyBHziT8y9cNSNYkKLeFKh0HhetGk7LbCC8';
-  const GEMINI_MODEL = 'gemini-3-pro-preview';
+  const GEMINI_MODEL = 'gemini-2.5-flash-preview-05-20';
+  // GEMINI_KEY is loaded at runtime from config.json → localStorage → Settings UI
 
   function app() {
     return {
@@ -1290,6 +1535,19 @@
       batchRun: null,
       batchOpen: true,
 
+      // Alerts (alertados + ya revisados)
+      alerts: [],
+      reviewedItems: [],
+      alertsLoading: false,
+      alertsView: 'active',          // 'active' | 'reviewed'
+      alertRowOpen: false,
+      alertRowData: { entity_field: 'customer_id', entity_value: '', reason: '', report_name: '', row_data: {} },
+
+      // Settings
+      settingsOpen: false,
+      geminiKey: '',
+      geminiKeySaved: false,
+
       // -----------------------------------------------
       // INIT
       // -----------------------------------------------
@@ -1297,12 +1555,20 @@
         // Load auth token from localStorage
         this.authToken = localStorage.getItem('wt_id_token') || null;
 
+        // Restore session results from localStorage
+        try {
+          const saved = localStorage.getItem('wt_session_results');
+          if (saved) this.sessionResults = JSON.parse(saved);
+        } catch(_) { this.sessionResults = []; }
+
         // Load config
         try {
           const r = await fetch('./config.json');
           if (!r.ok) throw new Error('HTTP ' + r.status);
           const cfg = await r.json();
           this.apiBase = (cfg.apiUrl || '').replace(/\/$/, '');
+          // Load geminiKey: config.json > localStorage
+          this.geminiKey = cfg.geminiKey || localStorage.getItem('wt_gemini_key') || '';
         } catch(e) {
           this.globalError = 'No se pudo cargar config.json — recarga la página.';
           this.appLoading = false;
@@ -1314,6 +1580,7 @@
           this.loadReports(),
           this.loadRuns(),
           this.loadWhitelist(),
+          this.loadAlerts(),
           this.loadClusterStatus(),
         ]);
 
@@ -1333,6 +1600,9 @@
         }
         if (tab === 'alertas' && !this.reportsLoaded) {
           this.loadReports();
+        }
+        if (tab === 'alertados') {
+          this.loadAlerts();
         }
         if (tab === 'queries') {
           this.customQueries = this.reports.filter(r => r.is_custom);
@@ -1547,6 +1817,7 @@
                   srFilters: {},
                   srPage: 1,
                 });
+                this.saveSessionResults();
                 // Switch to dashboard so user sees it
                 if (this.activeTab === 'alertas') {
                   this.$nextTick(() => { this.switchTab('dashboard'); });
@@ -1834,9 +2105,13 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
 
       async _callGemini(prompt, stateKey) {
         this[stateKey] = { loading: true, text: '', error: '' };
+        if (!this.geminiKey) {
+          this[stateKey] = { loading: false, text: '', error: 'No hay API key de Gemini configurada. Ve a ⚙ Configuración y agrega tu key.' };
+          return;
+        }
         try {
           const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${this.geminiKey}`,
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1891,6 +2166,71 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
       // -----------------------------------------------
       // SESSION RESULTS BOARD
       // -----------------------------------------------
+      // -----------------------------------------------
+      // ALERTS (Alertados / Ya Revisados)
+      // -----------------------------------------------
+      async loadAlerts() {
+        this.alertsLoading = true;
+        const [activeRes, reviewedRes] = await Promise.all([
+          this.api('GET', '/alerts'),
+          this.api('GET', '/alerts/reviewed'),
+        ]);
+        this.alerts = activeRes?.alerts || [];
+        this.reviewedItems = reviewedRes?.alerts || [];
+        this.alertsLoading = false;
+      },
+
+      openAlertRow(row, reportName) {
+        const rowKeys = Object.keys(row);
+        const customerKey = rowKeys.find(k => /customer_id|client_id/i.test(k));
+        const emailKey = rowKeys.find(k => /email/i.test(k));
+        const field = customerKey ? 'customer_id' : (emailKey ? 'email' : 'customer_id');
+        const value = customerKey ? String(row[customerKey]??'') : (emailKey ? String(row[emailKey]??'') : '');
+        this.alertRowData = {
+          entity_field: field,
+          entity_value: value,
+          reason: '',
+          report_name: reportName || '',
+          row_data: row,
+        };
+        this.alertRowOpen = true;
+      },
+
+      async addAlertFromRow() {
+        const payload = { ...this.alertRowData };
+        const d = await this.api('POST', '/alerts', payload);
+        if (d?.alert_id) {
+          this.alertRowOpen = false;
+          this.alertRowData = { entity_field: 'customer_id', entity_value: '', reason: '', report_name: '', row_data: {} };
+          await this.loadAlerts();
+        }
+      },
+
+      async reviewAlert(alert_id) {
+        if (!confirm('¿Marcar como revisado? Se moverá a "Ya Revisados".')) return;
+        await this.api('PUT', '/alerts/' + alert_id + '/review');
+        await this.loadAlerts();
+      },
+
+      async deleteAlert(alert_id) {
+        if (!confirm('¿Eliminar definitivamente este registro?')) return;
+        await this.api('DELETE', '/alerts/' + alert_id);
+        await this.loadAlerts();
+      },
+
+      // -----------------------------------------------
+      // SETTINGS (Gemini API Key)
+      // -----------------------------------------------
+      saveGeminiKey() {
+        localStorage.setItem('wt_gemini_key', this.geminiKey);
+        this.geminiKeySaved = true;
+        setTimeout(() => { this.geminiKeySaved = false; }, 2000);
+      },
+
+      saveSessionResults() {
+        try { localStorage.setItem('wt_session_results', JSON.stringify(this.sessionResults)); } catch(_) {}
+      },
+
       srFilteredRows(result) {
         let rows = result.rows || [];
         for (const [col, val] of Object.entries(result.srFilters||{})) {
@@ -1908,10 +2248,12 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
       },
       removeSessionResult(id) {
         this.sessionResults = this.sessionResults.filter(r => r.id !== id);
+        this.saveSessionResults();
       },
       clearSessionResults() {
         if (!confirm('¿Limpiar todos los resultados de sesión?')) return;
         this.sessionResults = [];
+        this.saveSessionResults();
       },
 
       // -----------------------------------------------
@@ -2055,6 +2397,7 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
                 is_alert: false, expanded: false,
                 srFilters: {}, srPage: 1,
               });
+              this.saveSessionResults();
             } else {
               item.status = 'error';
               item.error = result.error_message || 'Error en la ejecución';

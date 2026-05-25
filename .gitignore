@@ -1,3 +1,7 @@
+# Local config with secrets (never commit)
+frontend/config.json
+.env
+
 # Terraform
 **/.terraform/*
 *.tfstate
