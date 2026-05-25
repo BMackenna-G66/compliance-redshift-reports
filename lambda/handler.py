@@ -78,7 +78,6 @@ REPORT_NAME = os.environ.get("REPORT_NAME", "high_risk_countries")
 AUTO_PAUSE = os.environ.get("AUTO_PAUSE", "true").lower() == "true"
 RUNS_TABLE_NAME = os.environ.get("RUNS_TABLE", "")
 CATALOG_TABLE_NAME = os.environ.get("CATALOG_TABLE", "")
-WHITELIST_TABLE_NAME = os.environ.get("WHITELIST_TABLE", "")
 
 BASE_DIR = Path(__file__).parent
 QUERIES_DIR = BASE_DIR / "queries"
@@ -332,22 +331,57 @@ def pause_cluster() -> None:
 # Whitelist support
 # ---------------------------------------------------------------------------
 def fetch_active_whitelist(report_name: str = "") -> list[dict]:
-    """Fetch non-expired whitelist entries. Returns global + report-specific."""
-    if not WHITELIST_TABLE_NAME:
-        return []
+    """Fetch non-expired whitelist entries from Redshift. Returns global + report-specific."""
+    report_name_escaped = report_name.replace("'", "''")
+    sql = (
+        "SELECT entity_field, entity_value, scope, report_name "
+        "FROM compliance.whitelist "
+        "WHERE expires_at > CURRENT_TIMESTAMP "
+        f"AND (scope = 'global' OR report_name = '{report_name_escaped}')"
+    )
     try:
-        from boto3.dynamodb.conditions import Attr
-        table = dynamodb.Table(WHITELIST_TABLE_NAME)
-        now_ts = int(time.time())
-        result = table.scan(
-            FilterExpression=Attr("expires_at").gt(now_ts)
+        stmt = redshift_data.execute_statement(
+            ClusterIdentifier=CLUSTER_ID,
+            Database=DATABASE,
+            DbUser=DB_USER,
+            Sql=sql,
         )
-        entries = result.get("Items", [])
-        # Filter: global entries OR entries matching this report
-        return [
-            e for e in entries
-            if e.get("scope") == "global" or e.get("report_name") == report_name
-        ]
+        statement_id = stmt["Id"]
+
+        for _ in range(20):
+            desc = redshift_data.describe_statement(Id=statement_id)
+            status = desc["Status"]
+            if status == "FINISHED":
+                if not desc.get("HasResultSet"):
+                    return []
+                result = redshift_data.get_statement_result(Id=statement_id)
+                columns = [c["name"] for c in result["ColumnMetadata"]]
+                rows: list[dict] = []
+                for record in result["Records"]:
+                    row = {}
+                    for i, cell in enumerate(record):
+                        if cell.get("isNull"):
+                            row[columns[i]] = None
+                        elif "stringValue" in cell:
+                            row[columns[i]] = cell["stringValue"]
+                        elif "longValue" in cell:
+                            row[columns[i]] = cell["longValue"]
+                        elif "doubleValue" in cell:
+                            row[columns[i]] = cell["doubleValue"]
+                        elif "booleanValue" in cell:
+                            row[columns[i]] = cell["booleanValue"]
+                        else:
+                            row[columns[i]] = None
+                    rows.append(row)
+                return rows
+            if status in ("FAILED", "ABORTED"):
+                logger.warning("fetch_active_whitelist query %s: %s", status, desc.get("Error"))
+                return []
+            time.sleep(0.5)
+
+        logger.warning("fetch_active_whitelist timed out after 10s")
+        return []
+
     except Exception as e:  # noqa: BLE001
         logger.warning("fetch_active_whitelist failed (non-blocking): %s", e)
         return []

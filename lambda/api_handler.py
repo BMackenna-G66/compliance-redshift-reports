@@ -26,6 +26,7 @@ import datetime as dt
 import decimal
 import json
 import os
+import time
 import uuid
 
 import boto3
@@ -35,20 +36,19 @@ dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
 s3 = boto3.client("s3")
 redshift = boto3.client("redshift")
+redshift_data = boto3.client("redshift-data")
 
 CLUSTER_ID = os.environ.get("CLUSTER_IDENTIFIER", "compliance-redshift-cluster")
+DATABASE_NAME = os.environ.get("DATABASE_NAME", "dev")
+DB_USER = os.environ.get("DB_USER", "awsuser")
 
 RUNS_TABLE_NAME = os.environ["RUNS_TABLE"]
 CATALOG_TABLE_NAME = os.environ["CATALOG_TABLE"]
 REPORT_LAMBDA_NAME = os.environ["REPORT_LAMBDA"]
 S3_BUCKET = os.environ["S3_BUCKET"]
-WHITELIST_TABLE_NAME = os.environ.get("WHITELIST_TABLE", "")
-ALERTS_TABLE_NAME = os.environ.get("ALERTS_TABLE", "")
 
 runs_table = dynamodb.Table(RUNS_TABLE_NAME)
 catalog_table = dynamodb.Table(CATALOG_TABLE_NAME)
-whitelist_table = dynamodb.Table(WHITELIST_TABLE_NAME) if WHITELIST_TABLE_NAME else None
-alerts_table = dynamodb.Table(ALERTS_TABLE_NAME) if ALERTS_TABLE_NAME else None
 
 # ---------------------------------------------------------------------------
 # Built-in report definitions (mirrors REPORT_CONFIGS in handler.py)
@@ -324,6 +324,77 @@ BUILTIN_REPORTS = [
         "params": [],
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Redshift Data API helpers
+# ---------------------------------------------------------------------------
+def _esc(s) -> str:
+    """Escape a value for safe inclusion in a Redshift SQL string literal."""
+    return str(s).replace("'", "''")
+
+
+def _rs_exec(sql: str) -> list[dict]:
+    """Execute SQL via Redshift Data API; poll until done; return rows as list of dicts."""
+    try:
+        resp_exec = redshift_data.execute_statement(
+            ClusterIdentifier=CLUSTER_ID,
+            Database=DATABASE_NAME,
+            DbUser=DB_USER,
+            Sql=sql,
+        )
+        statement_id = resp_exec["Id"]
+
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            desc = redshift_data.describe_statement(Id=statement_id)
+            status = desc["Status"]
+            if status == "FINISHED":
+                if not desc.get("HasResultSet"):
+                    return []
+                rows: list[dict] = []
+                columns: list[str] = []
+                next_token = None
+                while True:
+                    kwargs = {"Id": statement_id}
+                    if next_token:
+                        kwargs["NextToken"] = next_token
+                    result = redshift_data.get_statement_result(**kwargs)
+                    if not columns:
+                        columns = [c["name"] for c in result["ColumnMetadata"]]
+                    for record in result["Records"]:
+                        row = {}
+                        for i, cell in enumerate(record):
+                            if cell.get("isNull"):
+                                row[columns[i]] = None
+                            elif "stringValue" in cell:
+                                row[columns[i]] = cell["stringValue"]
+                            elif "longValue" in cell:
+                                row[columns[i]] = cell["longValue"]
+                            elif "doubleValue" in cell:
+                                row[columns[i]] = cell["doubleValue"]
+                            elif "booleanValue" in cell:
+                                row[columns[i]] = cell["booleanValue"]
+                            else:
+                                row[columns[i]] = None
+                        rows.append(row)
+                    next_token = result.get("NextToken")
+                    if not next_token:
+                        break
+                return rows
+            if status in ("FAILED", "ABORTED"):
+                raise RuntimeError(f"Redshift query {status}: {desc.get('Error', 'unknown error')}")
+            time.sleep(0.5)
+
+        raise RuntimeError("Redshift query timed out after 30s")
+
+    except RuntimeError:
+        raise
+    except Exception as e:
+        msg = str(e)
+        if "paused" in msg.lower() or "unavailable" in msg.lower() or "not available" in msg.lower():
+            raise RuntimeError(f"Redshift cluster is not available (may be paused): {msg}") from e
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -603,36 +674,27 @@ def delete_query(report_name: str):
     return resp(200, {"message": f"Query '{report_name}' eliminada"})
 
 
-def _whitelist_table_ready() -> bool:
-    """Return True if the whitelist table resource is configured."""
-    return whitelist_table is not None
-
-
 def get_whitelist():
-    if not _whitelist_table_ready():
-        return resp(200, {"whitelist": [], "warning": "Whitelist table not configured"})
-    now = int(dt.datetime.utcnow().timestamp())
     try:
-        result = whitelist_table.scan(
-            FilterExpression=Attr("expires_at").gt(now)
+        sql = (
+            "SELECT whitelist_id, entity_field, entity_value, duration_days, reason, scope, "
+            "report_name, created_at::VARCHAR AS created_at, expires_at::VARCHAR AS expires_at "
+            "FROM compliance.whitelist "
+            "WHERE expires_at > CURRENT_TIMESTAMP "
+            "ORDER BY created_at DESC"
         )
-        items = sorted(result.get("Items", []), key=lambda x: x.get("created_at", ""), reverse=True)
+        items = _rs_exec(sql)
         return resp(200, {"whitelist": items})
     except Exception as e:
-        err = str(e)
-        if "ResourceNotFoundException" in err or "resource not found" in err.lower():
-            return resp(200, {"whitelist": [], "warning": "Whitelist table does not exist yet"})
-        raise
+        return resp(200, {"whitelist": [], "warning": str(e)})
 
 
 def add_to_whitelist(body: dict):
-    if not _whitelist_table_ready():
-        return resp(503, {"error": "Whitelist table not configured"})
     entity_field = body.get("entity_field", "").strip()
     entity_value = body.get("entity_value", "").strip()
     duration_days = int(body.get("duration_days", 30))
     reason = body.get("reason", "").strip()
-    scope = body.get("scope", "global").strip()  # "global" or report_name
+    scope = body.get("scope", "global").strip()
     report_name = body.get("report_name", "").strip()
 
     if not entity_field or not entity_value:
@@ -640,40 +702,27 @@ def add_to_whitelist(body: dict):
     if duration_days not in (30, 60, 90):
         return resp(400, {"error": "duration_days must be 30, 60, or 90"})
 
-    whitelist_id = str(uuid.uuid4())
-    now = dt.datetime.utcnow()
-    expires_at = int((now + dt.timedelta(days=duration_days)).timestamp())
-    expires_date = (now + dt.timedelta(days=duration_days)).strftime("%Y-%m-%d")
+    wid = str(uuid.uuid4())
+    ef = _esc(entity_field)
+    ev = _esc(entity_value)
+    dd = duration_days
+    reason_esc = _esc(reason)
+    scope_esc = _esc(scope)
+    rn = _esc(report_name if scope == "report" else "")
 
-    try:
-        whitelist_table.put_item(Item={
-            "whitelist_id": whitelist_id,
-            "entity_field": entity_field,
-            "entity_value": entity_value,
-            "duration_days": duration_days,
-            "reason": reason,
-            "scope": scope,
-            "report_name": report_name if scope == "report" else "",
-            "created_at": now.isoformat(),
-            "expires_at": expires_at,
-            "expires_date": expires_date,
-        })
-    except Exception as e:
-        if "ResourceNotFoundException" in str(e):
-            return resp(503, {"error": "Whitelist table does not exist yet. Ask your cloud admin to create it."})
-        raise
-    return resp(201, {"whitelist_id": whitelist_id, "expires_date": expires_date})
+    sql = (
+        f"INSERT INTO compliance.whitelist "
+        f"(whitelist_id, entity_field, entity_value, duration_days, reason, scope, report_name, expires_at) "
+        f"VALUES ('{wid}', '{ef}', '{ev}', {dd}, '{reason_esc}', '{scope_esc}', '{rn}', "
+        f"DATEADD(day, {dd}, CURRENT_TIMESTAMP))"
+    )
+    _rs_exec(sql)
+    return resp(201, {"whitelist_id": wid})
 
 
 def remove_from_whitelist(whitelist_id: str):
-    if not _whitelist_table_ready():
-        return resp(503, {"error": "Whitelist table not configured"})
-    try:
-        whitelist_table.delete_item(Key={"whitelist_id": whitelist_id})
-    except Exception as e:
-        if "ResourceNotFoundException" in str(e):
-            return resp(503, {"error": "Whitelist table does not exist yet."})
-        raise
+    sql = f"DELETE FROM compliance.whitelist WHERE whitelist_id = '{_esc(whitelist_id)}'"
+    _rs_exec(sql)
     return resp(200, {"message": f"Whitelist entry '{whitelist_id}' removed"})
 
 
@@ -681,27 +730,23 @@ def remove_from_whitelist(whitelist_id: str):
 # ALERTS (Alertados / Ya Revisados)
 # ---------------------------------------------------------------------------
 
-def _alerts_table_ready() -> bool:
-    return alerts_table is not None
-
-
 def get_alerts(status: str = "active"):
-    if not _alerts_table_ready():
-        return resp(200, {"alerts": [], "warning": "Alerts table not configured"})
     try:
-        result = alerts_table.scan(FilterExpression=Attr("status").eq(status))
-        items = sorted(result.get("Items", []), key=lambda x: x.get("created_at", ""), reverse=True)
+        sql = (
+            "SELECT alert_id, entity_field, entity_value, reason, report_name, row_data, "
+            "created_at::VARCHAR AS created_at, status, "
+            "COALESCE(reviewed_at::VARCHAR, '') AS reviewed_at "
+            "FROM compliance.alerts "
+            f"WHERE status = '{_esc(status)}' "
+            "ORDER BY created_at DESC"
+        )
+        items = _rs_exec(sql)
         return resp(200, {"alerts": items})
     except Exception as e:
-        err = str(e)
-        if "ResourceNotFoundException" in err or "resource not found" in err.lower():
-            return resp(200, {"alerts": [], "warning": "Alerts table does not exist yet"})
-        raise
+        return resp(200, {"alerts": [], "warning": str(e)})
 
 
 def add_alert(body: dict):
-    if not _alerts_table_ready():
-        return resp(503, {"error": "Alerts table not configured"})
     entity_field = body.get("entity_field", "").strip()
     entity_value = body.get("entity_value", "").strip()
     reason = body.get("reason", "").strip()
@@ -711,55 +756,34 @@ def add_alert(body: dict):
     if not entity_field or not entity_value:
         return resp(400, {"error": "entity_field and entity_value are required"})
 
-    alert_id = str(uuid.uuid4())
-    now = dt.datetime.utcnow()
+    aid = str(uuid.uuid4())
+    ef = _esc(entity_field)
+    ev = _esc(entity_value)
+    reason_esc = _esc(reason)
+    rn = _esc(report_name)
+    row_data_escaped = _esc(json.dumps(row_data, default=str))
 
-    try:
-        alerts_table.put_item(Item={
-            "alert_id": alert_id,
-            "entity_field": entity_field,
-            "entity_value": entity_value,
-            "reason": reason,
-            "report_name": report_name,
-            "row_data": json.dumps(row_data, default=str),
-            "created_at": now.isoformat(),
-            "status": "active",
-            "reviewed_at": "",
-        })
-    except Exception as e:
-        if "ResourceNotFoundException" in str(e):
-            return resp(503, {"error": "Alerts table does not exist yet. Ask your cloud admin to create it."})
-        raise
-    return resp(201, {"alert_id": alert_id})
+    sql = (
+        f"INSERT INTO compliance.alerts "
+        f"(alert_id, entity_field, entity_value, reason, report_name, row_data, status) "
+        f"VALUES ('{aid}', '{ef}', '{ev}', '{reason_esc}', '{rn}', '{row_data_escaped}', 'active')"
+    )
+    _rs_exec(sql)
+    return resp(201, {"alert_id": aid})
 
 
 def review_alert(alert_id: str):
     """Move an alert from 'active' to 'reviewed' (ya revisados)."""
-    if not _alerts_table_ready():
-        return resp(503, {"error": "Alerts table not configured"})
-    now = dt.datetime.utcnow().isoformat()
-    try:
-        alerts_table.update_item(
-            Key={"alert_id": alert_id},
-            UpdateExpression="SET #s = :reviewed, reviewed_at = :now",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":reviewed": "reviewed", ":now": now},
-        )
-    except Exception as e:
-        if "ResourceNotFoundException" in str(e):
-            return resp(503, {"error": "Alerts table does not exist yet."})
-        raise
+    sql = (
+        f"UPDATE compliance.alerts SET status = 'reviewed', reviewed_at = CURRENT_TIMESTAMP "
+        f"WHERE alert_id = '{_esc(alert_id)}'"
+    )
+    _rs_exec(sql)
     return resp(200, {"message": f"Alert '{alert_id}' marked as reviewed"})
 
 
 def delete_alert(alert_id: str):
     """Permanently remove an alert entry."""
-    if not _alerts_table_ready():
-        return resp(503, {"error": "Alerts table not configured"})
-    try:
-        alerts_table.delete_item(Key={"alert_id": alert_id})
-    except Exception as e:
-        if "ResourceNotFoundException" in str(e):
-            return resp(503, {"error": "Alerts table does not exist yet."})
-        raise
+    sql = f"DELETE FROM compliance.alerts WHERE alert_id = '{_esc(alert_id)}'"
+    _rs_exec(sql)
     return resp(200, {"message": f"Alert '{alert_id}' permanently deleted"})
