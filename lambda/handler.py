@@ -435,6 +435,8 @@ def render_query(
     if report_name in REPORT_CONFIGS:
         config = REPORT_CONFIGS[report_name]
         sql = (QUERIES_DIR / config["sql_file"]).read_text(encoding="utf-8")
+        # Strip semicolons BEFORE whitelist injection wraps the SQL in a subquery
+        sql = sql.strip().rstrip(";").strip()
 
         if config["needs_country_filter"]:
             quoted = ",".join(f"'{c}'" for c in country_codes)
@@ -448,6 +450,8 @@ def render_query(
         sql = _load_custom_sql(report_name)
         if not sql:
             raise ValueError(f"Report '{report_name}' not found in built-in registry or catalog")
+        # Strip semicolons from custom queries too
+        sql = sql.strip().rstrip(";").strip()
 
     # Inject whitelist exclusions
     whitelist_entries = fetch_active_whitelist(report_name)
