@@ -10,6 +10,9 @@ Routes:
   GET  /runs/{run_id}       → get run status + presigned download URL + result preview
   POST /queries             → save a custom SQL query to catalog
   DELETE /queries/{name}    → delete a custom query
+  GET  /cluster/status      → get Redshift cluster status
+  POST /cluster/wake        → resume a paused cluster
+  POST /cluster/pause       → pause the cluster
   GET  /whitelist           → list active whitelist entries
   POST /whitelist           → add an entry to the whitelist
   DELETE /whitelist/{id}    → remove a whitelist entry
@@ -18,6 +21,9 @@ Routes:
   POST /alerts              → add an alert entry
   PUT  /alerts/{id}/review  → mark alert as reviewed (move to ya revisados)
   DELETE /alerts/{id}       → permanently remove an alert
+  GET  /dashboard/stats        → submit 3 queries to Redshift; returns stmt_ids immediately
+  GET  /dashboard/stats/result → poll results for stmt_ids (q0=, q1=, q2=); returns per-query
+                                 rows when done, null when still running, all_done flag
 """
 
 from __future__ import annotations
@@ -327,6 +333,66 @@ BUILTIN_REPORTS = [
 
 
 # ---------------------------------------------------------------------------
+# Dashboard SQL queries (informational widgets, last 7 days of successful TRX)
+# ---------------------------------------------------------------------------
+_SQL_DAILY_EVOLUTION = """
+SELECT CAST(t.start_date AS DATE) AS trx_date,
+    COALESCE(t.payment_method, 'SIN_PAYMENT_METHOD') AS payment_method,
+    COALESCE(t.outbound_bank_name, 'SIN_OUTBOUND_BANK') AS outbound_bank_name,
+    t.origin_currency, t.destiny_currency,
+    COUNT(*) AS total_transactions,
+    COUNT(DISTINCT t.customer_id) AS unique_customers,
+    SUM(t.destiny_amount_usd) AS total_amount_usd,
+    AVG(t.destiny_amount_usd) AS avg_ticket_usd
+FROM "db_prod"."transaction"."transaction" AS t
+WHERE t.start_date >= DATEADD(day, -7, CURRENT_DATE)
+  AND UPPER(t.tx_status) = 'TRANSFERENCIA_EXITOSA'
+GROUP BY CAST(t.start_date AS DATE),
+    COALESCE(t.payment_method, 'SIN_PAYMENT_METHOD'),
+    COALESCE(t.outbound_bank_name, 'SIN_OUTBOUND_BANK'),
+    t.origin_currency, t.destiny_currency
+ORDER BY trx_date ASC, total_amount_usd DESC
+"""
+
+_SQL_OVER_300K = """
+SELECT CAST(t.start_date AS DATE) AS trx_date,
+    COALESCE(t.payment_method, 'SIN_PAYMENT_METHOD') AS payment_method,
+    COALESCE(t.outbound_bank_name, 'SIN_OUTBOUND_BANK') AS outbound_bank_name,
+    t.origin_currency, t.destiny_currency,
+    COUNT(*) AS trx_over_300k,
+    COUNT(DISTINCT t.customer_id) AS unique_customers_over_300k,
+    SUM(t.destiny_amount_usd) AS total_amount_usd_over_300k,
+    AVG(t.destiny_amount_usd) AS avg_ticket_usd_over_300k,
+    MAX(t.destiny_amount_usd) AS max_ticket_usd
+FROM "db_prod"."transaction"."transaction" AS t
+WHERE t.start_date >= DATEADD(day, -7, CURRENT_DATE)
+  AND UPPER(t.tx_status) = 'TRANSFERENCIA_EXITOSA'
+  AND t.destiny_amount_usd >= 300000
+GROUP BY CAST(t.start_date AS DATE),
+    COALESCE(t.payment_method, 'SIN_PAYMENT_METHOD'),
+    COALESCE(t.outbound_bank_name, 'SIN_OUTBOUND_BANK'),
+    t.origin_currency, t.destiny_currency
+ORDER BY trx_date ASC, total_amount_usd_over_300k DESC
+"""
+
+_SQL_BY_COUNTRY = """
+SELECT t.beneficiary_country_code,
+    MAX(t.beneficiary_country_name) AS beneficiary_country_name,
+    COUNT(*) AS total_transactions,
+    COUNT(DISTINCT t.customer_id) AS unique_customers,
+    COUNT(DISTINCT t.beneficiary_id) AS unique_beneficiaries,
+    SUM(t.destiny_amount_usd) AS total_amount_usd,
+    AVG(t.destiny_amount_usd) AS avg_ticket_usd,
+    MAX(t.destiny_amount_usd) AS max_ticket_usd
+FROM "db_prod"."transaction"."transaction" AS t
+WHERE t.start_date >= DATEADD(day, -7, CURRENT_DATE)
+  AND UPPER(t.tx_status) = 'TRANSFERENCIA_EXITOSA'
+GROUP BY t.beneficiary_country_code
+ORDER BY total_amount_usd DESC
+"""
+
+
+# ---------------------------------------------------------------------------
 # Redshift Data API helpers
 # ---------------------------------------------------------------------------
 def _esc(s) -> str:
@@ -395,6 +461,86 @@ def _rs_exec(sql: str) -> list[dict]:
         if "paused" in msg.lower() or "unavailable" in msg.lower() or "not available" in msg.lower():
             raise RuntimeError(f"Redshift cluster is not available (may be paused): {msg}") from e
         raise
+
+
+def _rs_get_rows(stmt_id: str) -> list[dict]:
+    """Fetch all result rows from a FINISHED Redshift Data API statement (handles pagination)."""
+    rows: list[dict] = []
+    columns: list[str] = []
+    next_token = None
+    while True:
+        kwargs: dict = {"Id": stmt_id}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        result = redshift_data.get_statement_result(**kwargs)
+        if not columns:
+            columns = [c["name"] for c in result["ColumnMetadata"]]
+        for record in result["Records"]:
+            row: dict = {}
+            for i, cell in enumerate(record):
+                if cell.get("isNull"):
+                    row[columns[i]] = None
+                elif "stringValue" in cell:
+                    row[columns[i]] = cell["stringValue"]
+                elif "longValue" in cell:
+                    row[columns[i]] = cell["longValue"]
+                elif "doubleValue" in cell:
+                    row[columns[i]] = cell["doubleValue"]
+                elif "booleanValue" in cell:
+                    row[columns[i]] = cell["booleanValue"]
+                else:
+                    row[columns[i]] = None
+            rows.append(row)
+        next_token = result.get("NextToken")
+        if not next_token:
+            break
+    return rows
+
+
+def _rs_exec_multi(sqls: list, timeout_s: int = 90) -> list:
+    """Submit multiple SQL statements in parallel via Redshift Data API and poll until all done.
+
+    Exploits the async nature of the Data API: all statements are submitted first (no waiting),
+    then polled together every second.  Individual failures return [] (non-blocking).
+    Returns a list of row-lists in the same order as the input sqls.
+    """
+    if not sqls:
+        return []
+
+    # Submit all statements at once
+    stmt_ids: list[str] = []
+    for sql in sqls:
+        r = redshift_data.execute_statement(
+            ClusterIdentifier=CLUSTER_ID,
+            Database=DATABASE_NAME,
+            DbUser=DB_USER,
+            Sql=sql.strip(),
+        )
+        stmt_ids.append(r["Id"])
+
+    results: list = [[] for _ in sqls]
+    pending: set = set(range(len(sqls)))
+    deadline = time.time() + timeout_s
+
+    while pending and time.time() < deadline:
+        time.sleep(1.0)
+        for i in list(pending):
+            try:
+                desc = redshift_data.describe_statement(Id=stmt_ids[i])
+                status = desc["Status"]
+                if status == "FINISHED":
+                    pending.discard(i)
+                    if desc.get("HasResultSet"):
+                        results[i] = _rs_get_rows(stmt_ids[i])
+                    # else results[i] stays []
+                elif status in ("FAILED", "ABORTED"):
+                    pending.discard(i)
+                    # results[i] stays []
+            except Exception:
+                pending.discard(i)
+
+    # Any still pending after timeout → left as []
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +658,14 @@ def handler(event, context):  # noqa: ARG001
         # DELETE /alerts/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "alerts":
             return delete_alert(parts[1])
+
+        # GET /dashboard/stats (submit queries, returns stmt_ids)
+        if method == "GET" and parts == ["dashboard", "stats"]:
+            return get_dashboard_stats()
+        # GET /dashboard/stats/result?q0=id&q1=id&q2=id (poll results)
+        if method == "GET" and parts == ["dashboard", "stats", "result"]:
+            qs = event.get("queryStringParameters") or {}
+            return get_dashboard_stats_result(qs.get("q0", ""), qs.get("q1", ""), qs.get("q2", ""))
 
         return resp(404, {"error": "Not found", "path": path, "method": method})
 
@@ -787,3 +941,70 @@ def delete_alert(alert_id: str):
     sql = f"DELETE FROM compliance.alerts WHERE alert_id = '{_esc(alert_id)}'"
     _rs_exec(sql)
     return resp(200, {"message": f"Alert '{alert_id}' permanently deleted"})
+
+
+# ---------------------------------------------------------------------------
+# DASHBOARD STATS
+# ---------------------------------------------------------------------------
+
+def get_dashboard_stats():
+    """Submit 3 dashboard queries to Redshift Data API and return the statement IDs immediately.
+
+    Uses a two-phase async pattern to avoid API Gateway's 30s timeout:
+      1. This endpoint submits all 3 queries and returns stmt_ids in < 1s.
+      2. The frontend polls /dashboard/stats/result?q0=id&q1=id&q2=id until all done.
+    """
+    try:
+        stmt_ids: list[str] = []
+        for sql in [_SQL_DAILY_EVOLUTION, _SQL_OVER_300K, _SQL_BY_COUNTRY]:
+            r = redshift_data.execute_statement(
+                ClusterIdentifier=CLUSTER_ID,
+                Database=DATABASE_NAME,
+                DbUser=DB_USER,
+                Sql=sql.strip(),
+            )
+            stmt_ids.append(r["Id"])
+        return resp(200, {"stmt_ids": stmt_ids})
+    except Exception as e:
+        msg = str(e)
+        if "paused" in msg.lower() or "unavailable" in msg.lower() or "not available" in msg.lower():
+            return resp(200, {
+                "error": "cluster_paused",
+                "message": "El cluster está pausado. Enciéndelo para cargar las estadísticas.",
+            })
+        return resp(200, {"error": str(e), "message": "Error enviando consultas al cluster."})
+
+
+def get_dashboard_stats_result(q0: str, q1: str, q2: str):
+    """Check status of 3 previously submitted statements; return results for done ones.
+
+    Response keys:
+      daily_evolution / over_300k / by_country → list[dict] if done, null if still running
+      all_done → True when all 3 are finished (or failed)
+    Each done/failed statement is fetched once and never polled again by the Lambda.
+    """
+    stmt_ids = [q0, q1, q2]
+    keys = ["daily_evolution", "over_300k", "by_country"]
+    result: dict = {}
+    all_done = True
+
+    for stmt_id, key in zip(stmt_ids, keys):
+        if not stmt_id:
+            result[key] = []
+            continue
+        try:
+            desc = redshift_data.describe_statement(Id=stmt_id)
+            status = desc["Status"]
+            if status == "FINISHED":
+                result[key] = _rs_get_rows(stmt_id) if desc.get("HasResultSet") else []
+            elif status in ("FAILED", "ABORTED"):
+                result[key] = []
+            else:
+                # SUBMITTED / PICKED / STARTED — still running
+                all_done = False
+                result[key] = None   # null signals "still pending" to the frontend
+        except Exception:
+            result[key] = []         # treat errors as done-empty
+
+    result["all_done"] = all_done
+    return resp(200, result)

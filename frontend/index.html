@@ -338,6 +338,249 @@
           </div>
         </div>
 
+        <!-- ===== DASHBOARD STATS: 3 widgets ===== -->
+        <div class="mt-8">
+
+          <!-- Section header -->
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-base font-semibold text-white flex items-center gap-2">
+              <span class="text-blue-400">📊</span>
+              Estadísticas de Transacciones — últimos 7 días
+              <span x-show="dashboardStatsRefreshedAt"
+                class="text-xs font-normal text-slate-500"
+                x-text="dashboardStatsRefreshedAt ? '· ' + formatDate(dashboardStatsRefreshedAt) : ''"></span>
+            </h2>
+            <button @click="loadDashboardStats()"
+              :disabled="dashboardStatsLoading || clusterStatus !== 'available'"
+              class="text-sm text-slate-400 hover:text-white transition disabled:opacity-40 flex items-center gap-1">
+              <span :class="dashboardStatsLoading ? 'spin inline-block' : ''">↺</span>
+              Actualizar
+            </button>
+          </div>
+
+          <!-- Cluster paused notice (no data loaded yet) -->
+          <div x-show="dashboardStatsError === 'cluster_paused' && !dashboardStats && !dashboardStatsLoading"
+            class="bg-slate-800 border border-slate-700 rounded-xl p-8 text-center">
+            <div class="text-3xl mb-2">⏸</div>
+            <p class="text-slate-400 text-sm">Cluster pausado — enciéndelo y haz clic en <strong class="text-white">Actualizar</strong> para cargar las estadísticas.</p>
+          </div>
+
+          <!-- Loading skeletons -->
+          <div x-show="dashboardStatsLoading" class="space-y-4">
+            <template x-for="i in [1,2,3]" :key="i">
+              <div class="bg-slate-800 border border-slate-700 rounded-xl p-6 flex items-center justify-center" style="height:120px">
+                <span class="spin text-orange-400 text-2xl">⏳</span>
+              </div>
+            </template>
+          </div>
+
+          <!-- Stats content (shows as soon as ANY partial data arrives) -->
+          <div x-show="dashboardStats" class="space-y-5">
+
+            <!-- ── Widget 1: Evolución diaria ── -->
+            <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+              <div class="px-5 py-4 border-b border-slate-700 flex items-center gap-2">
+                <span class="text-orange-400">💸</span>
+                <h3 class="text-sm font-semibold text-white">Evolución Diaria de Transacciones Exitosas</h3>
+                <span x-show="dashboardStats?.daily_evolution === null"
+                  class="spin text-orange-400 text-sm ml-1">⏳</span>
+              </div>
+              <!-- Loading state -->
+              <div x-show="dashboardStats?.daily_evolution === null"
+                class="flex items-center justify-center py-12 text-slate-500 text-sm gap-2">
+                <span class="spin inline-block">⏳</span> Ejecutando consulta...
+              </div>
+              <!-- Loaded state -->
+              <div x-show="Array.isArray(dashboardStats?.daily_evolution)">
+                <!-- KPIs -->
+                <div class="grid grid-cols-3 divide-x divide-slate-700 border-b border-slate-700">
+                  <div class="px-5 py-4">
+                    <p class="text-xs text-slate-400 mb-1 uppercase tracking-wider">Total Transacciones</p>
+                    <p class="text-2xl font-bold text-white" x-text="fmtNum(stats1Totals.total_trx)"></p>
+                  </div>
+                  <div class="px-5 py-4">
+                    <p class="text-xs text-slate-400 mb-1 uppercase tracking-wider">Volumen Total USD</p>
+                    <p class="text-2xl font-bold text-orange-400" x-text="fmtUSD(stats1Totals.total_usd)"></p>
+                  </div>
+                  <div class="px-5 py-4">
+                    <p class="text-xs text-slate-400 mb-1 uppercase tracking-wider">Clientes Únicos</p>
+                    <p class="text-2xl font-bold text-blue-400" x-text="fmtNum(stats1Totals.unique_customers)"></p>
+                  </div>
+                </div>
+                <!-- Chart -->
+                <div class="px-5 py-4 chart-container" style="height:220px">
+                  <canvas id="chartDailyEvol"></canvas>
+                </div>
+              </div>
+            </div>
+
+            <!-- ── Widget 2: Transacciones sobre 300K USD ── -->
+            <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+              <div class="px-5 py-4 border-b border-slate-700 flex items-center gap-2">
+                <span class="text-red-400">🚨</span>
+                <h3 class="text-sm font-semibold text-white">Transacciones Individuales sobre 300K USD</h3>
+                <span x-show="Array.isArray(dashboardStats?.over_300k) && stats2Totals.total_trx > 0"
+                  class="text-xs bg-red-900/50 text-red-400 border border-red-800 px-2 py-0.5 rounded-full"
+                  x-text="stats2Totals.total_trx + ' TRX'"></span>
+                <span x-show="dashboardStats?.over_300k === null"
+                  class="spin text-orange-400 text-sm ml-1">⏳</span>
+              </div>
+              <!-- Loading -->
+              <div x-show="dashboardStats?.over_300k === null"
+                class="flex items-center justify-center py-12 text-slate-500 text-sm gap-2">
+                <span class="spin inline-block">⏳</span> Ejecutando consulta...
+              </div>
+              <!-- Loaded -->
+              <div x-show="Array.isArray(dashboardStats?.over_300k)">
+                <!-- KPIs -->
+                <div class="grid grid-cols-3 divide-x divide-slate-700 border-b border-slate-700">
+                  <div class="px-5 py-4">
+                    <p class="text-xs text-slate-400 mb-1 uppercase tracking-wider">Transacciones &gt;300K</p>
+                    <p class="text-2xl font-bold" :class="stats2Totals.total_trx > 0 ? 'text-red-400' : 'text-slate-500'"
+                      x-text="fmtNum(stats2Totals.total_trx)"></p>
+                  </div>
+                  <div class="px-5 py-4">
+                    <p class="text-xs text-slate-400 mb-1 uppercase tracking-wider">Volumen Total USD</p>
+                    <p class="text-2xl font-bold text-orange-400" x-text="fmtUSD(stats2Totals.total_usd)"></p>
+                  </div>
+                  <div class="px-5 py-4">
+                    <p class="text-xs text-slate-400 mb-1 uppercase tracking-wider">Ticket Máximo</p>
+                    <p class="text-2xl font-bold text-yellow-400" x-text="fmtUSD(stats2Totals.max_ticket)"></p>
+                  </div>
+                </div>
+                <!-- Table -->
+                <div x-show="(dashboardStats?.over_300k?.length || 0) > 0" class="overflow-x-auto">
+                  <table class="w-full text-xs">
+                    <thead>
+                      <tr class="border-b border-slate-700 bg-slate-900/50">
+                        <th class="px-4 py-2 text-left text-slate-400 font-medium">Fecha</th>
+                        <th class="px-4 py-2 text-left text-slate-400 font-medium">Método Pago</th>
+                        <th class="px-4 py-2 text-left text-slate-400 font-medium">Banco</th>
+                        <th class="px-4 py-2 text-left text-slate-400 font-medium">Moneda O→D</th>
+                        <th class="px-4 py-2 text-right text-slate-400 font-medium">TRX</th>
+                        <th class="px-4 py-2 text-right text-slate-400 font-medium">Clientes</th>
+                        <th class="px-4 py-2 text-right text-slate-400 font-medium">Vol. USD</th>
+                        <th class="px-4 py-2 text-right text-slate-400 font-medium">Avg Ticket</th>
+                        <th class="px-4 py-2 text-right text-slate-400 font-medium">Máx Ticket</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="(row, i) in (dashboardStats?.over_300k || []).slice(0, 100)" :key="i">
+                        <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition">
+                          <td class="px-4 py-2 text-slate-300 whitespace-nowrap" x-text="row.trx_date || '—'"></td>
+                          <td class="px-4 py-2 text-slate-300 max-w-[130px] truncate" x-text="row.payment_method || '—'"></td>
+                          <td class="px-4 py-2 text-slate-300 max-w-[130px] truncate" x-text="row.outbound_bank_name || '—'"></td>
+                          <td class="px-4 py-2 text-slate-400 whitespace-nowrap"
+                            x-text="(row.origin_currency||'?')+'→'+(row.destiny_currency||'?')"></td>
+                          <td class="px-4 py-2 text-right text-white font-semibold" x-text="row.trx_over_300k || 0"></td>
+                          <td class="px-4 py-2 text-right text-slate-300" x-text="row.unique_customers_over_300k || 0"></td>
+                          <td class="px-4 py-2 text-right text-orange-400 font-medium whitespace-nowrap"
+                            x-text="fmtUSD(row.total_amount_usd_over_300k)"></td>
+                          <td class="px-4 py-2 text-right text-slate-400 whitespace-nowrap"
+                            x-text="fmtUSD(row.avg_ticket_usd_over_300k)"></td>
+                          <td class="px-4 py-2 text-right text-yellow-400 whitespace-nowrap"
+                            x-text="fmtUSD(row.max_ticket_usd)"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+                <div x-show="(dashboardStats?.over_300k?.length || 0) === 0"
+                  class="px-5 py-8 text-center text-slate-500 text-sm">
+                  ✓ Sin transacciones individuales sobre USD 300K en los últimos 7 días.
+                </div>
+              </div>
+            </div>
+
+            <!-- ── Widget 3: Volumen por país destino ── -->
+            <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+              <div class="px-5 py-4 border-b border-slate-700 flex items-center gap-2">
+                <span class="text-indigo-400">🌍</span>
+                <h3 class="text-sm font-semibold text-white">Volumen Acumulado USD por País de Destino</h3>
+                <span x-show="dashboardStats?.by_country === null"
+                  class="spin text-orange-400 text-sm ml-1">⏳</span>
+              </div>
+              <!-- Loading -->
+              <div x-show="dashboardStats?.by_country === null"
+                class="flex items-center justify-center py-12 text-slate-500 text-sm gap-2">
+                <span class="spin inline-block">⏳</span> Ejecutando consulta...
+              </div>
+              <!-- Loaded -->
+              <div x-show="Array.isArray(dashboardStats?.by_country)">
+                <!-- KPIs -->
+                <div class="grid grid-cols-3 divide-x divide-slate-700 border-b border-slate-700">
+                  <div class="px-5 py-4">
+                    <p class="text-xs text-slate-400 mb-1 uppercase tracking-wider">Países Destino</p>
+                    <p class="text-2xl font-bold text-white" x-text="stats3Totals.num_countries"></p>
+                  </div>
+                  <div class="px-5 py-4">
+                    <p class="text-xs text-slate-400 mb-1 uppercase tracking-wider">Total Transacciones</p>
+                    <p class="text-2xl font-bold text-blue-400" x-text="fmtNum(stats3Totals.total_trx)"></p>
+                  </div>
+                  <div class="px-5 py-4">
+                    <p class="text-xs text-slate-400 mb-1 uppercase tracking-wider">Volumen Total USD</p>
+                    <p class="text-2xl font-bold text-orange-400" x-text="fmtUSD(stats3Totals.total_usd)"></p>
+                  </div>
+                </div>
+                <!-- Horizontal bar chart (top 15) -->
+                <div class="px-5 py-4 chart-container" style="height:320px">
+                  <canvas id="chartCountryVol"></canvas>
+                </div>
+                <!-- Expandable full table -->
+                <div class="border-t border-slate-700">
+                  <button @click="stats3TableOpen = !stats3TableOpen"
+                    class="w-full px-5 py-3 text-xs text-slate-400 hover:text-white flex items-center gap-2 transition">
+                    <span x-text="stats3TableOpen ? '▼' : '▶'"></span>
+                    <span>Ver tabla completa</span>
+                    <span class="text-slate-600"
+                      x-text="'(' + (dashboardStats?.by_country?.length || 0) + ' países)'"></span>
+                  </button>
+                  <div x-show="stats3TableOpen" x-transition class="overflow-x-auto">
+                    <table class="w-full text-xs">
+                      <thead>
+                        <tr class="border-t border-b border-slate-700 bg-slate-900/50">
+                          <th class="px-4 py-2 text-left text-slate-400 font-medium">#</th>
+                          <th class="px-4 py-2 text-left text-slate-400 font-medium">País</th>
+                          <th class="px-4 py-2 text-right text-slate-400 font-medium">TRX</th>
+                          <th class="px-4 py-2 text-right text-slate-400 font-medium">Clientes</th>
+                          <th class="px-4 py-2 text-right text-slate-400 font-medium">Beneficiarios</th>
+                          <th class="px-4 py-2 text-right text-slate-400 font-medium">Vol. USD</th>
+                          <th class="px-4 py-2 text-right text-slate-400 font-medium">Avg Ticket</th>
+                          <th class="px-4 py-2 text-right text-slate-400 font-medium">Máx Ticket</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="(row, i) in (dashboardStats?.by_country || [])" :key="i">
+                          <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition">
+                            <td class="px-4 py-2 text-slate-500" x-text="i + 1"></td>
+                            <td class="px-4 py-2 text-white">
+                              <span class="font-medium"
+                                x-text="row.beneficiary_country_name || row.beneficiary_country_code || '—'"></span>
+                              <span class="text-slate-500 ml-1 text-[10px]"
+                                x-show="row.beneficiary_country_code && row.beneficiary_country_name"
+                                x-text="'(' + row.beneficiary_country_code + ')'"></span>
+                            </td>
+                            <td class="px-4 py-2 text-right text-slate-300" x-text="fmtNum(row.total_transactions)"></td>
+                            <td class="px-4 py-2 text-right text-slate-300" x-text="fmtNum(row.unique_customers)"></td>
+                            <td class="px-4 py-2 text-right text-slate-300" x-text="fmtNum(row.unique_beneficiaries)"></td>
+                            <td class="px-4 py-2 text-right text-orange-400 font-medium whitespace-nowrap"
+                              x-text="fmtUSD(row.total_amount_usd)"></td>
+                            <td class="px-4 py-2 text-right text-slate-400 whitespace-nowrap"
+                              x-text="fmtUSD(row.avg_ticket_usd)"></td>
+                            <td class="px-4 py-2 text-right text-yellow-400 whitespace-nowrap"
+                              x-text="fmtUSD(row.max_ticket_usd)"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
       </div>
 
       <!-- ===== TAB: ALERTAS ===== -->
@@ -1548,6 +1791,16 @@
       geminiKey: '',
       geminiKeySaved: false,
 
+      // Dashboard stats (3 informational widgets — two-phase async)
+      dashboardStats: null,
+      dashboardStatsLoading: false,
+      dashboardStatsError: null,
+      dashboardStatsRefreshedAt: null,
+      stats3TableOpen: false,
+      _chartDailyEvol: null,
+      _chartCountry: null,
+      _statsAbortGen: 0,         // incremented on each new load to cancel stale polls
+
       // -----------------------------------------------
       // INIT
       // -----------------------------------------------
@@ -1972,8 +2225,14 @@
         this.kpiWhitelist = this.whitelist.length;
 
         this.dashboardLoading = false;
-
         this.$nextTick(() => this._renderCharts());
+
+        // Load real-time transaction stats if cluster is available
+        if ((forceReload || !this.dashboardStats) && this.clusterStatus === 'available') {
+          this.loadDashboardStats(); // non-blocking — updates widgets when done
+        } else if (this.clusterStatus !== 'available' && !this.dashboardStats) {
+          this.dashboardStatsError = 'cluster_paused';
+        }
       },
 
       _renderCharts() {
@@ -2331,6 +2590,216 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
 
       cancelBatch() {
         if (this.batchRun) this.batchRun.cancelled = true;
+      },
+
+      // -----------------------------------------------
+      // DASHBOARD STATS (3 informational widgets)
+      // -----------------------------------------------
+      async loadDashboardStats() {
+        if (this.clusterStatus !== 'available') {
+          this.dashboardStatsError = 'cluster_paused';
+          return;
+        }
+
+        // Cancel any previous poll loop
+        const myGen = ++this._statsAbortGen;
+        this.dashboardStatsLoading = true;
+        this.dashboardStatsError = null;
+
+        // ── Phase 1: Submit queries (returns stmt_ids instantly) ──
+        const submit = await this.api('GET', '/dashboard/stats');
+        if (!submit || !submit.stmt_ids) {
+          if (submit?.error === 'cluster_paused') {
+            this.dashboardStatsError = 'cluster_paused';
+          } else {
+            this.dashboardStatsError = submit?.error || 'Error iniciando estadísticas';
+          }
+          this.dashboardStatsLoading = false;
+          return;
+        }
+        const [q0, q1, q2] = submit.stmt_ids;
+
+        // ── Phase 2: Poll results every 4s until all_done or 3-min timeout ──
+        const deadline = Date.now() + 180_000;
+        let partial = { daily_evolution: null, over_300k: null, by_country: null };
+
+        while (Date.now() < deadline) {
+          if (myGen !== this._statsAbortGen) return; // newer load started, abort
+          await new Promise(r => setTimeout(r, 4000));
+          if (myGen !== this._statsAbortGen) return;
+
+          const res = await this.api('GET', `/dashboard/stats/result?q0=${q0}&q1=${q1}&q2=${q2}`);
+          if (!res || myGen !== this._statsAbortGen) break;
+
+          // Update partial stats as individual queries finish
+          let updated = false;
+          if (res.daily_evolution !== null && res.daily_evolution !== undefined && partial.daily_evolution === null) {
+            partial.daily_evolution = res.daily_evolution; updated = true;
+          }
+          if (res.over_300k !== null && res.over_300k !== undefined && partial.over_300k === null) {
+            partial.over_300k = res.over_300k; updated = true;
+          }
+          if (res.by_country !== null && res.by_country !== undefined && partial.by_country === null) {
+            partial.by_country = res.by_country; updated = true;
+          }
+          if (updated) {
+            this.dashboardStats = { ...partial };
+            this.dashboardStatsRefreshedAt = new Date().toISOString();
+            this.$nextTick(() => this._renderStatsCharts());
+          }
+          if (res.all_done) break;
+        }
+
+        this.dashboardStatsLoading = false;
+      },
+
+      _aggregateDailyEvol() {
+        const daily = {};
+        for (const row of (this.dashboardStats?.daily_evolution || [])) {
+          const d = row.trx_date || '';
+          if (!daily[d]) daily[d] = { date: d, total_transactions: 0, unique_customers: 0, total_amount_usd: 0 };
+          daily[d].total_transactions += Number(row.total_transactions) || 0;
+          daily[d].total_amount_usd   += Number(row.total_amount_usd) || 0;
+          daily[d].unique_customers   += Number(row.unique_customers) || 0;
+        }
+        return Object.values(daily).sort((a, b) => a.date.localeCompare(b.date));
+      },
+
+      get stats1Totals() {
+        const rows = Array.isArray(this.dashboardStats?.daily_evolution) ? this.dashboardStats.daily_evolution : [];
+        return {
+          total_trx:        rows.reduce((a, r) => a + (Number(r.total_transactions) || 0), 0),
+          total_usd:        rows.reduce((a, r) => a + (Number(r.total_amount_usd) || 0), 0),
+          unique_customers: rows.reduce((a, r) => a + (Number(r.unique_customers) || 0), 0),
+        };
+      },
+
+      get stats2Totals() {
+        const rows = Array.isArray(this.dashboardStats?.over_300k) ? this.dashboardStats.over_300k : [];
+        return {
+          total_trx:  rows.reduce((a, r) => a + (Number(r.trx_over_300k) || 0), 0),
+          total_usd:  rows.reduce((a, r) => a + (Number(r.total_amount_usd_over_300k) || 0), 0),
+          max_ticket: rows.reduce((a, r) => Math.max(a, Number(r.max_ticket_usd) || 0), 0),
+        };
+      },
+
+      get stats3Totals() {
+        const rows = Array.isArray(this.dashboardStats?.by_country) ? this.dashboardStats.by_country : [];
+        return {
+          num_countries: rows.length,
+          total_trx:     rows.reduce((a, r) => a + (Number(r.total_transactions) || 0), 0),
+          total_usd:     rows.reduce((a, r) => a + (Number(r.total_amount_usd) || 0), 0),
+        };
+      },
+
+      fmtNum(n) {
+        if (n == null || n === '') return '—';
+        n = Number(n);
+        if (isNaN(n)) return '—';
+        if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+        if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'K';
+        return n.toLocaleString('es-CL');
+      },
+
+      fmtUSD(n) {
+        if (n == null || n === '') return '—';
+        n = Number(n);
+        if (isNaN(n)) return '—';
+        if (n >= 1_000_000_000) return '$' + (n / 1_000_000_000).toFixed(2) + 'B';
+        if (n >= 1_000_000)     return '$' + (n / 1_000_000).toFixed(2) + 'M';
+        if (n >= 1_000)         return '$' + (n / 1_000).toFixed(1) + 'K';
+        return '$' + n.toLocaleString('es-CL');
+      },
+
+      _renderStatsCharts() {
+        if (!this.dashboardStats) return;
+
+        // Destroy existing
+        if (this._chartDailyEvol) { this._chartDailyEvol.destroy(); this._chartDailyEvol = null; }
+        if (this._chartCountry)   { this._chartCountry.destroy();   this._chartCountry = null; }
+
+        // ── Chart 1: Daily evolution (dual-axis bar) ──
+        const dailyCanvas = document.getElementById('chartDailyEvol');
+        if (dailyCanvas) {
+          const daily = this._aggregateDailyEvol();
+          const labels = daily.map(d => d.date.slice(5)); // MM-DD
+          this._chartDailyEvol = new Chart(dailyCanvas, {
+            type: 'bar',
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: 'Transacciones',
+                  data: daily.map(d => d.total_transactions),
+                  backgroundColor: '#f97316',
+                  borderRadius: 4,
+                  yAxisID: 'y',
+                },
+                {
+                  label: 'Monto USD (M)',
+                  data: daily.map(d => (d.total_amount_usd / 1_000_000).toFixed(3)),
+                  backgroundColor: '#3b82f6',
+                  borderRadius: 4,
+                  yAxisID: 'y1',
+                  type: 'line',
+                  borderColor: '#3b82f6',
+                  tension: 0.3,
+                  pointRadius: 4,
+                  pointBackgroundColor: '#3b82f6',
+                  fill: false,
+                },
+              ],
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: {
+                legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+              },
+              scales: {
+                x:  { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
+                y:  { grid: { color: '#1e293b' }, beginAtZero: true,
+                      ticks: { color: '#f97316', stepSize: 1 },
+                      title: { display: true, text: 'TRX', color: '#f97316', font: { size: 10 } } },
+                y1: { position: 'right', grid: { display: false }, beginAtZero: true,
+                      ticks: { color: '#3b82f6', callback: v => '$' + Number(v).toFixed(1) + 'M' },
+                      title: { display: true, text: 'USD', color: '#3b82f6', font: { size: 10 } } },
+              },
+            },
+          });
+        }
+
+        // ── Chart 2: Country horizontal bar ──
+        const countryCanvas = document.getElementById('chartCountryVol');
+        if (countryCanvas) {
+          const countries = (this.dashboardStats.by_country || []).slice(0, 15);
+          this._chartCountry = new Chart(countryCanvas, {
+            type: 'bar',
+            data: {
+              labels: countries.map(c => c.beneficiary_country_name || c.beneficiary_country_code || 'N/A'),
+              datasets: [{
+                label: 'Monto USD',
+                data: countries.map(c => Number(c.total_amount_usd) || 0),
+                backgroundColor: '#6366f1',
+                borderRadius: 4,
+              }],
+            },
+            options: {
+              indexAxis: 'y',
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { display: false } },
+              scales: {
+                x: {
+                  grid: { color: '#1e293b' },
+                  ticks: {
+                    color: '#94a3b8',
+                    callback: v => v >= 1_000_000 ? '$' + (v/1_000_000).toFixed(1)+'M' : '$' + (v/1_000).toFixed(0)+'K',
+                  },
+                },
+                y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', font: { size: 11 } } },
+              },
+            },
+          });
+        }
       },
 
       async runAllInCategory(catKey) {
