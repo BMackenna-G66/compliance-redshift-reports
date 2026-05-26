@@ -790,7 +790,7 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-700">
-              <template x-for="entry in whitelist" :key="entry.id">
+              <template x-for="entry in whitelist" :key="entry.whitelist_id">
                 <tr class="hover:bg-slate-700/50 transition">
                   <td class="px-4 py-2.5 text-slate-300 font-mono text-xs" x-text="entry.entity_field"></td>
                   <td class="px-4 py-2.5 text-white font-medium text-xs" x-text="entry.entity_value"></td>
@@ -802,7 +802,7 @@
                   <td class="px-4 py-2.5 text-slate-400 text-xs" x-text="formatDate(entry.expires_at)"></td>
                   <td class="px-4 py-2.5 text-slate-400 text-xs max-w-xs truncate" x-text="entry.reason||'—'"></td>
                   <td class="px-4 py-2.5 text-center">
-                    <button @click="removeWhitelist(entry.id)"
+                    <button @click="removeWhitelist(entry.whitelist_id)"
                       class="text-xs text-red-400 hover:text-white bg-red-900/30 hover:bg-red-600 border border-red-800 px-2 py-1 rounded transition">
                       × Eliminar
                     </button>
