@@ -403,6 +403,8 @@ def _esc(s) -> str:
 def _rs_exec(sql: str) -> list[dict]:
     """Execute SQL via Redshift Data API; poll until done; return rows as list of dicts."""
     try:
+        # Redshift Data API rejects trailing semicolons
+        sql = sql.strip().rstrip(";").strip()
         resp_exec = redshift_data.execute_statement(
             ClusterIdentifier=CLUSTER_ID,
             Database=DATABASE_NAME,

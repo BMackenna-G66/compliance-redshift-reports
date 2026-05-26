@@ -459,6 +459,8 @@ def render_query(
 
 def execute_query(sql: str, api_params: list[dict] | None = None) -> list[dict]:
     logger.info("Submitting query to Redshift Data API")
+    # Redshift Data API rejects trailing semicolons
+    sql = sql.strip().rstrip(";").strip()
     kwargs: dict = dict(
         ClusterIdentifier=CLUSTER_ID,
         Database=DATABASE,
