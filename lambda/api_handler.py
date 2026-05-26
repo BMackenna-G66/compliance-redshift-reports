@@ -830,11 +830,12 @@ def delete_query(report_name: str):
 
 def get_whitelist():
     try:
+        today = dt.datetime.utcnow().strftime("%Y-%m-%d")
         sql = (
             "SELECT whitelist_id, entity_field, entity_value, duration_days, reason, scope, "
             "report_name, created_at::VARCHAR AS created_at, expires_at::VARCHAR AS expires_at "
             "FROM compliance.whitelist "
-            "WHERE expires_at > CURRENT_TIMESTAMP "
+            f"WHERE expires_at > '{today}' "
             "ORDER BY created_at DESC"
         )
         items = _rs_exec(sql)
@@ -859,16 +860,18 @@ def add_to_whitelist(body: dict):
     wid = str(uuid.uuid4())
     ef = _esc(entity_field)
     ev = _esc(entity_value)
-    dd = duration_days
     reason_esc = _esc(reason)
     scope_esc = _esc(scope)
     rn = _esc(report_name if scope == "report" else "")
 
+    # Compute expiry in Python to avoid Redshift DATEADD timezone issues
+    expires_at = (dt.datetime.utcnow() + dt.timedelta(days=duration_days)).strftime("%Y-%m-%d %H:%M:%S")
+
     sql = (
         f"INSERT INTO compliance.whitelist "
         f"(whitelist_id, entity_field, entity_value, duration_days, reason, scope, report_name, expires_at) "
-        f"VALUES ('{wid}', '{ef}', '{ev}', {dd}, '{reason_esc}', '{scope_esc}', '{rn}', "
-        f"DATEADD(day, {dd}, CURRENT_TIMESTAMP))"
+        f"VALUES ('{wid}', '{ef}', '{ev}', {duration_days}, '{reason_esc}', '{scope_esc}', '{rn}', "
+        f"'{expires_at}')"
     )
     _rs_exec(sql)
     return resp(201, {"whitelist_id": wid})
@@ -929,7 +932,7 @@ def add_alert(body: dict):
 def review_alert(alert_id: str):
     """Move an alert from 'active' to 'reviewed' (ya revisados)."""
     sql = (
-        f"UPDATE compliance.alerts SET status = 'reviewed', reviewed_at = CURRENT_TIMESTAMP "
+        f"UPDATE compliance.alerts SET status = 'reviewed', reviewed_at = SYSDATE "
         f"WHERE alert_id = '{_esc(alert_id)}'"
     )
     _rs_exec(sql)
