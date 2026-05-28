@@ -37,6 +37,7 @@ import io
 import json
 import logging
 import os
+import re
 import time
 import urllib.request
 from email.mime.application import MIMEApplication
@@ -402,8 +403,15 @@ def inject_whitelist_exclusions(sql: str, whitelist_entries: list[dict]) -> str:
         return sql
     conditions = []
     for field, values in by_field.items():
+        # Only inject condition if the field name actually appears in the SQL —
+        # otherwise the outer _wt_base subquery won't expose that column.
+        if not re.search(r'\b' + re.escape(field) + r'\b', sql, re.IGNORECASE):
+            logger.info("Whitelist: skipping field '%s' — not found in query columns", field)
+            continue
         quoted = ", ".join(f"'{v.replace(chr(39), chr(39)+chr(39))}'" for v in values)
         conditions.append(f"CAST({field} AS VARCHAR) NOT IN ({quoted})")
+    if not conditions:
+        return sql
     where_clause = " AND ".join(conditions)
     wrapped = f"SELECT * FROM (\n{sql}\n) _wt_base\nWHERE {where_clause}"
     logger.info("Whitelist injection: excluded %d entries across %d fields", len(whitelist_entries), len(by_field))
