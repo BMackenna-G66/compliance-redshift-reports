@@ -388,8 +388,96 @@ def fetch_active_whitelist(report_name: str = "") -> list[dict]:
         return []
 
 
+def _final_select_columns(sql: str) -> set:
+    """Return the set of column names exposed by the outermost SELECT.
+
+    Walks the SQL character by character tracking parenthesis depth so that
+    columns inside CTEs / subqueries are ignored.  For each top-level SELECT
+    item we take the explicit AS alias when present, otherwise the bare
+    identifier at the end of the expression (e.g. 't.customer_id' → 'customer_id').
+    """
+    sql_up = sql.upper()
+    # Find the position of the LAST top-level SELECT (depth == 0)
+    depth = 0
+    final_pos = -1
+    i = 0
+    while i < len(sql):
+        c = sql[i]
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+        elif depth == 0 and sql_up[i:i + 6] == 'SELECT':
+            final_pos = i
+        i += 1
+    if final_pos == -1:
+        return set()
+
+    after_select = sql[final_pos + 6:]
+    sql_up2 = after_select.upper()
+
+    # Find the FROM that terminates the SELECT list (at depth 0)
+    depth = 0
+    from_pos = len(after_select)
+    i = 0
+    while i < len(after_select):
+        c = after_select[i]
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+        elif depth == 0 and sql_up2[i:i + 4] == 'FROM':
+            from_pos = i
+            break
+        i += 1
+
+    select_clause = after_select[:from_pos]
+
+    # Split by commas at depth 0
+    items = []
+    buf: list[str] = []
+    depth = 0
+    for c in select_clause:
+        if c == '(':
+            depth += 1
+            buf.append(c)
+        elif c == ')':
+            depth -= 1
+            buf.append(c)
+        elif c == ',' and depth == 0:
+            items.append(''.join(buf).strip())
+            buf = []
+        else:
+            buf.append(c)
+    if buf:
+        items.append(''.join(buf).strip())
+
+    columns: set = set()
+    for item in items:
+        item = item.strip()
+        if not item or item == '*':
+            continue
+        # Explicit alias:  expr AS alias
+        m = re.search(r'\bAS\s+(\w+)\s*$', item, re.IGNORECASE)
+        if m:
+            columns.add(m.group(1).lower())
+        else:
+            # Bare identifier or table.column — take the last word
+            m2 = re.search(r'(\w+)\s*$', item)
+            if m2:
+                word = m2.group(1).lower()
+                if word not in ('asc', 'desc', 'distinct'):
+                    columns.add(word)
+    return columns
+
+
 def inject_whitelist_exclusions(sql: str, whitelist_entries: list[dict]) -> str:
-    """Wrap SQL in a subquery that excludes whitelisted entities."""
+    """Wrap SQL in a subquery that excludes whitelisted entities.
+
+    Only injects a WHERE condition for fields that are actually present in
+    the outermost SELECT output (i.e. available in _wt_base after wrapping).
+    Fields that only appear inside CTEs or aggregate functions are skipped.
+    """
     if not whitelist_entries:
         return sql
     # Group exclusions by field
@@ -401,12 +489,14 @@ def inject_whitelist_exclusions(sql: str, whitelist_entries: list[dict]) -> str:
             by_field.setdefault(field, []).append(value)
     if not by_field:
         return sql
+
+    available = _final_select_columns(sql)
+    logger.info("Whitelist: final SELECT columns detected: %s", sorted(available))
+
     conditions = []
     for field, values in by_field.items():
-        # Only inject condition if the field name actually appears in the SQL —
-        # otherwise the outer _wt_base subquery won't expose that column.
-        if not re.search(r'\b' + re.escape(field) + r'\b', sql, re.IGNORECASE):
-            logger.info("Whitelist: skipping field '%s' — not found in query columns", field)
+        if field.lower() not in available:
+            logger.info("Whitelist: skipping field '%s' — not in final SELECT output", field)
             continue
         quoted = ", ".join(f"'{v.replace(chr(39), chr(39)+chr(39))}'" for v in values)
         conditions.append(f"CAST({field} AS VARCHAR) NOT IN ({quoted})")
