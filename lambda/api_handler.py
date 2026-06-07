@@ -627,6 +627,10 @@ def handler(event, context):  # noqa: ARG001
         if method == "GET" and parts == ["cluster", "status"]:
             return get_cluster_status()
 
+        # POST /analyze/individual
+        if method == "POST" and parts == ["analyze", "individual"]:
+            return run_individual_analysis(body)
+
         # POST /cluster/wake
         if method == "POST" and parts == ["cluster", "wake"]:
             return wake_cluster()
@@ -978,6 +982,46 @@ def get_dashboard_stats():
                 "message": "El cluster está pausado. Enciéndelo para cargar las estadísticas.",
             })
         return resp(200, {"error": str(e), "message": "Error enviando consultas al cluster."})
+
+
+def run_individual_analysis(body: dict):
+    """Submit an individual AML analysis for a list of customer_ids."""
+    customer_ids = body.get("customer_ids", [])
+    if not customer_ids:
+        return resp(400, {"error": "customer_ids is required"})
+    if len(customer_ids) > 100:
+        return resp(400, {"error": "Maximum 100 customer_ids per analysis"})
+
+    # Sanitize: accept integers or numeric strings
+    clean_ids = []
+    for cid in customer_ids:
+        try:
+            clean_ids.append(int(str(cid).strip()))
+        except (ValueError, TypeError):
+            return resp(400, {"error": f"Invalid customer_id: {cid!r}"})
+
+    run_id = str(uuid.uuid4())
+    now = dt.datetime.utcnow().isoformat()
+    runs_table.put_item(Item={
+        "run_id": run_id,
+        "report_name": "individual_aml_analysis",
+        "status": "RUNNING",
+        "params": json.dumps({"customer_ids": clean_ids, "n_customers": len(clean_ids)}),
+        "started_at": now,
+        "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
+    })
+
+    lambda_client.invoke(
+        FunctionName=REPORT_LAMBDA_NAME,
+        InvocationType="Event",
+        Payload=json.dumps({
+            "report_name": "individual_aml_analysis",
+            "customer_ids": clean_ids,
+            "run_id": run_id,
+            "keep_session": False,
+        }),
+    )
+    return resp(202, {"run_id": run_id, "status": "RUNNING", "n_customers": len(clean_ids)})
 
 
 def get_dashboard_stats_result(q0: str, q1: str, q2: str):

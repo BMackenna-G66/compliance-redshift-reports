@@ -52,6 +52,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from aml_individual import build_aml_excel
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -933,6 +935,59 @@ def handler(event, context):  # noqa: ARG001
     report_name = event.get("report_name") or REPORT_NAME
     # run_id is injected by api_handler when a user triggers via the frontend
     run_id: str | None = event.get("run_id")
+
+    # ── Módulo especial: Análisis AML Individual ──────────────────────────
+    if report_name == "individual_aml_analysis":
+        customer_ids = event.get("customer_ids", [])
+        if not customer_ids:
+            err = "customer_ids is required for individual_aml_analysis"
+            _update_run(run_id, status="ERROR", error_message=err,
+                        completed_at=dt.datetime.utcnow().isoformat())
+            raise ValueError(err)
+        try:
+            _update_run(run_id, status="RESUMING")
+            ensure_cluster_available()
+
+            # Build customer_ids SQL list
+            ids_sql = ", ".join(str(int(i)) for i in customer_ids)
+
+            # Load and render SQL templates
+            sql_out = (QUERIES_DIR / "individual_aml_out.sql").read_text(encoding="utf-8")
+            sql_in  = (QUERIES_DIR / "individual_aml_in.sql").read_text(encoding="utf-8")
+            sql_out = sql_out.strip().rstrip(";").replace("{customer_ids}", ids_sql)
+            sql_in  = sql_in.strip().rstrip(";").replace("{customer_ids}", ids_sql)
+
+            rows_out = execute_query(sql_out)
+            rows_in  = execute_query(sql_in)
+
+            xlsx_bytes = build_aml_excel(rows_out, rows_in, customer_ids)
+
+            run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            key = f"individual_aml_analysis/{run_ts}_customers-{len(customer_ids)}.xlsx"
+
+            s3_url = upload_to_s3(
+                xlsx_bytes, key,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            total_rows = len(rows_out) + len(rows_in)
+            _update_run(
+                run_id,
+                status="DONE",
+                completed_at=dt.datetime.utcnow().isoformat(),
+                s3_key=key,
+                row_count=total_rows,
+                result_preview=json.dumps([], default=str),
+            )
+            return {"status": "ok", "report_name": report_name, "rows": total_rows, "s3_key": key}
+        except Exception as e:
+            logger.exception("Individual AML analysis failed: %s", e)
+            _update_run(run_id, status="ERROR", completed_at=dt.datetime.utcnow().isoformat(), error_message=str(e))
+            raise
+        finally:
+            keep_session = event.get("keep_session", False)
+            if AUTO_PAUSE and not keep_session:
+                pause_cluster()
+    # ── Fin módulo especial ───────────────────────────────────────────────
 
     # Validate: built-in OR exists in DynamoDB catalog
     is_builtin = report_name in REPORT_CONFIGS

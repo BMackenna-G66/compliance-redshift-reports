@@ -82,6 +82,11 @@
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             Queries
           </button>
+          <button @click="switchTab('aml_individual')"
+            :class="activeTab==='aml_individual' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
+            🔬 Análisis Individual
+          </button>
         </nav>
 
         <!-- Right side: cluster + user -->
@@ -1164,6 +1169,82 @@
         </div>
       </div>
 
+      <!-- ===== TAB: ANÁLISIS INDIVIDUAL AML ===== -->
+      <div x-show="activeTab==='aml_individual'" x-cloak>
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h1 class="text-xl font-bold text-white">🔬 Análisis AML Individual</h1>
+            <p class="text-sm text-slate-400 mt-0.5">Análisis completo de scoring, flags y red de beneficiarios para clientes específicos</p>
+          </div>
+        </div>
+
+        <!-- Input form -->
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-6">
+          <h2 class="text-sm font-semibold text-slate-300 mb-4">Selección de Clientes</h2>
+          <div class="space-y-4">
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Customer IDs <span class="text-slate-500">(separados por comas o saltos de línea)</span></label>
+              <textarea x-model="amlCustomerIds" rows="4"
+                placeholder="Ej: 3696886, 2387473, 3162602&#10;o uno por línea"
+                class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"></textarea>
+              <p class="text-xs text-slate-500 mt-1">Máximo 100 clientes por análisis</p>
+            </div>
+
+            <div class="flex items-center gap-3">
+              <button @click="runAmlIndividual()"
+                :disabled="amlRunning || !amlCustomerIds.trim()"
+                class="px-6 py-2.5 text-sm font-semibold text-white bg-orange-500 hover:bg-orange-600 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
+                <span x-show="!amlRunning">▶ Ejecutar Análisis</span>
+                <span x-show="amlRunning" class="flex items-center gap-2"><span class="spin">⏳</span> Analizando...</span>
+              </button>
+              <button x-show="amlRunId" @click="amlRunId=null; amlResult=null; amlError=null"
+                class="px-4 py-2.5 text-sm text-slate-400 hover:text-white transition">
+                Nueva búsqueda
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Error -->
+        <div x-show="amlError" class="bg-red-900/40 border border-red-700 rounded-xl p-4 mb-4 text-red-300 text-sm" x-text="amlError"></div>
+
+        <!-- Progress / Result -->
+        <div x-show="amlRunId && !amlError" class="bg-slate-800 rounded-xl border border-slate-700 p-6">
+
+          <!-- Running state -->
+          <div x-show="amlRunning" class="text-center py-8">
+            <div class="text-4xl mb-3 spin inline-block">⏳</div>
+            <p class="text-slate-300 font-medium" x-text="amlStatusMsg"></p>
+            <p class="text-slate-500 text-sm mt-1">El análisis tarda entre 2 y 5 minutos. Puedes esperar aquí.</p>
+          </div>
+
+          <!-- Done state -->
+          <div x-show="!amlRunning && amlResult">
+            <div class="flex items-center justify-between mb-4">
+              <div class="flex items-center gap-3">
+                <span class="text-2xl">✅</span>
+                <div>
+                  <p class="text-white font-semibold">Análisis completado</p>
+                  <p class="text-slate-400 text-sm" x-text="`${amlResult?.row_count?.toLocaleString() ?? 0} transacciones procesadas`"></p>
+                </div>
+              </div>
+              <a x-show="amlResult?.download_url" :href="amlResult?.download_url"
+                class="flex items-center gap-2 px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-lg transition">
+                ⬇ Descargar Excel AML
+              </a>
+            </div>
+            <div class="bg-slate-900/50 rounded-lg p-3 text-xs text-slate-400">
+              <span class="text-slate-300 font-medium">Archivo:</span>
+              <span x-text="amlResult?.s3_key?.split('/').pop() ?? '—'" class="font-mono ml-1"></span>
+              <span class="mx-2">·</span>
+              <span class="text-slate-300 font-medium">Run ID:</span>
+              <span x-text="amlRunId" class="font-mono ml-1"></span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
     </main>
   </div>
 
@@ -1765,6 +1846,15 @@
       queryLoading: false,
       queryMessage: null,
 
+      // Análisis Individual AML
+      amlCustomerIds: '',
+      amlRunning: false,
+      amlRunId: null,
+      amlResult: null,
+      amlError: null,
+      amlStatusMsg: 'Iniciando análisis...',
+      _amlPollTimer: null,
+
       // Cluster
       clusterStatus: 'unknown',
       clusterLoading: false,
@@ -2125,6 +2215,54 @@
       // -----------------------------------------------
       // WHITELIST
       // -----------------------------------------------
+      // -----------------------------------------------
+      // ANÁLISIS INDIVIDUAL AML
+      // -----------------------------------------------
+      async runAmlIndividual() {
+        // Parse customer IDs from textarea (commas, newlines, spaces)
+        const raw = this.amlCustomerIds.trim();
+        if (!raw) return;
+        const ids = raw.split(/[\s,;]+/).map(s => s.trim()).filter(s => /^\d+$/.test(s)).map(Number);
+        if (ids.length === 0) { this.amlError = 'No se encontraron IDs válidos. Ingresa números separados por coma.'; return; }
+        if (ids.length > 100) { this.amlError = 'Máximo 100 customer_ids por análisis.'; return; }
+
+        this.amlRunning = true;
+        this.amlError = null;
+        this.amlResult = null;
+        this.amlRunId = null;
+        this.amlStatusMsg = 'Enviando análisis a la nube...';
+
+        const d = await this.api('POST', '/analyze/individual', { customer_ids: ids });
+        if (!d) { this.amlRunning = false; this.amlError = 'Error al iniciar el análisis.'; return; }
+
+        this.amlRunId = d.run_id;
+        this.amlStatusMsg = `Análisis iniciado para ${d.n_customers} cliente(s). Ejecutando queries en Redshift...`;
+        this._pollAmlRun();
+      },
+
+      async _pollAmlRun() {
+        if (!this.amlRunId) return;
+        const run = await this.api('GET', '/runs/' + this.amlRunId);
+        if (!run) { this.amlRunning = false; this.amlError = 'Error al consultar estado.'; return; }
+
+        const status = run.status;
+        if (status === 'RESUMING')  this.amlStatusMsg = 'Encendiendo cluster Redshift...';
+        else if (status === 'RUNNING') this.amlStatusMsg = 'Ejecutando queries y calculando scoring AML...';
+
+        if (status === 'DONE') {
+          this.amlRunning = false;
+          this.amlResult = run;
+          return;
+        }
+        if (status === 'ERROR') {
+          this.amlRunning = false;
+          this.amlError = run.error_message || 'El análisis falló. Revisa los logs.';
+          return;
+        }
+        // Still running — poll again in 5s
+        this._amlPollTimer = setTimeout(() => this._pollAmlRun(), 5000);
+      },
+
       async loadWhitelist() {
         this.whitelistLoading = true;
         const d = await this.api('GET', '/whitelist');
