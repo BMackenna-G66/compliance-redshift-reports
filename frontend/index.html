@@ -2511,8 +2511,10 @@
       // -----------------------------------------------
       async api(method, path, body = null) {
         try {
+          // Note: API Gateway auth is NONE (Firebase handles auth on the frontend).
+          // We intentionally omit the Authorization header because API Gateway's CORS
+          // config only allows Content-Type, and including Authorization blocks preflight.
           const headers = { 'Content-Type': 'application/json' };
-          if (this.authToken) headers['Authorization'] = 'Bearer ' + this.authToken;
           const opts = { method, credentials: 'omit', headers };
           if (body) opts.body = JSON.stringify(body);
           const r = await fetch(this.apiBase + path, opts);

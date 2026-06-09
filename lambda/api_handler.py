@@ -592,9 +592,27 @@ def handler(event, context):  # noqa: ARG001
         body = {}
 
     try:
-        # CORS preflight — return 200 so the browser accepts the request
+        # CORS preflight — return proper CORS headers so browser accepts the request.
+        # API Gateway $default route routes OPTIONS to Lambda, so we handle CORS here.
         if method == "OPTIONS":
-            return resp(200, {})
+            req_headers = event.get("headers", {}) or {}
+            origin = req_headers.get("origin") or req_headers.get("Origin", "")
+            _allowed_origins = {
+                "https://bmackenna-g66.github.io",
+                "https://di7f123v3u2y5.cloudfront.net",
+            }
+            cors_origin = origin if origin in _allowed_origins else "https://bmackenna-g66.github.io"
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": cors_origin,
+                    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+                    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                    "Access-Control-Max-Age": "300",
+                },
+                "body": "",
+            }
 
         # GET /reports
         if method == "GET" and not parts:
