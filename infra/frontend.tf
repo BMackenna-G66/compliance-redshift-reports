@@ -247,11 +247,14 @@ resource "aws_apigatewayv2_api" "main" {
   protocol_type = "HTTP"
 
   cors_configuration {
-    allow_credentials = true
+    allow_credentials = false
     allow_headers     = ["Authorization", "Content-Type"]
     allow_methods     = ["GET", "POST", "DELETE", "OPTIONS"]
-    allow_origins     = ["https://${aws_cloudfront_distribution.frontend.domain_name}"]
-    max_age           = 300
+    allow_origins     = [
+      "https://${aws_cloudfront_distribution.frontend.domain_name}",
+      "https://bmackenna-g66.github.io",
+    ]
+    max_age = 300
   }
 }
 
@@ -275,11 +278,12 @@ resource "aws_apigatewayv2_integration" "api_lambda" {
 }
 
 resource "aws_apigatewayv2_route" "default" {
-  api_id             = aws_apigatewayv2_api.main.id
-  route_key          = "$default"
-  target             = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
-  authorization_type = "JWT"
-  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.api_lambda.id}"
+  # Auth handled by Firebase Google Sign-In on the frontend (@global66.com only).
+  # Cognito JWT authorizer removed — it rejected Firebase tokens and blocked GitHub Pages.
+  authorization_type = "NONE"
 }
 
 resource "aws_apigatewayv2_stage" "default" {
