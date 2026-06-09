@@ -7,6 +7,40 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+  <script>
+    firebase.initializeApp({
+      apiKey: "AIzaSyCKduUg-DLxeOEx7ZDTbS8TpxRdTVyFMjI",
+      authDomain: "global66-compliance.firebaseapp.com",
+      projectId: "global66-compliance",
+      storageBucket: "global66-compliance.firebasestorage.app",
+      messagingSenderId: "925688930751",
+      appId: "1:925688930751:web:5c58f2f0ad3e73c102810a"
+    });
+    const _db = firebase.firestore();
+
+    // Decode JWT payload without verification (API Gateway validates it)
+    function _decodeToken(token) {
+      try {
+        return JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+      } catch(_) { return {}; }
+    }
+
+    // Write a session event to Firestore (fire-and-forget, silent on error)
+    function _logEvent(email, event, details = {}) {
+      try {
+        _db.collection('wt_sessions').add({
+          email:     email || 'unknown',
+          event:     event,
+          details:   details,
+          ts:        firebase.firestore.FieldValue.serverTimestamp(),
+          userAgent: navigator.userAgent.substring(0, 200),
+        });
+      } catch(_) {}
+    }
+  </script>
   <style>
     [x-cloak] { display: none !important; }
     .spin { animation: spin 1s linear infinite; display: inline-block; }
@@ -134,9 +168,19 @@
             class="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 hover:text-white transition shrink-0 text-sm">
             ⚙
           </button>
-          <!-- Username placeholder -->
-          <div class="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold shrink-0">
-            BM
+          <!-- User pill + logout -->
+          <div class="flex items-center gap-2">
+            <div class="flex flex-col items-end">
+              <span class="text-xs font-medium text-white leading-tight" x-text="currentUserEmail || '—'"></span>
+              <span class="text-xs text-slate-500 leading-tight">Compliance</span>
+            </div>
+            <div class="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center text-white text-xs font-bold shrink-0"
+              x-text="currentUserEmail ? currentUserEmail.substring(0,2).toUpperCase() : 'WT'">
+            </div>
+            <button @click="logout()" title="Cerrar sesión"
+              class="w-8 h-8 rounded-full bg-slate-700 hover:bg-red-600 flex items-center justify-center text-slate-400 hover:text-white transition shrink-0 text-sm">
+              ⏻
+            </button>
           </div>
         </div>
       </div>
@@ -1846,6 +1890,9 @@
       queryLoading: false,
       queryMessage: null,
 
+      // Usuario actual
+      currentUserEmail: '',
+
       // Análisis Individual AML
       amlCustomerIds: '',
       amlRunning: false,
@@ -1898,6 +1945,16 @@
         // Load auth token from localStorage
         this.authToken = localStorage.getItem('wt_id_token') || null;
 
+        // Decode user email from JWT and log session start
+        if (this.authToken) {
+          try {
+            const claims = _decodeToken(this.authToken);
+            this.currentUserEmail = claims.email || claims['cognito:username'] || '';
+            const isNewLogin = claims.iat && (Date.now()/1000 - claims.iat) < 300;
+            _logEvent(this.currentUserEmail, isNewLogin ? 'login' : 'session_resume');
+          } catch(_) {}
+        }
+
         // Restore session results from localStorage
         try {
           const saved = localStorage.getItem('wt_session_results');
@@ -1931,6 +1988,16 @@
 
         // Init dashboard after DOM renders
         this.$nextTick(() => this.initDashboard(false));
+      },
+
+      logout() {
+        _logEvent(this.currentUserEmail, 'logout');
+        // Brief delay so Firestore write fires before page unloads
+        setTimeout(() => {
+          localStorage.removeItem('wt_id_token');
+          localStorage.removeItem('wt_gemini_key');
+          location.reload();
+        }, 300);
       },
 
       // -----------------------------------------------
@@ -2119,6 +2186,7 @@
         this.running = true;
         this.runError = '';
         const payload = { report_name: this.selectedReport.report_name, ...this.runParams, keep_session: this.keepSession };
+        _logEvent(this.currentUserEmail, 'report_run', { report_name: this.selectedReport.report_name });
         const d = await this.api('POST', '/execute', payload);
         if (d?.run_id) {
           this.currentRun = { run_id: d.run_id, status: d.status || 'RUNNING' };
@@ -2226,6 +2294,7 @@
         if (ids.length === 0) { this.amlError = 'No se encontraron IDs válidos. Ingresa números separados por coma.'; return; }
         if (ids.length > 100) { this.amlError = 'Máximo 100 customer_ids por análisis.'; return; }
 
+        _logEvent(this.currentUserEmail, 'analysis_individual', { n_customers: ids.length, customer_ids: ids.slice(0,10) });
         this.amlRunning = true;
         this.amlError = null;
         this.amlResult = null;
