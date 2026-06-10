@@ -802,6 +802,63 @@ def build_excel(rows: list[dict]) -> bytes:
     return buf.getvalue()
 
 
+def _build_transaction_search_excel(rows: list[dict], n_requested: int) -> bytes:
+    """Generate Excel for transaction_search: one sheet, styled header, tipo_envio highlighted."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Transacciones"
+
+    header_font  = Font(bold=True, color="FFFFFF")
+    header_fill  = PatternFill("solid", fgColor="1B3A6B")
+    nac_fill     = PatternFill("solid", fgColor="DCFCE7")   # verde claro
+    int_fill     = PatternFill("solid", fgColor="DBEAFE")   # azul claro
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=False)
+
+    if not rows:
+        ws["A1"] = f"No se encontraron transacciones para los {n_requested} IDs consultados."
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    columns = list(rows[0].keys())
+    tipo_envio_col = columns.index("tipo_envio") + 1 if "tipo_envio" in columns else None
+
+    # Header row
+    for col_idx, col in enumerate(columns, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center_align
+
+    # Data rows
+    for row_idx, row in enumerate(rows, start=2):
+        for col_idx, col in enumerate(columns, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=row.get(col))
+            # Colorea tipo_envio según valor
+            if tipo_envio_col and col_idx == tipo_envio_col:
+                val = row.get(col, "") or ""
+                cell.fill = nac_fill if val == "Envío nacional" else int_fill
+                cell.alignment = center_align
+
+    # Column widths
+    col_widths = {
+        "transaction_id": 18, "customer_id": 14, "beneficiary_country_name": 26,
+        "tipo_envio": 20, "beneficiary_dni": 16, "beneficiary_dni_type": 18,
+        "beneficiary_name": 28, "beneficiary_first_name": 22, "beneficiary_last_name": 22,
+        "beneficiary_email": 32, "beneficiary_id": 16, "origin_country": 18,
+        "destiny_country": 18, "destiny_amount_usd": 20, "tx_status": 22, "start_date": 22,
+    }
+    for col_idx, col in enumerate(columns, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = col_widths.get(col, 20)
+
+    ws.freeze_panes = "A2"
+    ws.row_dimensions[1].height = 20
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def upload_to_s3(content: bytes, key: str, content_type: str) -> str:
     s3.put_object(
         Bucket=S3_BUCKET,
@@ -982,6 +1039,72 @@ def handler(event, context):  # noqa: ARG001
         except Exception as e:
             logger.exception("Individual AML analysis failed: %s", e)
             _update_run(run_id, status="ERROR", completed_at=dt.datetime.utcnow().isoformat(), error_message=str(e))
+            raise
+        finally:
+            keep_session = event.get("keep_session", False)
+            if AUTO_PAUSE and not keep_session:
+                pause_cluster()
+    # ── Módulo especial: Búsqueda de Transacciones por ID (Remesas) ─────────
+    if report_name == "transaction_search":
+        transaction_ids = event.get("transaction_ids", [])
+        if not transaction_ids:
+            err = "transaction_ids is required for transaction_search"
+            _update_run(run_id, status="ERROR", error_message=err,
+                        completed_at=dt.datetime.utcnow().isoformat())
+            raise ValueError(err)
+        try:
+            _update_run(run_id, status="RESUMING")
+            ensure_cluster_available()
+            _update_run(run_id, status="RUNNING")
+
+            ids_sql = ", ".join(str(int(i)) for i in transaction_ids)
+            sql = f"""
+SELECT
+    transaction_id,
+    customer_id,
+    beneficiary_country_name,
+    CASE
+        WHEN beneficiary_country_name = 'Chile' THEN 'Envío nacional'
+        ELSE 'Envío internacional'
+    END AS tipo_envio,
+    beneficiary_dni,
+    beneficiary_dni_type,
+    beneficiary_name,
+    beneficiary_first_name,
+    beneficiary_last_name,
+    beneficiary_email,
+    beneficiary_id,
+    origin_country,
+    destiny_country,
+    destiny_amount_usd,
+    tx_status,
+    start_date
+FROM "db_prod"."transaction"."transaction"
+WHERE transaction_id IN ({ids_sql})
+ORDER BY start_date DESC
+""".strip()
+
+            rows = execute_query(sql)
+            xlsx_bytes = _build_transaction_search_excel(rows, len(transaction_ids))
+
+            run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            key = f"transaction_search/{run_ts}_txs-{len(transaction_ids)}.xlsx"
+            upload_to_s3(xlsx_bytes, key,
+                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            _update_run(
+                run_id,
+                status="DONE",
+                completed_at=dt.datetime.utcnow().isoformat(),
+                s3_key=key,
+                row_count=len(rows),
+                result_preview=json.dumps([], default=str),
+            )
+            return {"status": "ok", "report_name": report_name, "rows": len(rows), "s3_key": key}
+        except Exception as e:
+            logger.exception("Transaction search failed: %s", e)
+            _update_run(run_id, status="ERROR", completed_at=dt.datetime.utcnow().isoformat(),
+                        error_message=str(e))
             raise
         finally:
             keep_session = event.get("keep_session", False)
