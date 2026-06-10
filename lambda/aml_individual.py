@@ -228,24 +228,27 @@ def _calc_flags(rows: list[dict], total_por_cliente: dict) -> dict:
         flag_structuring = 1 if len(struct_txs) >= 2 else 0
         n_structuring = len(struct_txs)
 
-        # F2: Velocidad — 3+ txs en el mismo date_only
+        # F2: Velocidad — 5+ txs en el mismo date_only
+        # (umbral subido de 3→5: en Global66 B2C/B2B, 3-4 txs/día es rutinario)
         dates_counter: dict = defaultdict(int)
         for r in txs:
             d = r.get('date_only')
             if d is not None:
                 dates_counter[d] += 1
         max_txs_per_day = max(dates_counter.values()) if dates_counter else 0
-        flag_velocidad = 1 if max_txs_per_day >= 3 else 0
+        flag_velocidad = 1 if max_txs_per_day >= 5 else 0
 
         # F3: Fan-out — 5+ beneficiary_id distintos (solo OUT)
         bene_ids_out = {r.get('beneficiary_id') for r in txs_out if r.get('beneficiary_id')}
         n_beneficiarios = len(bene_ids_out)
         flag_fanout = 1 if n_beneficiarios >= 5 else 0
 
-        # F4: Monto alto — 1+ tx con origin_amount_usd >= 10000
+        # F4: Monto alto — 2+ txs con origin_amount_usd >= 10000
+        # (umbral subido de 1→2 txs: una sola transferencia de $10K es normal en remesas B2B;
+        #  la repetición indica patrón sistemático de montos sobre umbral de reporte)
         monto_alto_txs = [r for r in txs if _to_float(r.get('origin_amount_usd')) >= 10000.0]
         n_txs_monto_alto = len(monto_alto_txs)
-        flag_monto_alto = 1 if n_txs_monto_alto >= 1 else 0
+        flag_monto_alto = 1 if n_txs_monto_alto >= 2 else 0
 
         # F5: País riesgo — destiny_country en HIGH_RISK_COUNTRIES
         paises_dest = {r.get('destiny_country') for r in txs_out if r.get('destiny_country')}
@@ -319,11 +322,16 @@ def _calc_flags(rows: list[dict], total_por_cliente: dict) -> dict:
             flag_diversif      * FLAG_WEIGHTS['flag_diversif']
         )
 
-        if risk_score >= 12:
+        # Umbrales de clasificación de riesgo (score máximo alcanzable: 17, F7=0)
+        # BAJO     0-2:  comportamiento rutinario de remesas, sin patrones sospechosos
+        # MEDIO    3-5:  1 indicador significativo activo (ej. estructuración o país riesgo)
+        # ALTO     6-9:  2+ indicadores combinados (patrones más sólidos de sospecha)
+        # CRÍTICO  ≥10:  múltiples banderas graves simultáneas
+        if risk_score >= 10:
             nivel_riesgo = 'CRÍTICO'
-        elif risk_score >= 8:
+        elif risk_score >= 6:
             nivel_riesgo = 'ALTO'
-        elif risk_score >= 4:
+        elif risk_score >= 3:
             nivel_riesgo = 'MEDIO'
         else:
             nivel_riesgo = 'BAJO'
@@ -1119,7 +1127,7 @@ def build_aml_excel(rows_out: list[dict], rows_in: list[dict], customer_ids: lis
     scoring_headers = [
         'ID Cliente', 'Nombre', 'Email', 'Txs Exitosas', 'Txs Total',
         'Total USD', 'Máx Tx USD', 'Score', 'Nivel',
-        '🚩Struct.(w=3)', '🚩Veloc.(w=2)', '🚩Fan-Out(w=2)', '🚩M.Alto(w=2)',
+        '🚩Struct.≥2tx(w=3)', '🚩Veloc.≥5/d(w=2)', '🚩Fan-Out≥5(w=2)', '🚩M.Alto≥2tx(w=2)',
         '🚩País Riesgo(w=3)', '🚩Redond.(w=1)', '🚩Dev.(w=2)', '🚩Conc.(w=1)',
         '🚩Crec.(w=2)', '🚩DivGeo(w=1)',
         'N Txs Struct.', 'Max Txs/día', 'N Benef Distinct', 'Txs ≥10K',
@@ -1769,14 +1777,16 @@ def build_aml_excel(rows_out: list[dict], rows_in: list[dict], customer_ids: lis
          '2 o más transacciones OUT con monto entre USD 8.000 y USD 9.999,99. '
          'Indicador de fraccionamiento de montos para evadir el umbral de reporte de USD 10.000.'),
         ('F2 Velocidad (peso 2)',
-         '3 o más transacciones en el mismo día calendario (date_only). '
-         'Alta frecuencia intradiaria puede indicar urgencia o automatización sospechosa.'),
+         '5 o más transacciones en el mismo día calendario (date_only). '
+         'Alta frecuencia intradiaria puede indicar urgencia o automatización sospechosa. '
+         '(Umbral ajustado: en Global66, 3-4 txs diarias es comportamiento rutinario.)'),
         ('F3 Fan-Out (peso 2)',
          '5 o más beneficiarios distintos en transacciones OUT. '
          'Dispersión elevada de fondos a múltiples destinatarios, posible layering.'),
         ('F4 Monto Alto (peso 2)',
-         'Al menos 1 transacción con monto >= USD 10.000. '
-         'Umbrales de reporte regulatorio — requiere verificación de fuente de fondos.'),
+         '2 o más transacciones con monto >= USD 10.000 en el período analizado. '
+         'La repetición de montos sobre umbral de reporte indica patrón sistemático, no transacción aislada. '
+         '(Umbral ajustado: 1 sola tx de $10K es normal en remesas B2B de Global66.)'),
         ('F5 País Riesgo (peso 3)',
          'Transacción OUT con country_dest en lista de jurisdicciones de alto riesgo '
          '(FATF Call for Action + FATF Increased Monitoring + OFAC). '
@@ -1828,19 +1838,19 @@ def build_aml_excel(rows_out: list[dict], rows_in: list[dict], customer_ids: lis
     ws12.write(r_niv + 1, 1, 'Rango de Score y Acción Recomendada', fmt_header)
 
     niveles_info = [
-        ('CRÍTICO (score ≥ 12)', fmt_critico,
-         'Score ≥ 12. Revisión inmediata obligatoria. Documentar investigación. '
+        ('CRÍTICO (score ≥ 10)', fmt_critico,
+         'Score ≥ 10. Revisión inmediata obligatoria. Documentar investigación. '
          'Evaluar reporte de Operación Sospechosa (ROS) ante la UAF. '
          'Considerar bloqueo preventivo del perfil.'),
-        ('ALTO (score 8-11)', fmt_alto,
-         'Score 8-11. Revisión en 24-48h. Solicitar documentación adicional al cliente. '
+        ('ALTO (score 6-9)', fmt_alto,
+         'Score 6-9. Revisión en 24-48h. Solicitar documentación adicional al cliente. '
          'Escalar a Oficial de Cumplimiento. Monitoreo reforzado.'),
-        ('MEDIO (score 4-7)', fmt_medio,
-         'Score 4-7. Revisión en el próximo ciclo regular (semanal). '
+        ('MEDIO (score 3-5)', fmt_medio,
+         'Score 3-5. Revisión en el próximo ciclo regular (semanal). '
          'Verificar consistencia con perfil transaccional declarado. '
          'Actualizar evaluación de riesgo del cliente.'),
-        ('BAJO (score 0-3)', fmt_bajo,
-         'Score 0-3. Sin acción inmediata requerida. '
+        ('BAJO (score 0-2)', fmt_bajo,
+         'Score 0-2. Sin acción inmediata requerida. '
          'Mantener monitoreo periódico estándar. '
          'Revisar si aparecen nuevas transacciones en próximas ejecuciones.'),
     ]
