@@ -1007,8 +1007,8 @@ def run_individual_analysis(body: dict):
     customer_ids = body.get("customer_ids", [])
     if not customer_ids:
         return resp(400, {"error": "customer_ids is required"})
-    if len(customer_ids) > 100:
-        return resp(400, {"error": "Maximum 100 customer_ids per analysis"})
+    if len(customer_ids) > 1000:
+        return resp(400, {"error": "Maximum 1000 customer_ids per analysis"})
 
     # Sanitize: accept integers or numeric strings
     clean_ids = []

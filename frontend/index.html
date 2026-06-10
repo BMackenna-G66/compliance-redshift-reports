@@ -1276,16 +1276,114 @@
           </div>
         </div>
 
-        <!-- Input form -->
+        <!-- ===== PASO 1: Extracción de Casos ===== -->
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-4">
+          <div class="flex items-center gap-3 mb-4">
+            <span class="flex items-center justify-center w-6 h-6 rounded-full bg-orange-500 text-white text-xs font-bold flex-shrink-0">1</span>
+            <div class="flex-1 min-w-0">
+              <h2 class="text-sm font-semibold text-slate-300">Extracción de Casos</h2>
+              <p class="text-xs text-slate-500">Importa el reporte de Salesforce (.xls) para extraer IDs de usuario y números de remesa automáticamente</p>
+            </div>
+            <span class="text-xs text-slate-500 bg-slate-700 px-2 py-0.5 rounded flex-shrink-0">Opcional</span>
+          </div>
+
+          <!-- Drop zone (mostrado cuando no hay archivo cargado) -->
+          <div x-show="!casesRows.length"
+            @dragover.prevent @dragenter.prevent @drop.prevent="handleCasesFileDrop($event)"
+            @click="$refs.casesFileInput.click()"
+            class="border-2 border-dashed border-slate-600 rounded-lg p-8 text-center cursor-pointer hover:border-orange-500/60 hover:bg-slate-700/20 transition select-none">
+            <input type="file" x-ref="casesFileInput" accept=".xls,.html,.htm" class="hidden"
+              @change="loadCasesFile($event.target.files[0]); $event.target.value=''">
+            <div x-show="!casesProcessing">
+              <p class="text-3xl mb-2">📂</p>
+              <p class="text-slate-300 text-sm font-medium">Arrastra el archivo .xls aquí</p>
+              <p class="text-slate-500 text-xs mt-1">o <span class="text-orange-400 underline">haz clic para seleccionar</span> — reporte exportado de Salesforce</p>
+            </div>
+            <div x-show="casesProcessing" class="text-slate-400">
+              <span class="spin inline-block text-2xl">⏳</span>
+              <p class="text-sm mt-2">Procesando archivo...</p>
+            </div>
+          </div>
+
+          <!-- Error de parseo -->
+          <div x-show="casesError" class="mt-3 text-red-400 text-sm bg-red-900/30 border border-red-800/50 rounded-lg px-4 py-2" x-text="casesError"></div>
+
+          <!-- Resultados Paso 1 -->
+          <div x-show="casesRows.length > 0">
+            <!-- Barra resumen + acciones -->
+            <div class="flex flex-wrap items-center gap-3 mb-3">
+              <div class="flex items-center gap-1.5 text-sm text-green-400">
+                <span>✓</span>
+                <span x-text="`${casesRows.length} casos desde ${casesFileName}`"></span>
+              </div>
+              <div class="text-xs text-slate-500 bg-slate-700 rounded px-2 py-0.5"
+                x-text="`${[...new Set(casesRows.map(r=>r.id_interno).filter(Boolean))].length} IDs únicos`"></div>
+              <div class="ml-auto flex flex-wrap gap-2">
+                <button @click="downloadCasesCSV()"
+                  class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition">
+                  ⬇ CSV procesado
+                </button>
+                <button @click="sendCasesIdsToAnalysis()"
+                  class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-orange-500 hover:bg-orange-600 text-white rounded-lg transition">
+                  → Cargar IDs en Paso 2
+                  <span class="bg-orange-700 rounded px-1.5 ml-0.5"
+                    x-text="[...new Set(casesRows.map(r=>r.id_interno).filter(Boolean))].length"></span>
+                </button>
+                <button @click="clearCasesFile()"
+                  class="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-300 transition">✕ Limpiar</button>
+              </div>
+            </div>
+
+            <!-- Tabla preview -->
+            <div class="overflow-auto border border-slate-700 rounded-lg" style="max-height:260px">
+              <table class="w-full text-xs text-left">
+                <thead class="bg-slate-900 text-slate-400 sticky top-0 z-10">
+                  <tr>
+                    <th class="px-3 py-2 font-medium whitespace-nowrap">ID usuario</th>
+                    <th class="px-3 py-2 font-medium whitespace-nowrap">Remesa</th>
+                    <th class="px-3 py-2 font-medium whitespace-nowrap">N° Caso</th>
+                    <th class="px-3 py-2 font-medium whitespace-nowrap">Nombre cuenta</th>
+                    <th class="px-3 py-2 font-medium whitespace-nowrap">Fecha/Hora</th>
+                    <th class="px-3 py-2 font-medium whitespace-nowrap">Asunto</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800">
+                  <template x-for="(r, i) in casesRows" :key="i">
+                    <tr class="hover:bg-slate-700/30">
+                      <td class="px-3 py-1.5 font-mono text-orange-300 whitespace-nowrap" x-text="r.id_interno"></td>
+                      <td class="px-3 py-1.5 font-mono text-cyan-300 whitespace-nowrap" x-text="r.remesa || '—'"></td>
+                      <td class="px-3 py-1.5 font-mono text-slate-300 whitespace-nowrap" x-text="r.numero_caso"></td>
+                      <td class="px-3 py-1.5 text-slate-300 whitespace-nowrap" x-text="r.nombre_cuenta"></td>
+                      <td class="px-3 py-1.5 text-slate-400 whitespace-nowrap" x-text="r.fecha_hora"></td>
+                      <td class="px-3 py-1.5 text-slate-500 max-w-xs truncate" x-text="r.asunto"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== PASO 2: Análisis AML ===== -->
         <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-6">
-          <h2 class="text-sm font-semibold text-slate-300 mb-4">Selección de Clientes</h2>
+          <div class="flex items-center gap-3 mb-4">
+            <span class="flex items-center justify-center w-6 h-6 rounded-full bg-orange-500 text-white text-xs font-bold flex-shrink-0">2</span>
+            <div>
+              <h2 class="text-sm font-semibold text-slate-300">Análisis AML Individual</h2>
+              <p class="text-xs text-slate-500">Ingresa los customer IDs a analizar (manualmente o importados desde el Paso 1)</p>
+            </div>
+          </div>
           <div class="space-y-4">
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1.5">Customer IDs <span class="text-slate-500">(separados por comas o saltos de línea)</span></label>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">
+                Customer IDs <span class="text-slate-500">(separados por comas o saltos de línea)</span>
+                <span x-show="amlCustomerIds.trim()" class="ml-2 text-orange-400"
+                  x-text="`— ${amlCustomerIds.trim().split(/[\\s,;]+/).filter(s=>/^\\d+$/.test(s.trim())).length} IDs`"></span>
+              </label>
               <textarea x-model="amlCustomerIds" rows="4"
                 placeholder="Ej: 3696886, 2387473, 3162602&#10;o uno por línea"
                 class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"></textarea>
-              <p class="text-xs text-slate-500 mt-1">Máximo 100 clientes por análisis</p>
+              <p class="text-xs text-slate-500 mt-1">Máximo 1000 clientes por análisis</p>
             </div>
 
             <div class="flex items-center gap-3">
@@ -1303,7 +1401,7 @@
           </div>
         </div>
 
-        <!-- Error -->
+        <!-- Error análisis -->
         <div x-show="amlError" class="bg-red-900/40 border border-red-700 rounded-xl p-4 mb-4 text-red-300 text-sm" x-text="amlError"></div>
 
         <!-- Progress / Result -->
@@ -2188,7 +2286,13 @@
       adminSaving:      false,
       newAdminUser:     { email: '', role: 'analyst', modules: ['dashboard','alertas','historial','alertados'] },
 
-      // Análisis Individual AML
+      // Análisis Individual AML — Paso 1: Extracción de casos
+      casesFileName: '',
+      casesRows: [],
+      casesError: null,
+      casesProcessing: false,
+
+      // Análisis Individual AML — Paso 2: Scoring
       amlCustomerIds: '',
       amlRunning: false,
       amlRunId: null,
@@ -2773,7 +2877,105 @@
       // WHITELIST
       // -----------------------------------------------
       // -----------------------------------------------
-      // ANÁLISIS INDIVIDUAL AML
+      // ANÁLISIS INDIVIDUAL — PASO 1: EXTRACCIÓN DE CASOS
+      // -----------------------------------------------
+      handleCasesFileDrop(e) {
+        const file = e.dataTransfer?.files?.[0];
+        if (file) this.loadCasesFile(file);
+      },
+
+      loadCasesFile(file) {
+        if (!file) return;
+        this.casesError = null;
+        this.casesProcessing = true;
+        this.casesRows = [];
+        this.casesFileName = file.name;
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          try {
+            this.casesRows = this._parseCasesHtml(evt.target.result);
+            if (this.casesRows.length === 0)
+              this.casesError = 'No se encontraron filas válidas. Verifica que el archivo sea el reporte de Salesforce correcto.';
+          } catch(err) {
+            this.casesError = 'Error al procesar el archivo: ' + err.message;
+          }
+          this.casesProcessing = false;
+        };
+        reader.onerror = () => {
+          this.casesError = 'Error al leer el archivo.';
+          this.casesProcessing = false;
+        };
+        // Salesforce exporta en ISO-8859-1
+        reader.readAsText(file, 'iso-8859-1');
+      },
+
+      _parseCasesHtml(html) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        // Columnas esperadas (0-indexed):
+        // 0:Propietario  1:Nombre cuenta  2:Asunto  3:Fecha/Hora
+        // 4:Antigüedad   5:Cerrado        6:N°caso  7:ID interno  8:Abierto
+        const rows = Array.from(doc.querySelectorAll('table tr')).slice(1); // omitir cabecera
+        const results = [];
+        for (const row of rows) {
+          const cells = row.querySelectorAll('td');
+          if (cells.length < 8) continue;
+          const nombreCuenta = cells[1].textContent.trim();
+          const asunto       = cells[2].textContent.trim();
+          const fechaHora    = cells[3].textContent.trim();
+          const numeroCaso   = cells[6].textContent.trim();
+          const idInterno    = cells[7].textContent.trim();
+          // Extrae número de remesa: patrón "TX  12345678  POR" (espacios variables)
+          const m = asunto.match(/TX\s+(\d+)\s+POR/i);
+          const remesa = m ? m[1] : '';
+          if (!idInterno) continue;
+          results.push({ nombre_cuenta: nombreCuenta, asunto, fecha_hora: fechaHora,
+                         numero_caso: numeroCaso, id_interno: idInterno, remesa });
+        }
+        return results;
+      },
+
+      downloadCasesCSV() {
+        if (!this.casesRows.length) return;
+        const headers = ['Nombre de la cuenta','Asunto','Fecha/Hora de apertura',
+                         'Número del caso','Id interno del usuario','Remesa'];
+        const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+        const lines = [
+          headers.map(esc).join(','),
+          ...this.casesRows.map(r => [
+            r.nombre_cuenta, r.asunto, r.fecha_hora,
+            r.numero_caso, r.id_interno, r.remesa
+          ].map(esc).join(','))
+        ];
+        // BOM UTF-8 para que Excel lo abra correctamente con tildes
+        const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'casos_procesados.csv';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      },
+
+      sendCasesIdsToAnalysis() {
+        const ids = [...new Set(this.casesRows.map(r => r.id_interno).filter(Boolean))];
+        this.amlCustomerIds = ids.join(', ');
+        // Scroll suave al Paso 2
+        this.$nextTick(() => {
+          const ta = this.$el.querySelector('textarea[x-model="amlCustomerIds"]');
+          if (ta) ta.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+      },
+
+      clearCasesFile() {
+        this.casesRows = [];
+        this.casesFileName = '';
+        this.casesError = null;
+        this.casesProcessing = false;
+      },
+
+      // -----------------------------------------------
+      // ANÁLISIS INDIVIDUAL AML — PASO 2: SCORING
       // -----------------------------------------------
       async runAmlIndividual() {
         // Parse customer IDs from textarea (commas, newlines, spaces)
@@ -2781,7 +2983,7 @@
         if (!raw) return;
         const ids = raw.split(/[\s,;]+/).map(s => s.trim()).filter(s => /^\d+$/.test(s)).map(Number);
         if (ids.length === 0) { this.amlError = 'No se encontraron IDs válidos. Ingresa números separados por coma.'; return; }
-        if (ids.length > 100) { this.amlError = 'Máximo 100 customer_ids por análisis.'; return; }
+        if (ids.length > 1000) { this.amlError = 'Máximo 1000 customer_ids por análisis.'; return; }
 
         _logEvent(this.currentUserEmail, 'analysis_individual', { n_customers: ids.length, customer_ids: ids.slice(0,10) });
         this.amlRunning = true;
