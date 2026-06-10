@@ -7,6 +7,8 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- SheetJS — leer y escribir Excel client-side (Paso 4) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <!-- Firebase SDK -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
@@ -1518,6 +1520,110 @@
           </div>
         </div>
 
+        <!-- ===== PASO 4: Conclusión del Proceso ===== -->
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-4">
+          <div class="flex items-center gap-3 mb-5">
+            <span class="flex items-center justify-center w-6 h-6 rounded-full bg-violet-600 text-white text-xs font-bold flex-shrink-0">4</span>
+            <div>
+              <h2 class="text-sm font-semibold text-slate-300">Conclusión del Proceso</h2>
+              <p class="text-xs text-slate-500">Cruza el resultado del Paso 2 con el análisis del motor para obtener la resolución final por transacción, separada por tipo de envío</p>
+            </div>
+          </div>
+
+          <!-- Dos zonas de carga en grid -->
+          <div class="grid grid-cols-1 gap-4 mb-5 sm:grid-cols-2">
+
+            <!-- Zona 1: Excel resultado Paso 2 -->
+            <div>
+              <p class="text-xs font-medium text-slate-400 mb-2">① Resultado Paso 2 <span class="text-slate-500">(transacciones con tipo_envio)</span></p>
+              <div x-show="!paso4TxFileName"
+                @dragover.prevent @dragenter.prevent @drop.prevent="loadPaso4File($event, 'tx')"
+                @click="$refs.paso4TxInput.click()"
+                class="border-2 border-dashed border-slate-600 rounded-lg p-5 text-center cursor-pointer hover:border-violet-500/60 hover:bg-slate-700/20 transition select-none">
+                <input type="file" x-ref="paso4TxInput" accept=".xlsx" class="hidden"
+                  @change="loadPaso4File($event, 'tx'); $event.target.value=''">
+                <p class="text-2xl mb-1">📊</p>
+                <p class="text-slate-400 text-xs">Arrastra o <span class="text-violet-400 underline">selecciona</span> el .xlsx del Paso 2</p>
+              </div>
+              <div x-show="paso4TxFileName" class="flex items-center gap-2 bg-slate-700/50 rounded-lg px-3 py-2.5">
+                <span class="text-green-400 text-sm">✓</span>
+                <span class="text-slate-200 text-xs truncate flex-1" x-text="paso4TxFileName"></span>
+                <span class="text-xs text-slate-500" x-text="`${paso4TxRows.length} filas`"></span>
+                <button @click="paso4TxRows=[]; paso4TxFileName=''; paso4Done=false; paso4Stats=null"
+                  class="text-slate-500 hover:text-slate-300 text-xs ml-1">✕</button>
+              </div>
+            </div>
+
+            <!-- Zona 2: Excel Análisis del Motor -->
+            <div>
+              <p class="text-xs font-medium text-slate-400 mb-2">② Análisis del Motor <span class="text-slate-500">(hoja Consolidado)</span></p>
+              <div x-show="!paso4AnalysisFileName"
+                @dragover.prevent @dragenter.prevent @drop.prevent="loadPaso4File($event, 'analysis')"
+                @click="$refs.paso4AnalysisInput.click()"
+                class="border-2 border-dashed border-slate-600 rounded-lg p-5 text-center cursor-pointer hover:border-violet-500/60 hover:bg-slate-700/20 transition select-none">
+                <input type="file" x-ref="paso4AnalysisInput" accept=".xlsx" class="hidden"
+                  @change="loadPaso4File($event, 'analysis'); $event.target.value=''">
+                <p class="text-2xl mb-1">🔎</p>
+                <p class="text-slate-400 text-xs">Arrastra o <span class="text-violet-400 underline">selecciona</span> el Reporte_Analisis.xlsx</p>
+              </div>
+              <div x-show="paso4AnalysisFileName" class="flex items-center gap-2 bg-slate-700/50 rounded-lg px-3 py-2.5">
+                <span class="text-green-400 text-sm">✓</span>
+                <span class="text-slate-200 text-xs truncate flex-1" x-text="paso4AnalysisFileName"></span>
+                <span class="text-xs text-slate-500" x-text="`${paso4AnalysisRows.length} registros`"></span>
+                <button @click="paso4AnalysisRows=[]; paso4AnalysisFileName=''; paso4Done=false; paso4Stats=null"
+                  class="text-slate-500 hover:text-slate-300 text-xs ml-1">✕</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Aviso si no hay casesRows para N° Caso -->
+          <div x-show="!casesRows.length" class="text-xs text-amber-400 bg-amber-900/20 border border-amber-800/40 rounded-lg px-3 py-2 mb-4">
+            ⚠ Sin datos del Paso 1 cargados — el campo "N° Caso" quedará vacío. Para incluirlo, carga el .xls de Salesforce en el Paso 1.
+          </div>
+
+          <!-- Error -->
+          <div x-show="paso4Error" class="text-red-400 text-sm bg-red-900/30 border border-red-800/50 rounded-lg px-4 py-2 mb-4" x-text="paso4Error"></div>
+
+          <!-- Botón generar -->
+          <div class="flex items-center gap-4">
+            <button @click="generateConclusion()"
+              :disabled="paso4Processing || !paso4TxRows.length || !paso4AnalysisRows.length"
+              class="px-6 py-2.5 text-sm font-semibold text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
+              <span x-show="!paso4Processing">⚡ Generar Conclusión</span>
+              <span x-show="paso4Processing" class="flex items-center gap-2"><span class="spin">⏳</span> Procesando...</span>
+            </button>
+            <p class="text-xs text-slate-500" x-show="!paso4TxRows.length || !paso4AnalysisRows.length">
+              Carga ambos archivos para continuar
+            </p>
+          </div>
+
+          <!-- Resultado -->
+          <div x-show="paso4Done && paso4Stats" class="mt-5 bg-slate-900/60 rounded-xl border border-slate-700 p-5">
+            <div class="flex items-center gap-3 mb-4">
+              <span class="text-2xl">✅</span>
+              <p class="text-white font-semibold">Conclusión generada — descarga iniciada</p>
+            </div>
+            <div class="grid grid-cols-2 gap-3 sm:grid-cols-4 text-center mb-0">
+              <div class="bg-slate-800 rounded-lg p-3">
+                <p class="text-2xl font-bold text-green-400" x-text="paso4Stats?.nacionales ?? 0"></p>
+                <p class="text-xs text-slate-400 mt-0.5">Nacionales</p>
+              </div>
+              <div class="bg-slate-800 rounded-lg p-3">
+                <p class="text-2xl font-bold text-blue-400" x-text="paso4Stats?.internacionales ?? 0"></p>
+                <p class="text-xs text-slate-400 mt-0.5">Internacionales</p>
+              </div>
+              <div class="bg-slate-800 rounded-lg p-3">
+                <p class="text-2xl font-bold text-violet-400" x-text="paso4Stats?.matched ?? 0"></p>
+                <p class="text-xs text-slate-400 mt-0.5">Con Acción Manual</p>
+              </div>
+              <div class="bg-slate-800 rounded-lg p-3">
+                <p class="text-2xl font-bold text-amber-400" x-text="paso4Stats?.unmatched ?? 0"></p>
+                <p class="text-xs text-slate-400 mt-0.5">Sin match motor</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
       </div><!-- end aml_individual tab -->
 
       <!-- ===== TAB: ADMIN (inline, same main context) ===== -->
@@ -2380,6 +2486,16 @@
       txSearchStatusMsg: 'Iniciando búsqueda...',
       _txSearchPollTimer: null,
 
+      // Análisis Individual AML — Paso 4: Conclusión
+      paso4TxRows: [],
+      paso4TxFileName: '',
+      paso4AnalysisRows: [],
+      paso4AnalysisFileName: '',
+      paso4Error: null,
+      paso4Processing: false,
+      paso4Done: false,
+      paso4Stats: null,
+
       // Análisis Individual AML — Paso 3: Scoring AML
       amlCustomerIds: '',
       amlRunning: false,
@@ -3069,6 +3185,145 @@
         this.casesFileName = '';
         this.casesError = null;
         this.casesProcessing = false;
+      },
+
+      // -----------------------------------------------
+      // ANÁLISIS INDIVIDUAL — PASO 4: CONCLUSIÓN
+      // -----------------------------------------------
+      loadPaso4File(e, type) {
+        const file = e.dataTransfer?.files?.[0] ?? e.target?.files?.[0];
+        if (!file) return;
+        this.paso4Error = null;
+        this.paso4Done = false;
+        this.paso4Stats = null;
+        this.paso4Processing = true;
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          try {
+            const wb = XLSX.read(evt.target.result, { type: 'array' });
+            if (type === 'tx') {
+              const ws = wb.Sheets[wb.SheetNames[0]];
+              this.paso4TxRows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+              this.paso4TxFileName = file.name;
+            } else {
+              // Busca hoja "Consolidado" (case-insensitive)
+              const name = wb.SheetNames.find(n => n.toLowerCase().includes('consolidado')) || wb.SheetNames[0];
+              const ws = wb.Sheets[name];
+              this.paso4AnalysisRows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+              this.paso4AnalysisFileName = file.name;
+            }
+          } catch (err) {
+            this.paso4Error = 'Error al leer el archivo: ' + err.message;
+          }
+          this.paso4Processing = false;
+        };
+        reader.onerror = () => { this.paso4Error = 'Error al leer el archivo.'; this.paso4Processing = false; };
+        reader.readAsArrayBuffer(file);
+      },
+
+      generateConclusion() {
+        this.paso4Error = null;
+        this.paso4Processing = true;
+        this.paso4Done = false;
+
+        try {
+          // Mapa DNI → fila de análisis (normaliza a string sin espacios)
+          const analysisMap = new Map();
+          for (const row of this.paso4AnalysisRows) {
+            const dni = String(row['IDENTIDAD (DNI/RUT)'] ?? '').trim();
+            if (dni) analysisMap.set(dni, row);
+          }
+
+          // Mapa remesa (transaction_id) → N° Caso desde Paso 1
+          const remesaCaseMap = new Map();
+          for (const r of this.casesRows) {
+            if (r.remesa) remesaCaseMap.set(String(r.remesa).trim(), r.numero_caso);
+          }
+
+          const nacionales = [];
+          const internacionales = [];
+          let matched = 0, unmatched = 0;
+
+          for (const tx of this.paso4TxRows) {
+            const txId   = String(tx.transaction_id ?? '').trim();
+            const noCaso = remesaCaseMap.get(txId) || '';
+            const esNac  = (tx.tipo_envio ?? '').toLowerCase().includes('nacional');
+
+            if (esNac) {
+              const dni     = String(tx.beneficiary_dni ?? '').trim();
+              const analisis = analysisMap.get(dni);
+              nacionales.push({
+                'N° Caso':               noCaso,
+                'transaction_id':        tx.transaction_id,
+                'customer_id':           tx.customer_id,
+                'tipo_envio':            tx.tipo_envio,
+                'beneficiary_country':   tx.beneficiary_country_name,
+                'beneficiary_dni':       tx.beneficiary_dni,
+                'beneficiary_name':      tx.beneficiary_name,
+                'beneficiary_firstname': tx.beneficiary_first_name,
+                'beneficiary_lastname':  tx.beneficiary_last_name,
+                'beneficiary_email':     tx.beneficiary_email,
+                'destiny_country':       tx.destiny_country,
+                'destiny_amount_usd':    tx.destiny_amount_usd,
+                'tx_status':             tx.tx_status,
+                'start_date':            tx.start_date,
+                // Columnas del motor
+                'Acción Manual':         analisis?.['Acción Manual']     ?? '',
+                'Sugerencia Motor':      analisis?.['Sugerencia Motor']  ?? '',
+                'Es PEP':                analisis?.['Es PEP']            ?? '',
+                'Score Acumulado':       analisis?.['Score Acumulado']   ?? '',
+                'Nombre Completo Motor': analisis?.['Nombre Completo']   ?? '',
+                'Gravedad Máx':          analisis?.['Gravedad Máx']      ?? '',
+                'Cant. Delitos':         analisis?.['Cant. Delitos']     ?? '',
+              });
+              analisis ? matched++ : unmatched++;
+            } else {
+              internacionales.push({
+                'N° Caso':               noCaso,
+                'transaction_id':        tx.transaction_id,
+                'customer_id':           tx.customer_id,
+                'tipo_envio':            tx.tipo_envio,
+                'beneficiary_country':   tx.beneficiary_country_name,
+                'beneficiary_dni':       tx.beneficiary_dni,
+                'beneficiary_name':      tx.beneficiary_name,
+                'beneficiary_firstname': tx.beneficiary_first_name,
+                'beneficiary_lastname':  tx.beneficiary_last_name,
+                'beneficiary_email':     tx.beneficiary_email,
+                'beneficiary_id':        tx.beneficiary_id,
+                'origin_country':        tx.origin_country,
+                'destiny_country':       tx.destiny_country,
+                'destiny_amount_usd':    tx.destiny_amount_usd,
+                'tx_status':             tx.tx_status,
+                'start_date':            tx.start_date,
+              });
+            }
+          }
+
+          // Genera Excel con dos hojas usando SheetJS
+          const wb = XLSX.utils.book_new();
+
+          const nacData = nacionales.length ? nacionales
+            : [{ 'Sin datos': 'No hay transacciones nacionales en el archivo del Paso 2' }];
+          const intData = internacionales.length ? internacionales
+            : [{ 'Sin datos': 'No hay transacciones internacionales en el archivo del Paso 2' }];
+
+          XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(nacData), 'Nacionales');
+          XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(intData), 'Internacionales');
+
+          const today = new Date().toISOString().slice(0, 10);
+          XLSX.writeFile(wb, `conclusion_proceso_${today}.xlsx`);
+
+          this.paso4Stats = {
+            nacionales:     nacionales.length,
+            internacionales: internacionales.length,
+            matched,
+            unmatched,
+          };
+          this.paso4Done = true;
+        } catch (err) {
+          this.paso4Error = 'Error al generar conclusión: ' + err.message;
+        }
+        this.paso4Processing = false;
       },
 
       // -----------------------------------------------
