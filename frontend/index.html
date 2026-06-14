@@ -160,6 +160,14 @@
               class="text-xs bg-red-600 text-white rounded-full px-1.5 py-0.5 leading-none"
               x-text="alerts.length"></span>
           </button>
+          <button x-show="hasModule('pendientes')" @click="switchTab('pendientes')"
+            :class="activeTab==='pendientes' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
+            <span>📬</span> Pendientes
+            <span x-show="pendientes.length > 0"
+              class="text-xs bg-blue-600 text-white rounded-full px-1.5 py-0.5 leading-none"
+              x-text="pendientes.length"></span>
+          </button>
           <button @click="switchTab('queries')"
             :class="activeTab==='queries' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
@@ -769,6 +777,8 @@
                           class="text-slate-500 hover:text-orange-400 transition text-base" title="Agregar a whitelist">⚑</button>
                         <button @click="openAlertRow(row, resultsView?.report_name)"
                           class="text-slate-500 hover:text-red-400 transition text-base" title="Marcar como Alertado">⚠</button>
+                        <button @click="openAssignAlert(row, resultsView?.report_name)"
+                          class="text-slate-500 hover:text-blue-400 transition text-base" title="Asignar a analista">👤</button>
                       </div>
                     </td>
                     <template x-for="col in (resultsView?.columns||[])" :key="col">
@@ -2147,6 +2157,114 @@
     </div>
   </div>
 
+      <!-- ===== TAB: PENDIENTES ===== -->
+      <div x-show="activeTab==='pendientes' && hasModule('pendientes')" x-cloak class="p-6 max-w-4xl mx-auto">
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h1 class="text-xl font-bold text-white flex items-center gap-2">📬 Alertas Pendientes</h1>
+            <p class="text-slate-400 text-sm mt-1">Alertas asignadas a ti que aún no has resuelto</p>
+          </div>
+          <button @click="loadPendientes()" :disabled="pendientesLoading"
+            class="text-sm text-slate-400 hover:text-white transition flex items-center gap-1.5 disabled:opacity-50">
+            <span :class="pendientesLoading ? 'spin' : ''">↺</span> Actualizar
+          </button>
+        </div>
+
+        <div x-show="pendientesLoading" class="flex items-center gap-2 text-slate-400 py-12 justify-center">
+          <span class="spin text-xl">⏳</span> Cargando pendientes...
+        </div>
+
+        <div x-show="!pendientesLoading && pendientes.length === 0"
+          class="text-slate-500 text-sm py-12 text-center bg-slate-800/40 rounded-xl border border-slate-700">
+          <div class="text-3xl mb-3">✅</div>
+          No tienes alertas pendientes por gestionar.
+        </div>
+
+        <div x-show="!pendientesLoading && pendientes.length > 0" class="space-y-3">
+          <template x-for="item in pendientes" :key="item.id">
+            <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+              <div class="flex items-start justify-between gap-4">
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap mb-2">
+                    <span class="text-xs bg-blue-900/40 text-blue-300 border border-blue-700/40 rounded px-2 py-0.5 font-mono"
+                      x-text="item.entity_field + ': ' + item.entity_value"></span>
+                    <span class="text-xs bg-slate-700 text-slate-300 rounded px-2 py-0.5"
+                      x-text="(item.report_name||'').replace(/_/g,' ')"></span>
+                  </div>
+                  <div x-show="item.note" class="text-slate-300 text-sm mb-2 italic" x-text="'\"' + item.note + '\"'"></div>
+                  <div class="text-slate-500 text-xs flex items-center gap-3 flex-wrap">
+                    <span>Asignado por <strong class="text-slate-400" x-text="item.assigned_by"></strong></span>
+                    <span x-show="item.assigned_at?.toDate">
+                      · <span x-text="item.assigned_at?.toDate ? new Date(item.assigned_at.toDate()).toLocaleDateString('es-CL') : ''"></span>
+                    </span>
+                  </div>
+                </div>
+                <button @click="resolvePendiente(item.id)"
+                  class="shrink-0 px-4 py-2 rounded-lg bg-green-700 hover:bg-green-600 text-white text-sm font-medium transition flex items-center gap-1.5">
+                  ✓ Resolver
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- ===== MODAL: ASIGNAR ALERTA ===== -->
+      <div x-show="assignAlertOpen" x-transition
+        class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+        @click.self="assignAlertOpen = false">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+          <h3 class="text-white font-semibold mb-1 flex items-center gap-2">👤 Asignar Alerta</h3>
+          <p class="text-slate-400 text-sm mb-5">
+            <span x-text="assignAlertData.entity_field"></span>:
+            <strong class="text-white font-mono" x-text="assignAlertData.entity_value"></strong>
+          </p>
+
+          <div class="space-y-4">
+            <div>
+              <label class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-2 block">Asignar a</label>
+              <div x-show="notifUsersLoading" class="text-slate-500 text-sm py-2">
+                <span class="spin">⏳</span> Cargando usuarios...
+              </div>
+              <div x-show="!notifUsersLoading && notifUsers.length === 0" class="text-slate-500 text-sm py-2 bg-slate-800 rounded-lg px-3">
+                No hay usuarios configurados. Configúralos en Admin → 🔔 Notificaciones.
+              </div>
+              <div x-show="!notifUsersLoading && notifUsers.length > 0" class="space-y-2">
+                <template x-for="u in notifUsers" :key="u.id">
+                  <label class="flex items-center gap-3 cursor-pointer p-3 rounded-lg hover:bg-slate-800 border border-transparent"
+                    :class="assignSelectedUser?.id === u.id ? 'border-orange-500 bg-slate-800' : 'border-slate-700'">
+                    <input type="radio" name="assignUser" :value="u.id"
+                      @change="assignSelectedUser = u" class="accent-orange-500">
+                    <div>
+                      <div class="text-white text-sm font-medium" x-text="u.name"></div>
+                      <div class="text-slate-400 text-xs" x-text="u.email"></div>
+                    </div>
+                  </label>
+                </template>
+              </div>
+            </div>
+
+            <div>
+              <label class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1 block">Nota (opcional)</label>
+              <textarea x-model="assignNote" rows="2" placeholder="Instrucciones o contexto..."
+                class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-500 focus:border-orange-500 focus:outline-none resize-none"></textarea>
+            </div>
+
+            <div class="flex gap-3 pt-1">
+              <button @click="assignAlertOpen = false"
+                class="flex-1 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm transition">
+                Cancelar
+              </button>
+              <button @click="sendAssignAlert()" :disabled="!assignSelectedUser || assignSending"
+                class="flex-1 py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium transition disabled:opacity-50 flex items-center justify-center gap-2">
+                <span class="spin" x-show="assignSending">⏳</span>
+                <span x-text="assignSending ? 'Enviando...' : 'Asignar y notificar'"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ===== TAB: ADMIN (overlay — renders over main content area) ===== -->
       <div x-show="activeTab==='admin' && isAdmin()" x-cloak
         class="fixed inset-0 bg-slate-950 z-30 overflow-y-auto"
@@ -2177,6 +2295,11 @@
             :class="adminSubtab==='add' ? 'border-b-2 border-orange-500 text-orange-400' : 'text-slate-400 hover:text-white'"
             class="pb-3 px-2 text-sm font-medium transition">
             ➕ Agregar usuario
+          </button>
+          <button @click="adminSubtab='notificaciones'; loadNotifUsers()"
+            :class="adminSubtab==='notificaciones' ? 'border-b-2 border-orange-500 text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="pb-3 px-2 text-sm font-medium transition">
+            🔔 Notificaciones
           </button>
         </div>
 
@@ -2290,6 +2413,57 @@
                 class="w-full py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium transition disabled:opacity-50">
                 <span x-text="adminSaving ? 'Guardando...' : 'Otorgar acceso'"></span>
               </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Sub-tab: Notificaciones ---- -->
+        <div x-show="adminSubtab==='notificaciones'">
+          <div class="max-w-lg space-y-6">
+            <!-- Add form -->
+            <div class="bg-slate-800 rounded-xl border border-slate-700 p-6">
+              <h3 class="text-white font-medium mb-4">Agregar usuario de notificaciones</h3>
+              <p class="text-slate-400 text-xs mb-4">Estos usuarios pueden recibir alertas asignadas desde el Dashboard.</p>
+              <div class="space-y-3">
+                <div>
+                  <label class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1 block">Nombre</label>
+                  <input type="text" x-model="newNotifUser.name" placeholder="Ej: Juan Pérez"
+                    class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-500 focus:border-orange-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1 block">Email</label>
+                  <input type="email" x-model="newNotifUser.email" placeholder="analista@global66.com"
+                    class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-500 focus:border-orange-500 focus:outline-none">
+                </div>
+                <button @click="addNotifUser()" :disabled="!newNotifUser.name || !newNotifUser.email || notifSaving"
+                  class="w-full py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium transition disabled:opacity-50">
+                  <span x-text="notifSaving ? 'Guardando...' : '+ Agregar'"></span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Users list -->
+            <div>
+              <div x-show="notifUsersLoading" class="text-slate-500 text-sm py-4 text-center">
+                <span class="spin">⏳</span> Cargando...
+              </div>
+              <div x-show="!notifUsersLoading && notifUsers.length === 0" class="text-slate-500 text-sm py-4 text-center">
+                No hay usuarios configurados aún.
+              </div>
+              <div x-show="!notifUsersLoading && notifUsers.length > 0" class="space-y-2">
+                <template x-for="u in notifUsers" :key="u.id">
+                  <div class="bg-slate-800 rounded-lg border border-slate-700 px-4 py-3 flex items-center justify-between">
+                    <div>
+                      <span class="text-white text-sm font-medium" x-text="u.name"></span>
+                      <span class="text-slate-400 text-xs ml-2" x-text="u.email"></span>
+                    </div>
+                    <button @click="removeNotifUser(u.id)"
+                      class="text-slate-500 hover:text-red-400 transition text-sm px-2 py-1 rounded hover:bg-red-900/20">
+                      ✕
+                    </button>
+                  </div>
+                </template>
+              </div>
             </div>
           </div>
         </div>
@@ -2461,6 +2635,7 @@
         { key: 'alertados',      label: '⚠️ Alertados' },
         { key: 'queries',        label: '✏️ Queries' },
         { key: 'aml_individual', label: '🔬 Análisis Individual' },
+        { key: 'pendientes',     label: '📬 Pendientes' },
       ],
 
       // Admin panel
@@ -2469,7 +2644,24 @@
       adminUsersLoading: false,
       adminEditUser:    null,
       adminSaving:      false,
-      newAdminUser:     { email: '', role: 'analyst', modules: ['dashboard','alertas','historial','alertados'] },
+      newAdminUser:     { email: '', role: 'analyst', modules: ['dashboard','alertas','historial','alertados','pendientes'] },
+
+      // Notifications config (Admin → wt_notifications)
+      notifUsers:        [],
+      notifUsersLoading: false,
+      newNotifUser:      { name: '', email: '' },
+      notifSaving:       false,
+
+      // Alert assignment
+      assignAlertOpen:     false,
+      assignAlertData:     { entity_field: '', entity_value: '', report_name: '', row_data: {} },
+      assignSelectedUser:  null,
+      assignNote:          '',
+      assignSending:       false,
+
+      // Pendientes tab
+      pendientes:        [],
+      pendientesLoading: false,
 
       // Análisis Individual AML — Paso 1: Extracción de casos
       casesFileName: '',
@@ -2614,6 +2806,8 @@
           this.loadWhitelist(),
           this.loadAlerts(),
           this.loadClusterStatus(),
+          this.loadPendientes(),
+          ...(this.isAdmin() ? [this.loadAdminUsers()] : []),
         ]);
 
         this.appLoading = false;
@@ -2812,6 +3006,12 @@
         if (tab === 'queries') {
           this.customQueries = this.reports.filter(r => r.is_custom);
         }
+        if (tab === 'admin') {
+          this.loadAdminUsers();
+        }
+        if (tab === 'pendientes') {
+          this.loadPendientes();
+        }
       },
 
       // -----------------------------------------------
@@ -2874,7 +3074,8 @@
       // -----------------------------------------------
       async loadRuns() {
         this.runsLoading = true;
-        const d = await this.api('GET', '/runs');
+        const email = encodeURIComponent(this.currentUserEmail || '');
+        const d = await this.api('GET', '/runs' + (email ? '?user_email=' + email : ''));
         this.runs = d?.runs || [];
         this.runsLoading = false;
       },
@@ -2982,7 +3183,7 @@
       async executeReport() {
         this.running = true;
         this.runError = '';
-        const payload = { report_name: this.selectedReport.report_name, ...this.runParams, keep_session: this.keepSession };
+        const payload = { report_name: this.selectedReport.report_name, ...this.runParams, keep_session: this.keepSession, user_email: this.currentUserEmail };
         _logEvent(this.currentUserEmail, 'report_run', { report_name: this.selectedReport.report_name });
         const d = await this.api('POST', '/execute', payload);
         if (d?.run_id) {
@@ -3342,7 +3543,7 @@
         this.txSearchRunId = null;
         this.txSearchStatusMsg = 'Enviando consulta a la nube...';
 
-        const d = await this.api('POST', '/search/transactions', { transaction_ids: ids });
+        const d = await this.api('POST', '/search/transactions', { transaction_ids: ids, user_email: this.currentUserEmail });
         if (!d) { this.txSearchRunning = false; this.txSearchError = 'Error al iniciar la búsqueda.'; return; }
 
         this.txSearchRunId = d.run_id;
@@ -3390,7 +3591,7 @@
         this.amlRunId = null;
         this.amlStatusMsg = 'Enviando análisis a la nube...';
 
-        const d = await this.api('POST', '/analyze/individual', { customer_ids: ids });
+        const d = await this.api('POST', '/analyze/individual', { customer_ids: ids, user_email: this.currentUserEmail });
         if (!d) { this.amlRunning = false; this.amlError = 'Error al iniciar el análisis.'; return; }
 
         this.amlRunId = d.run_id;
@@ -4173,6 +4374,130 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
           }
           this.batchRun.doneCount++;
         }
+      },
+
+      // -----------------------------------------------
+      // NOTIFICACIONES CONFIG (Admin → wt_notifications)
+      // -----------------------------------------------
+      async loadNotifUsers() {
+        this.notifUsersLoading = true;
+        try {
+          const snap = await _db.collection('wt_notifications').get();
+          this.notifUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        } catch(e) {
+          this.notifUsers = [];
+        }
+        this.notifUsersLoading = false;
+      },
+
+      async addNotifUser() {
+        if (!this.newNotifUser.name.trim() || !this.newNotifUser.email.trim()) return;
+        this.notifSaving = true;
+        try {
+          const docRef = await _db.collection('wt_notifications').add({
+            name:     this.newNotifUser.name.trim(),
+            email:    this.newNotifUser.email.trim().toLowerCase(),
+            addedBy:  this.currentUserEmail,
+            addedAt:  firebase.firestore.FieldValue.serverTimestamp(),
+          });
+          this.notifUsers.push({ id: docRef.id, name: this.newNotifUser.name.trim(), email: this.newNotifUser.email.trim().toLowerCase() });
+          this.newNotifUser = { name: '', email: '' };
+        } catch(e) {
+          this.globalError = 'Error guardando usuario de notificaciones: ' + (e.message || e);
+        }
+        this.notifSaving = false;
+      },
+
+      async removeNotifUser(id) {
+        if (!confirm('¿Eliminar este usuario de notificaciones?')) return;
+        await _db.collection('wt_notifications').doc(id).delete().catch(() => {});
+        this.notifUsers = this.notifUsers.filter(u => u.id !== id);
+      },
+
+      // -----------------------------------------------
+      // ASIGNAR ALERTA
+      // -----------------------------------------------
+      openAssignAlert(row, reportName) {
+        const rowKeys = Object.keys(row);
+        const customerKey = rowKeys.find(k => /customer_id|client_id/i.test(k));
+        const emailKey    = rowKeys.find(k => /^email$/i.test(k));
+        const field = customerKey ? 'customer_id' : (emailKey ? 'email' : 'customer_id');
+        const value = customerKey ? String(row[customerKey] ?? '') : (emailKey ? String(row[emailKey] ?? '') : '');
+        this.assignAlertData = { entity_field: field, entity_value: value, report_name: reportName || '', row_data: row };
+        this.assignSelectedUser = null;
+        this.assignNote = '';
+        // Pre-load notification users if not yet loaded
+        if (this.notifUsers.length === 0) {
+          this.notifUsersLoading = true;
+          _db.collection('wt_notifications').get().then(snap => {
+            this.notifUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            this.notifUsersLoading = false;
+          }).catch(() => { this.notifUsersLoading = false; });
+        }
+        this.assignAlertOpen = true;
+      },
+
+      async sendAssignAlert() {
+        if (!this.assignSelectedUser) return;
+        this.assignSending = true;
+        try {
+          // Save assignment to Firestore
+          await _db.collection('wt_assignments').add({
+            entity_field:     this.assignAlertData.entity_field,
+            entity_value:     this.assignAlertData.entity_value,
+            report_name:      this.assignAlertData.report_name,
+            row_data:         this.assignAlertData.row_data,
+            assigned_to:      this.assignSelectedUser.email,
+            assigned_to_name: this.assignSelectedUser.name,
+            assigned_by:      this.currentUserEmail,
+            note:             this.assignNote,
+            resolved:         false,
+            assigned_at:      firebase.firestore.FieldValue.serverTimestamp(),
+          });
+
+          // Send email notification via backend
+          await this.api('POST', '/alerts/notify', {
+            to_email:     this.assignSelectedUser.email,
+            to_name:      this.assignSelectedUser.name,
+            assigned_by:  this.currentUserEmail,
+            entity_value: this.assignAlertData.entity_value,
+            entity_field: this.assignAlertData.entity_field,
+            report_name:  this.assignAlertData.report_name,
+            note:         this.assignNote,
+          });
+
+          _logEvent(this.currentUserEmail, 'alert_assigned', { assigned_to: this.assignSelectedUser.email, entity: this.assignAlertData.entity_value });
+          this.assignAlertOpen = false;
+        } catch(e) {
+          this.globalError = 'Error al asignar: ' + (e.message || e);
+        }
+        this.assignSending = false;
+      },
+
+      // -----------------------------------------------
+      // PENDIENTES TAB
+      // -----------------------------------------------
+      async loadPendientes() {
+        this.pendientesLoading = true;
+        try {
+          const snap = await _db.collection('wt_assignments')
+            .where('assigned_to', '==', this.currentUserEmail)
+            .where('resolved', '==', false)
+            .get();
+          this.pendientes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        } catch(e) {
+          this.pendientes = [];
+        }
+        this.pendientesLoading = false;
+      },
+
+      async resolvePendiente(id) {
+        if (!confirm('¿Marcar como resuelto?')) return;
+        await _db.collection('wt_assignments').doc(id).update({
+          resolved:    true,
+          resolved_at: firebase.firestore.FieldValue.serverTimestamp(),
+        }).catch(() => {});
+        this.pendientes = this.pendientes.filter(p => p.id !== id);
       },
     };
   }

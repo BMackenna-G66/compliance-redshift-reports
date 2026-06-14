@@ -578,6 +578,66 @@ def get_user_email(event: dict) -> str:
     return claims.get("email") or claims.get("cognito:username", "unknown")
 
 
+def notify_alert(body: dict):
+    """Send an SES email when an alert is assigned to an analyst."""
+    to_email = str(body.get("to_email", "")).strip()
+    to_name = str(body.get("to_name", "")).strip()
+    assigned_by = str(body.get("assigned_by", "")).strip()
+    entity_value = str(body.get("entity_value", "")).strip()
+    entity_field = str(body.get("entity_field", "")).strip()
+    report_name = str(body.get("report_name", "")).strip()
+    note = str(body.get("note", "")).strip()
+
+    if not to_email or "@" not in to_email:
+        return resp(400, {"error": "to_email is required"})
+
+    from_email = os.environ.get("SES_FROM_ADDRESS", "")
+    if not from_email:
+        return resp(500, {"error": "SES_FROM_ADDRESS not configured"})
+
+    subject = f"[WatchTower AML] Nueva alerta asignada: {entity_value}"
+    note_row = (
+        f'<tr><td style="padding:8px;border:1px solid #ddd;background:#f8f8f8"><strong>Nota</strong></td>'
+        f'<td style="padding:8px;border:1px solid #ddd">{note}</td></tr>'
+        if note else ""
+    )
+    body_html = f"""<html><body style="font-family:Arial,sans-serif;color:#333">
+<h2 style="color:#1B3A6B">&#128737;&#65039; WatchTower AML &#8212; Nueva Alerta Asignada</h2>
+<p>Hola {to_name or to_email},</p>
+<p><strong>{assigned_by}</strong> te asign&#243; una alerta para revisar:</p>
+<table style="border-collapse:collapse;width:100%;max-width:500px">
+  <tr><td style="padding:8px;border:1px solid #ddd;background:#f8f8f8"><strong>Campo</strong></td>
+      <td style="padding:8px;border:1px solid #ddd">{entity_field}</td></tr>
+  <tr><td style="padding:8px;border:1px solid #ddd;background:#f8f8f8"><strong>Valor</strong></td>
+      <td style="padding:8px;border:1px solid #ddd"><strong>{entity_value}</strong></td></tr>
+  <tr><td style="padding:8px;border:1px solid #ddd;background:#f8f8f8"><strong>Reporte</strong></td>
+      <td style="padding:8px;border:1px solid #ddd">{report_name.replace("_", " ")}</td></tr>
+  {note_row}
+</table>
+<p style="margin-top:20px">
+  <a href="https://bmackenna-g66.github.io/compliance-redshift-reports"
+     style="background:#f97316;color:white;padding:10px 20px;text-decoration:none;border-radius:6px;font-weight:bold">
+    Ir a WatchTower AML &rarr;
+  </a>
+</p>
+<p style="color:#999;font-size:12px;margin-top:20px">Mensaje autom&#225;tico de WatchTower AML.</p>
+</body></html>"""
+
+    try:
+        ses = boto3.client("ses")
+        ses.send_email(
+            Source=from_email,
+            Destination={"ToAddresses": [to_email]},
+            Message={
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body":    {"Html": {"Data": body_html, "Charset": "UTF-8"}},
+            },
+        )
+        return resp(200, {"message": "Notification sent"})
+    except Exception as e:
+        return resp(500, {"error": f"Failed to send email: {e}"})
+
+
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -627,7 +687,8 @@ def handler(event, context):  # noqa: ARG001
 
         # GET /runs
         if method == "GET" and parts == ["runs"]:
-            return get_runs()
+            qs = event.get("queryStringParameters") or {}
+            return get_runs(qs.get("user_email", ""))
 
         # GET /runs/{run_id}
         if method == "GET" and len(parts) == 2 and parts[0] == "runs":
@@ -687,6 +748,10 @@ def handler(event, context):  # noqa: ARG001
         if method == "DELETE" and len(parts) == 2 and parts[0] == "alerts":
             return delete_alert(parts[1])
 
+        # POST /alerts/notify
+        if method == "POST" and parts == ["alerts", "notify"]:
+            return notify_alert(body)
+
         # GET /dashboard/stats (submit queries, returns stmt_ids)
         if method == "GET" and parts == ["dashboard", "stats"]:
             return get_dashboard_stats()
@@ -728,12 +793,14 @@ def execute_report(body: dict):
     run_id = str(uuid.uuid4())
     now = dt.datetime.utcnow().isoformat()
 
+    user_email = str(body.get("user_email", "")).strip()[:200]
     runs_table.put_item(Item={
         "run_id": run_id,
         "report_name": report_name,
         "status": "RUNNING",
-        "params": json.dumps({k: v for k, v in body.items() if k != "report_name"}),
+        "params": json.dumps({k: v for k, v in body.items() if k not in ("report_name", "user_email")}),
         "started_at": now,
+        "user_email": user_email,
         "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
     })
 
@@ -749,14 +816,18 @@ def execute_report(body: dict):
     return resp(202, {"run_id": run_id, "status": "RUNNING"})
 
 
-def get_runs():
-    result = runs_table.scan(
-        ProjectionExpression=(
+def get_runs(user_email: str = ""):
+    kwargs: dict = {
+        "ProjectionExpression": (
             "run_id, report_name, #st, params, started_at, "
-            "completed_at, s3_key, row_count, error_message"
+            "completed_at, s3_key, row_count, error_message, user_email"
         ),
-        ExpressionAttributeNames={"#st": "status"},
-    )
+        "ExpressionAttributeNames": {"#st": "status"},
+    }
+    if user_email:
+        from boto3.dynamodb.conditions import Attr  # noqa: PLC0415
+        kwargs["FilterExpression"] = Attr("user_email").eq(user_email)
+    result = runs_table.scan(**kwargs)
     items = sorted(
         result.get("Items", []),
         key=lambda x: x.get("started_at", ""),
@@ -1023,12 +1094,14 @@ def run_transaction_search(body: dict):
 
     run_id = str(uuid.uuid4())
     now = dt.datetime.utcnow().isoformat()
+    user_email = str(body.get("user_email", "")).strip()[:200]
     runs_table.put_item(Item={
         "run_id": run_id,
         "report_name": "transaction_search",
         "status": "RUNNING",
         "params": json.dumps({"transaction_ids": clean_ids, "n_transactions": len(clean_ids)}),
         "started_at": now,
+        "user_email": user_email,
         "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
     })
 
@@ -1063,12 +1136,14 @@ def run_individual_analysis(body: dict):
 
     run_id = str(uuid.uuid4())
     now = dt.datetime.utcnow().isoformat()
+    user_email = str(body.get("user_email", "")).strip()[:200]
     runs_table.put_item(Item={
         "run_id": run_id,
         "report_name": "individual_aml_analysis",
         "status": "RUNNING",
         "params": json.dumps({"customer_ids": clean_ids, "n_customers": len(clean_ids)}),
         "started_at": now,
+        "user_email": user_email,
         "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
     })
 
