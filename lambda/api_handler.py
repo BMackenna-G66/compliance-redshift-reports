@@ -591,9 +591,10 @@ def notify_alert(body: dict):
     if not to_email or "@" not in to_email:
         return resp(400, {"error": "to_email is required"})
 
-    from_email = os.environ.get("SES_FROM_ADDRESS", "")
-    if not from_email:
+    _ses_addr = os.environ.get("SES_FROM_ADDRESS", "")
+    if not _ses_addr:
         return resp(500, {"error": "SES_FROM_ADDRESS not configured"})
+    from_email = f"Compliance Global66 <{_ses_addr}>"
 
     subject = f"[WatchTower AML] Nueva alerta asignada: {entity_value}"
     note_row = (
