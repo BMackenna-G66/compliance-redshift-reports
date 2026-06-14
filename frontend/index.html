@@ -422,6 +422,8 @@
                                   class="text-slate-500 hover:text-orange-400 transition text-sm" title="Agregar a Whitelist">⚑</button>
                                 <button @click="openAlertRow(row, result.report_name)"
                                   class="text-slate-500 hover:text-red-400 transition text-sm" title="Marcar como Alertado">⚠</button>
+                                <button @click="openAssignAlert(row, result.report_name)"
+                                  class="text-slate-500 hover:text-blue-400 transition text-sm" title="Asignar a analista">👤</button>
                               </td>
                             </tr>
                           </template>
@@ -4377,15 +4379,18 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
       },
 
       // -----------------------------------------------
-      // NOTIFICACIONES CONFIG (Admin → wt_notifications)
+      // NOTIFICACIONES CONFIG
+      // Stored as wt_roles/__notif__ {users:[{id,name,email},...]}
+      // Uses the already-allowed wt_roles collection — no extra Firestore rules needed.
       // -----------------------------------------------
       async loadNotifUsers() {
         this.notifUsersLoading = true;
         try {
-          const snap = await _db.collection('wt_notifications').get();
-          this.notifUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          const doc = await _db.collection('wt_roles').doc('__notif__').get();
+          this.notifUsers = doc.exists ? (doc.data().users || []) : [];
         } catch(e) {
           this.notifUsers = [];
+          this.globalError = 'Error cargando usuarios de notificaciones: ' + (e.message || e);
         }
         this.notifUsersLoading = false;
       },
@@ -4394,13 +4399,16 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
         if (!this.newNotifUser.name.trim() || !this.newNotifUser.email.trim()) return;
         this.notifSaving = true;
         try {
-          const docRef = await _db.collection('wt_notifications').add({
-            name:     this.newNotifUser.name.trim(),
-            email:    this.newNotifUser.email.trim().toLowerCase(),
-            addedBy:  this.currentUserEmail,
-            addedAt:  firebase.firestore.FieldValue.serverTimestamp(),
-          });
-          this.notifUsers.push({ id: docRef.id, name: this.newNotifUser.name.trim(), email: this.newNotifUser.email.trim().toLowerCase() });
+          const newUser = {
+            id:      Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
+            name:    this.newNotifUser.name.trim(),
+            email:   this.newNotifUser.email.trim().toLowerCase(),
+            addedBy: this.currentUserEmail,
+            addedAt: new Date().toISOString(),
+          };
+          const updated = [...this.notifUsers, newUser];
+          await _db.collection('wt_roles').doc('__notif__').set({ users: updated });
+          this.notifUsers = updated;
           this.newNotifUser = { name: '', email: '' };
         } catch(e) {
           this.globalError = 'Error guardando usuario de notificaciones: ' + (e.message || e);
@@ -4410,12 +4418,19 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
 
       async removeNotifUser(id) {
         if (!confirm('¿Eliminar este usuario de notificaciones?')) return;
-        await _db.collection('wt_notifications').doc(id).delete().catch(() => {});
-        this.notifUsers = this.notifUsers.filter(u => u.id !== id);
+        try {
+          const updated = this.notifUsers.filter(u => u.id !== id);
+          await _db.collection('wt_roles').doc('__notif__').set({ users: updated });
+          this.notifUsers = updated;
+        } catch(e) {
+          this.globalError = 'Error eliminando usuario: ' + (e.message || e);
+        }
       },
 
       // -----------------------------------------------
       // ASIGNAR ALERTA
+      // Assignments stored in wt_roles/{assigneeEmail} as a "pendientes" array field.
+      // Uses the already-allowed wt_roles collection.
       // -----------------------------------------------
       openAssignAlert(row, reportName) {
         const rowKeys = Object.keys(row);
@@ -4426,14 +4441,7 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
         this.assignAlertData = { entity_field: field, entity_value: value, report_name: reportName || '', row_data: row };
         this.assignSelectedUser = null;
         this.assignNote = '';
-        // Pre-load notification users if not yet loaded
-        if (this.notifUsers.length === 0) {
-          this.notifUsersLoading = true;
-          _db.collection('wt_notifications').get().then(snap => {
-            this.notifUsers = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            this.notifUsersLoading = false;
-          }).catch(() => { this.notifUsersLoading = false; });
-        }
+        if (this.notifUsers.length === 0) this.loadNotifUsers();
         this.assignAlertOpen = true;
       },
 
@@ -4441,23 +4449,31 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
         if (!this.assignSelectedUser) return;
         this.assignSending = true;
         try {
-          // Save assignment to Firestore
-          await _db.collection('wt_assignments').add({
-            entity_field:     this.assignAlertData.entity_field,
-            entity_value:     this.assignAlertData.entity_value,
-            report_name:      this.assignAlertData.report_name,
-            row_data:         this.assignAlertData.row_data,
-            assigned_to:      this.assignSelectedUser.email,
+          const assigneeEmail = this.assignSelectedUser.email;
+          const assignment = {
+            id:           Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
+            entity_field: this.assignAlertData.entity_field,
+            entity_value: this.assignAlertData.entity_value,
+            report_name:  this.assignAlertData.report_name,
+            assigned_to:  assigneeEmail,
             assigned_to_name: this.assignSelectedUser.name,
-            assigned_by:      this.currentUserEmail,
-            note:             this.assignNote,
-            resolved:         false,
-            assigned_at:      firebase.firestore.FieldValue.serverTimestamp(),
-          });
+            assigned_by:  this.currentUserEmail,
+            note:         this.assignNote,
+            resolved:     false,
+            assigned_at:  new Date().toISOString(),
+          };
+
+          // Write to assignee's wt_roles doc (merge so we don't overwrite other fields)
+          const assigneeDoc = await _db.collection('wt_roles').doc(assigneeEmail).get();
+          const existing = assigneeDoc.exists ? (assigneeDoc.data().pendientes || []) : [];
+          await _db.collection('wt_roles').doc(assigneeEmail).set(
+            { pendientes: [...existing, assignment] },
+            { merge: true }
+          );
 
           // Send email notification via backend
           await this.api('POST', '/alerts/notify', {
-            to_email:     this.assignSelectedUser.email,
+            to_email:     assigneeEmail,
             to_name:      this.assignSelectedUser.name,
             assigned_by:  this.currentUserEmail,
             entity_value: this.assignAlertData.entity_value,
@@ -4466,7 +4482,7 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
             note:         this.assignNote,
           });
 
-          _logEvent(this.currentUserEmail, 'alert_assigned', { assigned_to: this.assignSelectedUser.email, entity: this.assignAlertData.entity_value });
+          _logEvent(this.currentUserEmail, 'alert_assigned', { assigned_to: assigneeEmail, entity: this.assignAlertData.entity_value });
           this.assignAlertOpen = false;
         } catch(e) {
           this.globalError = 'Error al asignar: ' + (e.message || e);
@@ -4476,15 +4492,15 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
 
       // -----------------------------------------------
       // PENDIENTES TAB
+      // Reads the "pendientes" array from the current user's wt_roles doc.
       // -----------------------------------------------
       async loadPendientes() {
         this.pendientesLoading = true;
         try {
-          const snap = await _db.collection('wt_assignments')
-            .where('assigned_to', '==', this.currentUserEmail)
-            .where('resolved', '==', false)
-            .get();
-          this.pendientes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          if (!this.currentUserEmail) { this.pendientes = []; this.pendientesLoading = false; return; }
+          const doc = await _db.collection('wt_roles').doc(this.currentUserEmail).get();
+          const all = doc.exists ? (doc.data().pendientes || []) : [];
+          this.pendientes = all.filter(p => !p.resolved);
         } catch(e) {
           this.pendientes = [];
         }
@@ -4493,11 +4509,15 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
 
       async resolvePendiente(id) {
         if (!confirm('¿Marcar como resuelto?')) return;
-        await _db.collection('wt_assignments').doc(id).update({
-          resolved:    true,
-          resolved_at: firebase.firestore.FieldValue.serverTimestamp(),
-        }).catch(() => {});
-        this.pendientes = this.pendientes.filter(p => p.id !== id);
+        try {
+          const doc = await _db.collection('wt_roles').doc(this.currentUserEmail).get();
+          const all = doc.exists ? (doc.data().pendientes || []) : [];
+          const updated = all.map(p => p.id === id ? { ...p, resolved: true, resolved_at: new Date().toISOString() } : p);
+          await _db.collection('wt_roles').doc(this.currentUserEmail).set({ pendientes: updated }, { merge: true });
+          this.pendientes = this.pendientes.filter(p => p.id !== id);
+        } catch(e) {
+          this.globalError = 'Error al resolver: ' + (e.message || e);
+        }
       },
     };
   }
