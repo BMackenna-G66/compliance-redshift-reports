@@ -4386,7 +4386,7 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
       async loadNotifUsers() {
         this.notifUsersLoading = true;
         try {
-          const doc = await _db.collection('wt_roles').doc('__notif__').get();
+          const doc = await _db.collection('wt_roles').doc('notif_config').get();
           this.notifUsers = doc.exists ? (doc.data().users || []) : [];
         } catch(e) {
           this.notifUsers = [];
@@ -4407,7 +4407,7 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
             addedAt: new Date().toISOString(),
           };
           const updated = [...this.notifUsers, newUser];
-          await _db.collection('wt_roles').doc('__notif__').set({ users: updated });
+          await _db.collection('wt_roles').doc('notif_config').set({ users: updated });
           this.notifUsers = updated;
           this.newNotifUser = { name: '', email: '' };
         } catch(e) {
@@ -4420,7 +4420,7 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
         if (!confirm('¿Eliminar este usuario de notificaciones?')) return;
         try {
           const updated = this.notifUsers.filter(u => u.id !== id);
-          await _db.collection('wt_roles').doc('__notif__').set({ users: updated });
+          await _db.collection('wt_roles').doc('notif_config').set({ users: updated });
           this.notifUsers = updated;
         } catch(e) {
           this.globalError = 'Error eliminando usuario: ' + (e.message || e);
