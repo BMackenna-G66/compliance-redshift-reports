@@ -9,6 +9,8 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <!-- SheetJS — leer y escribir Excel client-side (Paso 4) -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- html2pdf — generar PDF desde HTML client-side -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   <!-- Firebase SDK -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
@@ -1283,12 +1285,29 @@
 
       <!-- ===== TAB: ANÁLISIS INDIVIDUAL AML ===== -->
       <div x-show="activeTab==='aml_individual'" x-cloak>
-        <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center justify-between mb-4">
           <div>
             <h1 class="text-xl font-bold text-white">🔬 Análisis AML Individual</h1>
             <p class="text-sm text-slate-400 mt-0.5">Análisis completo de scoring, flags y red de beneficiarios para clientes específicos</p>
           </div>
         </div>
+
+        <!-- Sub-tabs -->
+        <div class="flex gap-1 mb-6 bg-slate-900/50 rounded-xl p-1 border border-slate-700">
+          <button @click="amlSubTab='casos'"
+            :class="amlSubTab==='casos' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-white'"
+            class="flex-1 px-4 py-2 text-sm font-medium rounded-lg transition">
+            🔍 Análisis de casos/transacciones
+          </button>
+          <button @click="amlSubTab='cliente'"
+            :class="amlSubTab==='cliente' ? 'bg-slate-700 text-white shadow' : 'text-slate-400 hover:text-white'"
+            class="flex-1 px-4 py-2 text-sm font-medium rounded-lg transition">
+            👤 Análisis de cliente
+          </button>
+        </div>
+
+        <!-- Sub-tab: casos/transacciones -->
+        <div x-show="amlSubTab==='casos'">
 
         <!-- ===== PASO 1: Extracción de Casos ===== -->
         <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-4">
@@ -1635,6 +1654,228 @@
             </div>
           </div>
         </div>
+
+        </div><!-- end sub-tab casos -->
+
+        <!-- ===== SUB-TAB: ANÁLISIS DE CLIENTE ===== -->
+        <div x-show="amlSubTab==='cliente'">
+
+          <!-- Toggle B2C / B2B -->
+          <div class="flex gap-2 mb-6">
+            <button @click="clientType='b2c'; clientSearchResult=null; clientSearchError=null"
+              :class="clientType==='b2c' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'"
+              class="px-5 py-2 text-sm font-semibold rounded-lg transition">
+              👤 Clientes B2C
+            </button>
+            <button @click="clientType='b2b'; clientSearchResult=null; clientSearchError=null"
+              :class="clientType==='b2b' ? 'bg-violet-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'"
+              class="px-5 py-2 text-sm font-semibold rounded-lg transition">
+              🏢 Clientes B2B
+            </button>
+          </div>
+
+          <!-- Search box -->
+          <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-4">
+            <div class="mb-4">
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">
+                <span x-text="clientType==='b2c' ? 'Customer ID, email o número de documento' : 'Company ID, username o número de identificación'"></span>
+              </label>
+              <div class="flex gap-3">
+                <input x-model="clientSearchId" type="text"
+                  :placeholder="clientType==='b2c' ? 'Ej: 3696886 / usuario@email.com / 12345678' : 'Ej: 98765 / empresa_srl / 76543210'"
+                  @keydown.enter="searchCustomer()"
+                  class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <button @click="searchCustomer()"
+                  :disabled="clientSearchRunning || !clientSearchId.trim()"
+                  class="px-6 py-2 text-sm font-semibold text-white rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  :class="clientType==='b2c' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-violet-600 hover:bg-violet-700'">
+                  <span x-show="!clientSearchRunning">🔍 Buscar</span>
+                  <span x-show="clientSearchRunning" class="flex items-center gap-2"><span class="spin">⏳</span> Consultando...</span>
+                </button>
+              </div>
+              <p class="text-xs text-slate-500 mt-1.5">Consulta directa a Redshift — requiere cluster activo</p>
+            </div>
+
+            <!-- Error -->
+            <div x-show="clientSearchError" class="bg-red-900/40 border border-red-700 rounded-lg p-3 text-red-300 text-sm" x-text="clientSearchError"></div>
+          </div>
+
+          <!-- Results -->
+          <div x-show="clientSearchResult" class="space-y-4">
+
+            <!-- Action bar -->
+            <div class="flex items-center justify-between">
+              <p class="text-slate-400 text-sm">
+                <span x-text="clientSearchResult?.count ?? 0"></span> resultado(s) para
+                <span class="text-white font-mono" x-text="clientSearchId"></span>
+              </p>
+              <div class="flex gap-2" x-show="clientSearchResult?.rows?.length">
+                <button @click="downloadClientExcel()"
+                  class="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold bg-green-600 hover:bg-green-700 text-white rounded-lg transition">
+                  ⬇ Excel
+                </button>
+                <button @click="downloadClientPDF()"
+                  class="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold bg-orange-500 hover:bg-orange-600 text-white rounded-lg transition">
+                  📄 Ficha PDF
+                </button>
+              </div>
+            </div>
+
+            <!-- Cards per result row -->
+            <template x-for="(row, idx) in (clientSearchResult?.rows ?? [])" :key="idx">
+              <div class="bg-slate-800 rounded-xl border border-slate-700 p-6">
+
+                <!-- Header: name + key IDs -->
+                <div class="mb-5 pb-4 border-b border-slate-700">
+                  <h2 class="text-lg font-bold text-white mb-1"
+                    x-text="clientType==='b2c' ? ((row.nombre||'') + ' ' + (row.apellido||'')) : (row.company_name||'—')"></h2>
+                  <div class="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-400">
+                    <template x-if="clientType==='b2c'">
+                      <span>ID Cliente: <span class="text-slate-200 font-mono" x-text="row.customer_id ?? '—'"></span></span>
+                    </template>
+                    <template x-if="clientType==='b2b'">
+                      <span>Company ID: <span class="text-slate-200 font-mono" x-text="row.company_id ?? '—'"></span></span>
+                    </template>
+                    <span x-show="clientType==='b2c'">DNI: <span class="text-slate-200 font-mono" x-text="row.dni ?? '—'"></span></span>
+                    <span x-show="clientType==='b2c'">Email: <span class="text-slate-200" x-text="row.email ?? '—'"></span></span>
+                    <span x-show="clientType==='b2b'">Doc: <span class="text-slate-200 font-mono" x-text="row.company_document_number ?? '—'"></span></span>
+                    <span x-show="clientType==='b2b'">Username: <span class="text-slate-200 font-mono" x-text="row.username ?? '—'"></span></span>
+                  </div>
+                </div>
+
+                <!-- Grid of sections -->
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+
+                  <!-- B2C: Identificación -->
+                  <template x-if="clientType==='b2c'">
+                    <div class="bg-slate-900/50 rounded-lg p-4">
+                      <h3 class="text-xs font-semibold text-blue-400 uppercase tracking-wide mb-3">Identificación</h3>
+                      <dl class="space-y-1.5 text-xs">
+                        <template x-for="[k,v] in [['País residencia', row.pais_residencia],['Nacionalidad', row.nacionalidad],['Teléfono', (row.calling_code||'') + ' ' + (row.phone_number||'')],['Tipo doc.', row.tipo_documento],['País doc.', row.pais_documento],['Estado doc.', row.estado_documento],['Fecha onboarding', row.fecha_onboarding],['Días desde onboarding', row.dias_desde_onboarding]]">
+                          <div class="flex justify-between gap-2">
+                            <dt class="text-slate-500 flex-shrink-0" x-text="k"></dt>
+                            <dd class="text-slate-200 text-right truncate" x-text="v ?? '—'"></dd>
+                          </div>
+                        </template>
+                      </dl>
+                    </div>
+                  </template>
+
+                  <!-- B2C: Compliance / KYC -->
+                  <template x-if="clientType==='b2c'">
+                    <div class="bg-slate-900/50 rounded-lg p-4">
+                      <h3 class="text-xs font-semibold text-orange-400 uppercase tracking-wide mb-3">Compliance / KYC</h3>
+                      <dl class="space-y-1.5 text-xs">
+                        <template x-for="[k,v] in [['Compliance status', row.compliance_status],['Agente compliance', row.compliance_agent],['Canal compliance', row.compliance_channel],['KYC status', row.kyc_status],['Onboarding step', row.onboarding_step],['Risk level', row.risk_level],['Segmentación', row.segmentation]]">
+                          <div class="flex justify-between gap-2">
+                            <dt class="text-slate-500 flex-shrink-0" x-text="k"></dt>
+                            <dd class="text-right truncate" :class="v==='APPROVED'||v==='active'?'text-green-400':v==='BLOCKED'||v==='blocked'?'text-red-400':'text-slate-200'" x-text="v ?? '—'"></dd>
+                          </div>
+                        </template>
+                      </dl>
+                    </div>
+                  </template>
+
+                  <!-- B2C: Trabajo / Cuenta virtual -->
+                  <template x-if="clientType==='b2c'">
+                    <div class="bg-slate-900/50 rounded-lg p-4">
+                      <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Trabajo</h3>
+                      <dl class="space-y-1.5 text-xs">
+                        <template x-for="[k,v] in [['Profesión', row.profession],['Cargo', row.work_position],['Empresa', row.workplace]]">
+                          <div class="flex justify-between gap-2">
+                            <dt class="text-slate-500 flex-shrink-0" x-text="k"></dt>
+                            <dd class="text-slate-200 text-right truncate" x-text="v ?? '—'"></dd>
+                          </div>
+                        </template>
+                      </dl>
+                    </div>
+                  </template>
+
+                  <template x-if="clientType==='b2c'">
+                    <div class="bg-slate-900/50 rounded-lg p-4">
+                      <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Cuenta Virtual</h3>
+                      <dl class="space-y-1.5 text-xs">
+                        <template x-for="[k,v] in [['N° cuenta virtual', row.virtual_account_number],['N° cuenta global', row.global_account_number],['Tipo', row.virtual_account_type],['País cuenta', row.virtual_account_country_code],['Activa', row.virtual_account_active != null ? String(row.virtual_account_active) : null],['Días hasta cuenta', row.dias_desde_onboarding_hasta_cuenta_virtual]]">
+                          <div class="flex justify-between gap-2">
+                            <dt class="text-slate-500 flex-shrink-0" x-text="k"></dt>
+                            <dd class="text-slate-200 text-right truncate" x-text="v ?? '—'"></dd>
+                          </div>
+                        </template>
+                      </dl>
+                    </div>
+                  </template>
+
+                  <!-- B2B: Compliance / KYB -->
+                  <template x-if="clientType==='b2b'">
+                    <div class="bg-slate-900/50 rounded-lg p-4">
+                      <h3 class="text-xs font-semibold text-orange-400 uppercase tracking-wide mb-3">Compliance / KYB</h3>
+                      <dl class="space-y-1.5 text-xs">
+                        <template x-for="[k,v] in [['Compliance status', row.compliance_status],['Risk level', row.risk_level],['Risk Regcheq', row.risk_level_regcheq],['KYC Stage 1', row.kyc_stage_1],['KYC Stage 2', row.kyc_stage_2],['KYC Stage 3', row.kyc_stage_3]]">
+                          <div class="flex justify-between gap-2">
+                            <dt class="text-slate-500 flex-shrink-0" x-text="k"></dt>
+                            <dd class="text-right truncate" :class="v==='approved'||v==='APPROVED'?'text-green-400':v==='rejected'||v==='REJECTED'?'text-red-400':'text-slate-200'" x-text="v ?? '—'"></dd>
+                          </div>
+                        </template>
+                      </dl>
+                    </div>
+                  </template>
+
+                  <!-- B2B: Actividad -->
+                  <template x-if="clientType==='b2b'">
+                    <div class="bg-slate-900/50 rounded-lg p-4">
+                      <h3 class="text-xs font-semibold text-violet-400 uppercase tracking-wide mb-3">Actividad / Industria</h3>
+                      <dl class="space-y-1.5 text-xs">
+                        <template x-for="[k,v] in [['Actividad', row.activity_name],['Industria', row.industry_name],['Riesgo actividad', row.activity_risk_level],['Inicio actividad', row.activity_start_date],['Ingresos mensuales', row.monthly_income],['Gastos mensuales', row.monthly_expenses],['Facturación anual est.', row.estimated_annual_billings]]">
+                          <div class="flex justify-between gap-2">
+                            <dt class="text-slate-500 flex-shrink-0" x-text="k"></dt>
+                            <dd class="text-slate-200 text-right truncate" x-text="v ?? '—'"></dd>
+                          </div>
+                        </template>
+                      </dl>
+                    </div>
+                  </template>
+
+                  <!-- B2B: Dirección -->
+                  <template x-if="clientType==='b2b'">
+                    <div class="bg-slate-900/50 rounded-lg p-4">
+                      <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Dirección</h3>
+                      <dl class="space-y-1.5 text-xs">
+                        <template x-for="[k,v] in [['País', row.company_address_country],['Estado/Región', row.company_address_state],['Ciudad', row.company_address_city],['Distrito', row.company_address_district],['Calle', row.company_address_street],['Número', row.company_address_number],['Cod. Postal', row.company_address_postal_code]]">
+                          <div class="flex justify-between gap-2">
+                            <dt class="text-slate-500 flex-shrink-0" x-text="k"></dt>
+                            <dd class="text-slate-200 text-right truncate" x-text="v ?? '—'"></dd>
+                          </div>
+                        </template>
+                      </dl>
+                    </div>
+                  </template>
+
+                  <!-- B2B: Flags societarios -->
+                  <template x-if="clientType==='b2b'">
+                    <div class="bg-slate-900/50 rounded-lg p-4">
+                      <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Flags societarios</h3>
+                      <dl class="space-y-1.5 text-xs">
+                        <template x-for="[k,v] in [['Directorio', row.has_board_directors],['Adm. conjunta', row.has_joint_administration],['Socios >10%', row.has_partners_ten_sharedholding],['Representantes legales', row.legal_representatives_count],['Institucional', row.institutional],['Multi-usuario', row.multi_user_enabled],['CRS', row.crs],['FATCA', row.fatca]]">
+                          <div class="flex justify-between gap-2">
+                            <dt class="text-slate-500 flex-shrink-0" x-text="k"></dt>
+                            <dd class="text-slate-200 text-right" x-text="v != null ? String(v) : '—'"></dd>
+                          </div>
+                        </template>
+                      </dl>
+                    </div>
+                  </template>
+
+                </div><!-- end grid -->
+              </div><!-- end card -->
+            </template>
+
+            <!-- No results -->
+            <div x-show="clientSearchResult?.count === 0" class="bg-slate-800 rounded-xl border border-slate-700 p-8 text-center text-slate-400 text-sm">
+              No se encontraron resultados para ese identificador.
+            </div>
+          </div><!-- end results -->
+
+        </div><!-- end sub-tab cliente -->
 
       </div><!-- end aml_individual tab -->
 
@@ -2697,6 +2938,13 @@
       amlResult: null,
       amlError: null,
       amlStatusMsg: 'Iniciando análisis...',
+      // Análisis de cliente (B2C/B2B)
+      amlSubTab: 'casos',
+      clientType: 'b2c',
+      clientSearchId: '',
+      clientSearchRunning: false,
+      clientSearchResult: null,
+      clientSearchError: null,
       _amlPollTimer: null,
 
       // Cluster
@@ -4518,6 +4766,117 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
         } catch(e) {
           this.globalError = 'Error al resolver: ' + (e.message || e);
         }
+      },
+
+      async searchCustomer() {
+        if (!this.clientSearchId.trim()) return;
+        this.clientSearchRunning = true;
+        this.clientSearchResult = null;
+        this.clientSearchError = null;
+        const endpoint = this.clientType === 'b2c' ? '/analyze/customer/b2c' : '/analyze/customer/b2b';
+        const d = await this.api('POST', endpoint, { identifier: this.clientSearchId.trim() });
+        if (d && d.rows !== undefined) {
+          this.clientSearchResult = d;
+        } else {
+          this.clientSearchError = d?.error || 'Error al consultar. Verifica que el cluster esté activo.';
+        }
+        this.clientSearchRunning = false;
+      },
+
+      downloadClientExcel() {
+        const rows = this.clientSearchResult?.rows;
+        if (!rows?.length) return;
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        const sheetName = this.clientType === 'b2c' ? 'Cliente B2C' : 'Empresa B2B';
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        const filename = `${this.clientType}_${this.clientSearchId.trim()}_${new Date().toISOString().slice(0,10)}.xlsx`;
+        XLSX.writeFile(wb, filename);
+      },
+
+      downloadClientPDF() {
+        const rows = this.clientSearchResult?.rows;
+        if (!rows?.length) return;
+        const row = rows[0];
+        const now = new Date().toLocaleString('es-CL');
+        const isB2C = this.clientType === 'b2c';
+        const title = isB2C ? 'FICHA DE CLIENTE B2C' : 'FICHA DE EMPRESA B2B';
+        const mainName = isB2C ? `${row.nombre || ''} ${row.apellido || ''}`.trim() : (row.company_name || '—');
+
+        const field = (label, val) => val != null && val !== '' && val !== 'None'
+          ? `<tr><td style="padding:5px 10px;border:1px solid #e5e7eb;background:#f9fafb;font-size:11px;color:#6b7280;width:40%">${label}</td><td style="padding:5px 10px;border:1px solid #e5e7eb;font-size:11px;color:#111827">${val}</td></tr>`
+          : '';
+
+        let sections = '';
+        if (isB2C) {
+          sections = `
+            <h3 style="font-size:11px;font-weight:700;color:#2563eb;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Identificación</h3>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+              ${field('País residencia', row.pais_residencia)}${field('Nacionalidad', row.nacionalidad)}${field('Teléfono', (row.calling_code||'')+' '+(row.phone_number||''))}${field('Tipo documento', row.tipo_documento)}${field('País documento', row.pais_documento)}${field('Estado documento', row.estado_documento)}${field('Fecha onboarding', row.fecha_onboarding)}${field('Días desde onboarding', row.dias_desde_onboarding)}
+            </table>
+            <h3 style="font-size:11px;font-weight:700;color:#ea580c;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Compliance / KYC</h3>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+              ${field('Compliance status', row.compliance_status)}${field('Agente', row.compliance_agent)}${field('Canal', row.compliance_channel)}${field('KYC status', row.kyc_status)}${field('Onboarding step', row.onboarding_step)}${field('Risk level', row.risk_level)}${field('Segmentación', row.segmentation)}
+            </table>
+            <h3 style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Trabajo</h3>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+              ${field('Profesión', row.profession)}${field('Cargo', row.work_position)}${field('Empresa', row.workplace)}
+            </table>
+            <h3 style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Cuenta Virtual</h3>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+              ${field('N° cuenta virtual', row.virtual_account_number)}${field('N° cuenta global', row.global_account_number)}${field('Tipo', row.virtual_account_type)}${field('País cuenta', row.virtual_account_country_code)}${field('Activa', row.virtual_account_active != null ? String(row.virtual_account_active) : null)}${field('Días hasta cuenta', row.dias_desde_onboarding_hasta_cuenta_virtual)}
+            </table>`;
+        } else {
+          sections = `
+            <h3 style="font-size:11px;font-weight:700;color:#ea580c;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Compliance / KYB</h3>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+              ${field('Compliance status', row.compliance_status)}${field('Risk level', row.risk_level)}${field('Risk Regcheq', row.risk_level_regcheq)}${field('KYC Stage 1', row.kyc_stage_1)}${field('KYC Stage 2', row.kyc_stage_2)}${field('KYC Stage 3', row.kyc_stage_3)}
+            </table>
+            <h3 style="font-size:11px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Actividad / Industria</h3>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+              ${field('Actividad', row.activity_name)}${field('Industria', row.industry_name)}${field('Riesgo actividad', row.activity_risk_level)}${field('Inicio actividad', row.activity_start_date)}${field('Ingresos mensuales', row.monthly_income)}${field('Gastos mensuales', row.monthly_expenses)}${field('Facturación anual est.', row.estimated_annual_billings)}
+            </table>
+            <h3 style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Dirección</h3>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+              ${field('País', row.company_address_country)}${field('Estado/Región', row.company_address_state)}${field('Ciudad', row.company_address_city)}${field('Calle', row.company_address_street+' '+row.company_address_number)}${field('Cod. Postal', row.company_address_postal_code)}
+            </table>
+            <h3 style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Flags societarios</h3>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+              ${field('Representantes legales', row.legal_representatives_count)}${field('Institucional', row.institutional != null ? String(row.institutional) : null)}${field('Multi-usuario', row.multi_user_enabled != null ? String(row.multi_user_enabled) : null)}${field('CRS', row.crs != null ? String(row.crs) : null)}${field('FATCA', row.fatca != null ? String(row.fatca) : null)}
+            </table>`;
+        }
+
+        const html = `<div style="font-family:Arial,sans-serif;padding:0;color:#111827">
+          <div style="background:#1B3A6B;padding:16px 24px;display:flex;justify-content:space-between;align-items:center;margin-bottom:0">
+            <div>
+              <div style="font-size:18px;font-weight:700;color:white;letter-spacing:0.05em">${title}</div>
+              <div style="font-size:10px;color:#93c5fd;margin-top:2px">WatchTower AML · Compliance Team Global66</div>
+            </div>
+            <div style="font-size:10px;color:#93c5fd;text-align:right">${now}</div>
+          </div>
+          <div style="border:1px solid #e5e7eb;border-radius:4px;padding:16px 20px;margin:16px 0">
+            <div style="font-size:20px;font-weight:700;color:#111827;margin-bottom:8px">${mainName}</div>
+            <div style="display:flex;gap:24px;font-size:11px;color:#6b7280">
+              ${isB2C ? `<span>ID: ${row.customer_id ?? '—'}</span><span>Email: ${row.email ?? '—'}</span><span>DNI: ${row.dni ?? '—'}</span>` : `<span>Company ID: ${row.company_id ?? '—'}</span><span>Doc: ${row.company_document_number ?? '—'}</span><span>Username: ${row.username ?? '—'}</span>`}
+            </div>
+          </div>
+          ${sections}
+          <div style="margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:9px;color:#9ca3af;text-align:center">
+            WatchTower AML · Compliance Global66 · ${now}
+          </div>
+        </div>`;
+
+        const el = document.createElement('div');
+        el.innerHTML = html;
+        document.body.appendChild(el);
+        const filename = `ficha_${this.clientType}_${this.clientSearchId.trim()}_${new Date().toISOString().slice(0,10)}.pdf`;
+        html2pdf().set({
+          margin: [10, 10, 10, 10],
+          filename,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2 },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        }).from(el).save().then(() => document.body.removeChild(el));
       },
     };
   }
