@@ -767,6 +767,41 @@ def search_customer_b2b(body: dict):
 
 
 # ---------------------------------------------------------------------------
+# AI generate proxy — calls Gemini using AI_API_KEY env var
+# ---------------------------------------------------------------------------
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+def ai_generate(body: dict):
+    import urllib.request as _ur
+    api_key = os.environ.get("AI_API_KEY", "")
+    if not api_key:
+        return resp(500, {"error": "AI_API_KEY not configured"})
+    prompt = str(body.get("prompt", "")).strip()
+    if not prompt:
+        return resp(400, {"error": "prompt is required"})
+    temperature = float(body.get("temperature", 0.3))
+    max_tokens = int(body.get("max_tokens", 2048))
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
+    }).encode()
+    url = f"{_GEMINI_URL}?key={api_key}"
+    req = _ur.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with _ur.urlopen(req, timeout=60) as r:
+            data = json.loads(r.read())
+        text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        return resp(200, {"text": text})
+    except _ur.HTTPError as e:
+        err_body = e.read().decode(errors="ignore")
+        try:
+            err_msg = json.loads(err_body).get("error", {}).get("message", err_body)
+        except Exception:
+            err_msg = err_body
+        return resp(502, {"error": err_msg})
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 def handler(event, context):  # noqa: ARG001
@@ -885,6 +920,9 @@ def handler(event, context):  # noqa: ARG001
         # POST /alerts/notify
         if method == "POST" and parts == ["alerts", "notify"]:
             return notify_alert(body)
+
+        if method == "POST" and parts == ["ai", "generate"]:
+            return ai_generate(body)
 
         # GET /dashboard/stats (submit queries, returns stmt_ids)
         if method == "GET" and parts == ["dashboard", "stats"]:

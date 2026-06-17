@@ -4111,26 +4111,14 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
 
       async _callGemini(prompt, stateKey) {
         this[stateKey] = { loading: true, text: '', error: '' };
-        if (!this.geminiKey) {
-          this[stateKey] = { loading: false, text: '', error: 'No hay API key de Gemini configurada. Ve a ⚙ Configuración y agrega tu key.' };
-          return;
-        }
         try {
-          const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${this.geminiKey}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { temperature: 0.3, maxOutputTokens: 2048 }
-              })
-            }
-          );
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error?.message || 'Gemini error ' + res.status);
-          const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-          this[stateKey] = { loading: false, text, error: '' };
+          const data = await this.api('POST', '/ai/generate', { prompt, temperature: 0.3, max_tokens: 2048 });
+          if (!data) {
+            this[stateKey] = { loading: false, text: '', error: 'Error al contactar el servidor de IA.' };
+            return;
+          }
+          if (data.error) throw new Error(data.error);
+          this[stateKey] = { loading: false, text: data.text || '', error: '' };
         } catch(e) {
           this[stateKey] = { loading: false, text: '', error: 'Error al contactar Gemini: ' + e.message };
         }
