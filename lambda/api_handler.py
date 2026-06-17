@@ -769,7 +769,7 @@ def search_customer_b2b(body: dict):
 # ---------------------------------------------------------------------------
 # AI generate proxy — calls Gemini using AI_API_KEY env var
 # ---------------------------------------------------------------------------
-_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 def ai_generate(body: dict):
     import urllib.request as _ur
