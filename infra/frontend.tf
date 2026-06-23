@@ -129,9 +129,9 @@ resource "aws_cognito_user_pool_client" "frontend" {
   ]
 
   # Token validity
-  access_token_validity  = 1    # hours
-  id_token_validity      = 1    # hours
-  refresh_token_validity = 30   # days
+  access_token_validity  = 1  # hours
+  id_token_validity      = 1  # hours
+  refresh_token_validity = 30 # days
 
   token_validity_units {
     access_token  = "hours"
@@ -172,6 +172,12 @@ resource "aws_iam_role_policy_attachment" "api_lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# Required to create/manage ENIs when Lambda runs inside a VPC
+resource "aws_iam_role_policy_attachment" "api_lambda_vpc" {
+  role       = aws_iam_role.api_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 data "aws_iam_policy_document" "api_lambda_inline" {
   statement {
     sid    = "DynamoDB"
@@ -200,10 +206,17 @@ data "aws_iam_policy_document" "api_lambda_inline" {
   }
 
   statement {
-    sid     = "S3Presign"
-    effect  = "Allow"
-    actions = ["s3:GetObject"]
+    sid       = "S3Presign"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.reports.arn}/*"]
+  }
+
+  statement {
+    sid       = "SecretsManagerDB"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.rds_credentials.arn]
   }
 }
 
@@ -225,7 +238,12 @@ resource "aws_lambda_function" "api" {
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
   memory_size      = 512
-  timeout          = 30
+  timeout          = 60
+
+  vpc_config {
+    subnet_ids         = data.aws_subnet.private[*].id
+    security_group_ids = [aws_security_group.lambda.id]
+  }
 
   environment {
     variables = {
@@ -235,6 +253,7 @@ resource "aws_lambda_function" "api" {
       S3_BUCKET       = aws_s3_bucket.reports.bucket
       WHITELIST_TABLE = aws_dynamodb_table.whitelist.name
       ALERTS_TABLE    = aws_dynamodb_table.alerts.name
+      DB_SECRET_ARN   = aws_secretsmanager_secret.rds_credentials.arn
     }
   }
 }
@@ -250,7 +269,7 @@ resource "aws_apigatewayv2_api" "main" {
     allow_credentials = false
     allow_headers     = ["Authorization", "Content-Type"]
     allow_methods     = ["GET", "POST", "DELETE", "OPTIONS"]
-    allow_origins     = [
+    allow_origins = [
       "https://${aws_cloudfront_distribution.frontend.domain_name}",
       "https://bmackenna-g66.github.io",
     ]

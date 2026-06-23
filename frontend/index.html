@@ -162,6 +162,14 @@
               class="text-xs bg-red-600 text-white rounded-full px-1.5 py-0.5 leading-none"
               x-text="alerts.length"></span>
           </button>
+          <button @click="switchTab('casos'); loadCases()"
+            :class="activeTab==='casos' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
+            <span>📁</span> Casos
+            <span x-show="cases.filter(c=>c.status!=='closed'&&c.status!=='archived').length > 0"
+              class="text-xs bg-orange-600 text-white rounded-full px-1.5 py-0.5 leading-none"
+              x-text="cases.filter(c=>c.status!=='closed'&&c.status!=='archived').length"></span>
+          </button>
           <button x-show="hasModule('pendientes')" @click="switchTab('pendientes')"
             :class="activeTab==='pendientes' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
@@ -305,6 +313,34 @@
             <p class="text-slate-500 text-xs mt-1">Entradas activas</p>
           </div>
 
+        </div>
+
+        <!-- CRM Cases KPI row -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+          <div @click="switchTab('casos'); loadCases()"
+            class="bg-slate-800/60 border border-slate-700 rounded-xl p-4 cursor-pointer hover:border-blue-500 transition">
+            <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">Casos Abiertos</p>
+            <p class="text-2xl font-bold text-white"
+              x-text="cases.filter(c=>c.status==='open').length"></p>
+          </div>
+          <div @click="switchTab('casos'); caseStatusFilter='in_progress'; loadCases()"
+            class="bg-slate-800/60 border border-slate-700 rounded-xl p-4 cursor-pointer hover:border-yellow-500 transition">
+            <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">En Investigación</p>
+            <p class="text-2xl font-bold text-yellow-400"
+              x-text="cases.filter(c=>c.status==='in_progress').length"></p>
+          </div>
+          <div @click="switchTab('casos'); caseStatusFilter='under_review'; loadCases()"
+            class="bg-slate-800/60 border border-slate-700 rounded-xl p-4 cursor-pointer hover:border-purple-500 transition">
+            <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">Bajo Revisión</p>
+            <p class="text-2xl font-bold text-purple-400"
+              x-text="cases.filter(c=>c.status==='under_review').length"></p>
+          </div>
+          <div @click="switchTab('alertados')"
+            class="bg-slate-800/60 border border-slate-700 rounded-xl p-4 cursor-pointer hover:border-orange-500 transition">
+            <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">Alertas Activas</p>
+            <p class="text-2xl font-bold text-orange-400"
+              x-text="alerts.length"></p>
+          </div>
         </div>
 
         <!-- Charts row -->
@@ -945,6 +981,28 @@
           <button @click="loadAlerts()" class="text-sm text-slate-400 hover:text-white transition">↺ Actualizar</button>
         </div>
 
+        <!-- Filters -->
+        <div class="flex items-center gap-3 mb-4 flex-wrap">
+          <select x-model="alertFilter.priority"
+            class="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-slate-500">
+            <option value="">Todas las prioridades</option>
+            <option value="high">🔴 Alta</option>
+            <option value="medium">🟡 Media</option>
+            <option value="low">🟢 Baja</option>
+          </select>
+          <select x-model="alertFilter.assigned_to"
+            class="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-slate-500">
+            <option value="">Todos los asignados</option>
+            <option value="__unassigned__">Sin asignar</option>
+            <template x-for="u in crmUsers" :key="u.email">
+              <option :value="u.email" x-text="u.full_name"></option>
+            </template>
+          </select>
+          <span x-show="alertFilter.priority || alertFilter.assigned_to"
+            class="text-xs text-slate-500 cursor-pointer hover:text-white"
+            @click="alertFilter = { priority: '', assigned_to: '' }">✕ Limpiar filtros</span>
+        </div>
+
         <!-- View toggle -->
         <div class="flex items-center gap-1 mb-5 bg-slate-800 border border-slate-700 rounded-lg p-1 w-fit">
           <button @click="alertsView='active'"
@@ -971,31 +1029,62 @@
             <p class="text-4xl mb-3">✅</p>
             <p>No hay alertas activas. Marca filas con ⚠ desde cualquier tabla de resultados.</p>
           </div>
-          <div x-show="alerts.length > 0" class="overflow-x-auto rounded-xl border border-slate-700">
+          <div x-show="filteredAlerts().length > 0" class="overflow-x-auto rounded-xl border border-slate-700">
             <table class="w-full text-sm">
               <thead class="bg-slate-800 border-b border-slate-700">
                 <tr>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Prioridad</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Campo</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Valor</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Reporte</th>
-                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Razón</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Razón / Notas</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Asignado a</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Fecha</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Acciones</th>
                 </tr>
               </thead>
               <tbody>
-                <template x-for="a in alerts" :key="a.alert_id">
-                  <tr class="border-b border-slate-800 hover:bg-slate-800/50 transition bg-red-900/5">
+                <template x-for="a in filteredAlerts()" :key="a.alert_id">
+                  <tr class="border-b border-slate-800 hover:bg-slate-800/50 transition"
+                    :class="a.priority === 'high' ? 'bg-red-900/10' : a.priority === 'low' ? '' : 'bg-yellow-900/5'">
+                    <!-- Priority badge -->
+                    <td class="px-4 py-3 whitespace-nowrap">
+                      <span class="text-xs font-semibold px-2 py-0.5 rounded-full"
+                        :class="{
+                          'bg-red-900/60 text-red-300 border border-red-700':   a.priority === 'high',
+                          'bg-yellow-900/60 text-yellow-300 border border-yellow-700': a.priority === 'medium' || !a.priority,
+                          'bg-green-900/60 text-green-300 border border-green-700':  a.priority === 'low'
+                        }"
+                        x-text="a.priority === 'high' ? '🔴 Alta' : a.priority === 'low' ? '🟢 Baja' : '🟡 Media'">
+                      </span>
+                    </td>
                     <td class="px-4 py-3 text-slate-400 text-xs font-mono" x-text="a.entity_field"></td>
                     <td class="px-4 py-3 text-white font-semibold" x-text="a.entity_value"></td>
                     <td class="px-4 py-3 text-slate-400 text-xs" x-text="(a.report_name||'—').replace(/_/g,' ')"></td>
-                    <td class="px-4 py-3 text-slate-300 text-xs max-w-xs truncate" :title="a.reason" x-text="a.reason||'—'"></td>
+                    <!-- Razón + notas colapsables -->
+                    <td class="px-4 py-3 text-slate-300 text-xs max-w-xs">
+                      <div class="truncate" :title="a.reason" x-text="a.reason||'—'"></div>
+                      <div x-show="a.notes" class="mt-1 text-slate-500 italic truncate" :title="a.notes" x-text="'📝 ' + a.notes"></div>
+                    </td>
+                    <!-- Assigned to -->
+                    <td class="px-4 py-3 text-xs">
+                      <span x-show="!a.assigned_to" class="text-slate-600 italic">Sin asignar</span>
+                      <span x-show="a.assigned_to" class="text-blue-400" x-text="a.assigned_to"></span>
+                    </td>
                     <td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap" x-text="formatDate(a.created_at)"></td>
                     <td class="px-4 py-3">
-                      <div class="flex items-center gap-2">
-                        <button @click="reviewAlert(a.alert_id)"
-                          class="text-xs px-3 py-1.5 bg-green-700 hover:bg-green-600 text-white rounded-lg transition font-medium">
+                      <div class="flex items-center gap-1.5">
+                        <button @click="openReviewModal(a.alert_id)"
+                          class="text-xs px-2.5 py-1.5 bg-green-700 hover:bg-green-600 text-white rounded-lg transition font-medium whitespace-nowrap">
                           ✓ Revisar
+                        </button>
+                        <button @click="openAssignModal(a.alert_id, a.assigned_to)"
+                          class="text-xs px-2.5 py-1.5 bg-blue-900/50 hover:bg-blue-800/60 text-blue-300 border border-blue-800 rounded-lg transition whitespace-nowrap">
+                          👤 Asignar
+                        </button>
+                        <button @click="openCreateCaseModal(a)"
+                          class="text-xs px-2.5 py-1.5 bg-orange-900/40 hover:bg-orange-800/60 text-orange-300 border border-orange-800 rounded-lg transition whitespace-nowrap">
+                          📁 Caso
                         </button>
                         <button @click="deleteAlert(a.alert_id)"
                           class="text-xs px-2 py-1.5 bg-slate-700 hover:bg-red-900/50 text-red-400 hover:text-red-300 border border-slate-600 hover:border-red-700 rounded-lg transition">
@@ -1009,6 +1098,9 @@
                 </template>
               </tbody>
             </table>
+          </div>
+          <div x-show="alerts.length > 0 && filteredAlerts().length === 0" class="text-center py-10 text-slate-500 text-sm">
+            No hay alertas que coincidan con los filtros seleccionados.
           </div>
         </div>
 
@@ -1025,9 +1117,10 @@
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Campo</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Valor</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Reporte</th>
-                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Razón</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Razón / Notas</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Alertado</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Revisado</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Revisado por</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Acciones</th>
                 </tr>
               </thead>
@@ -1037,9 +1130,16 @@
                     <td class="px-4 py-3 text-slate-400 text-xs font-mono" x-text="a.entity_field"></td>
                     <td class="px-4 py-3 text-slate-300" x-text="a.entity_value"></td>
                     <td class="px-4 py-3 text-slate-400 text-xs" x-text="(a.report_name||'—').replace(/_/g,' ')"></td>
-                    <td class="px-4 py-3 text-slate-300 text-xs max-w-xs truncate" :title="a.reason" x-text="a.reason||'—'"></td>
+                    <td class="px-4 py-3 text-slate-300 text-xs max-w-xs">
+                      <div class="truncate" :title="a.reason" x-text="a.reason||'—'"></div>
+                      <div x-show="a.notes" class="mt-1 text-slate-500 italic truncate" :title="a.notes" x-text="'📝 ' + a.notes"></div>
+                    </td>
                     <td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap" x-text="formatDate(a.created_at)"></td>
                     <td class="px-4 py-3 text-green-500 text-xs whitespace-nowrap" x-text="formatDate(a.reviewed_at)"></td>
+                    <td class="px-4 py-3 text-xs">
+                      <span x-show="a.reviewed_by" class="text-slate-400" x-text="a.reviewed_by"></span>
+                      <span x-show="!a.reviewed_by" class="text-slate-600 italic">—</span>
+                    </td>
                     <td class="px-4 py-3">
                       <button @click="deleteAlert(a.alert_id)"
                         class="text-xs px-2 py-1.5 bg-slate-700 hover:bg-red-900/50 text-red-400 hover:text-red-300 border border-slate-600 hover:border-red-700 rounded-lg transition">
@@ -1053,6 +1153,154 @@
           </div>
         </div>
 
+      </div>
+
+      <!-- ===== TAB: CASOS CRM ===== -->
+      <div x-show="activeTab==='casos'" x-cloak>
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-4">
+          <h1 class="text-xl font-bold text-white flex items-center gap-2">📁 Casos de Investigación</h1>
+          <div class="flex items-center gap-3">
+            <button @click="loadCases()" class="text-sm text-slate-400 hover:text-white transition">↺ Actualizar</button>
+            <!-- View toggle -->
+            <div class="flex bg-slate-700 rounded-lg p-0.5 text-xs font-medium">
+              <button @click="casesViewMode='cards'"
+                :class="casesViewMode==='cards' ? 'bg-slate-500 text-white' : 'text-slate-400 hover:text-white'"
+                class="px-3 py-1.5 rounded-md transition">⊞ Cards</button>
+              <button @click="casesViewMode='kanban'"
+                :class="casesViewMode==='kanban' ? 'bg-slate-500 text-white' : 'text-slate-400 hover:text-white'"
+                class="px-3 py-1.5 rounded-md transition">⊟ Kanban</button>
+            </div>
+            <button @click="openCreateCaseModal()"
+              class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg transition">
+              + Nuevo Caso
+            </button>
+          </div>
+        </div>
+
+        <!-- Status filter tabs -->
+        <div class="flex gap-1 mb-4 border-b border-slate-700 pb-0">
+          <template x-for="st in [{k:'all',l:'Todos'},{k:'open',l:'Abiertos'},{k:'in_progress',l:'En Investigación'},{k:'under_review',l:'Bajo Revisión'},{k:'closed',l:'Cerrados'}]" :key="st.k">
+            <button @click="caseStatusFilter=st.k; loadCases()"
+              :class="caseStatusFilter===st.k ? 'border-b-2 border-orange-400 text-orange-400' : 'text-slate-400 hover:text-white'"
+              class="px-3 py-2 text-sm font-medium transition whitespace-nowrap"
+              x-text="st.l"></button>
+          </template>
+        </div>
+
+        <!-- Priority + assignee filter row -->
+        <div class="flex gap-3 mb-5">
+          <select x-model="casePriorityFilter" @change="loadCases()"
+            class="bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-orange-400">
+            <option value="">Todas las prioridades</option>
+            <option value="high">Alta</option>
+            <option value="medium">Media</option>
+            <option value="low">Baja</option>
+          </select>
+          <select x-model="caseAssignedFilter" @change="loadCases()"
+            class="bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-orange-400">
+            <option value="">Todos los analistas</option>
+            <template x-for="u in crmUsers" :key="u.email">
+              <option :value="u.email" x-text="u.full_name"></option>
+            </template>
+          </select>
+        </div>
+
+        <!-- Loading -->
+        <div x-show="casesLoading" class="text-center py-12 text-slate-400">
+          <div class="animate-spin text-3xl mb-2">⟳</div>
+          <p class="text-sm">Cargando casos...</p>
+        </div>
+
+        <!-- Empty state -->
+        <div x-show="!casesLoading && filteredCases().length === 0" class="text-center py-16 text-slate-500">
+          <div class="text-4xl mb-3">📂</div>
+          <p class="text-lg font-medium text-slate-400 mb-1">No hay casos</p>
+          <p class="text-sm">Crea el primer caso de investigación</p>
+        </div>
+
+        <!-- ── CARDS VIEW ── -->
+        <div x-show="!casesLoading && casesViewMode==='cards'" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <template x-for="c in filteredCases()" :key="c.case_id">
+            <div @click="openCaseDetail(c.case_id)"
+              class="bg-slate-800 border border-slate-700 rounded-xl p-4 cursor-pointer hover:border-orange-500 transition group">
+              <div class="flex items-start justify-between gap-2 mb-2">
+                <span class="text-xs font-mono text-slate-500" x-text="c.case_id.slice(0,8)+'…'"></span>
+                <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                  :class="caseStatusColor(c.status)" x-text="caseStatusLabel(c.status)"></span>
+              </div>
+              <h3 class="text-sm font-semibold text-white mb-1 line-clamp-2 group-hover:text-orange-300 transition"
+                x-text="c.title"></h3>
+              <p class="text-xs text-slate-400 mb-3 line-clamp-2" x-text="c.description || '—'"></p>
+              <div class="flex items-center justify-between text-xs text-slate-500">
+                <div class="flex items-center gap-2">
+                  <span class="px-1.5 py-0.5 rounded text-xs font-medium"
+                    :class="c.priority==='high' ? 'bg-red-900/50 text-red-300' : c.priority==='medium' ? 'bg-yellow-900/50 text-yellow-300' : 'bg-slate-700 text-slate-300'"
+                    x-text="c.priority==='high'?'Alta':c.priority==='medium'?'Media':'Baja'"></span>
+                  <span x-show="c.note_count > 0" class="flex items-center gap-1">💬 <span x-text="c.note_count"></span></span>
+                </div>
+                <span x-text="c.assigned_to ? c.assigned_to.split('@')[0] : 'Sin asignar'"
+                  class="truncate max-w-[100px]"
+                  :class="c.assigned_to ? 'text-slate-300' : 'text-slate-600'"></span>
+              </div>
+              <div class="mt-2 text-xs text-slate-600"
+                x-text="'Actualizado ' + new Date(c.updated_at).toLocaleDateString('es-CL')"></div>
+            </div>
+          </template>
+        </div>
+
+        <!-- ── KANBAN VIEW ── -->
+        <div x-show="!casesLoading && casesViewMode==='kanban'"
+          class="flex gap-4 overflow-x-auto pb-4" style="min-height:420px">
+          <template x-for="col in kanbanColumns" :key="col.key">
+            <div class="flex-shrink-0 w-72 flex flex-col">
+              <!-- Column header -->
+              <div class="flex items-center justify-between mb-3 px-1">
+                <div class="flex items-center gap-2">
+                  <span class="w-2.5 h-2.5 rounded-full"
+                    :class="col.dot"></span>
+                  <span class="text-sm font-semibold text-slate-300" x-text="col.label"></span>
+                </div>
+                <span class="text-xs bg-slate-700 text-slate-400 rounded-full px-2 py-0.5"
+                  x-text="cases.filter(c=>c.status===col.key).length"></span>
+              </div>
+              <!-- Column body -->
+              <div class="flex-1 bg-slate-800/40 rounded-xl border border-slate-700/60 p-2 space-y-2"
+                style="min-height:200px">
+                <template x-for="c in cases.filter(c=>c.status===col.key)" :key="c.case_id">
+                  <div @click="openCaseDetail(c.case_id)"
+                    class="bg-slate-800 border border-slate-700 rounded-lg p-3 cursor-pointer hover:border-orange-500 transition group">
+                    <div class="flex items-start justify-between gap-1 mb-1">
+                      <span class="text-xs font-mono text-slate-600" x-text="c.case_id.slice(0,6)+'…'"></span>
+                      <span class="px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0"
+                        :class="c.priority==='high' ? 'bg-red-900/50 text-red-300' : c.priority==='medium' ? 'bg-yellow-900/50 text-yellow-300' : 'bg-slate-700 text-slate-400'"
+                        x-text="c.priority==='high'?'Alta':c.priority==='medium'?'Media':'Baja'"></span>
+                    </div>
+                    <p class="text-xs font-medium text-white line-clamp-2 mb-2 group-hover:text-orange-300 transition"
+                      x-text="c.title"></p>
+                    <div class="flex items-center justify-between text-xs text-slate-500">
+                      <span x-text="c.assigned_to ? c.assigned_to.split('@')[0] : '—'"
+                        :class="c.assigned_to ? 'text-slate-400' : 'text-slate-600'"></span>
+                      <span x-show="c.note_count > 0">💬 <span x-text="c.note_count"></span></span>
+                    </div>
+                    <!-- Quick-move buttons -->
+                    <div class="flex gap-1 mt-2 pt-2 border-t border-slate-700/50">
+                      <template x-for="next in col.nextStatuses" :key="next.k">
+                        <button @click.stop="changeCaseStatus(c.case_id, next.k); $event.stopPropagation()"
+                          class="text-xs px-2 py-0.5 rounded border border-slate-600 text-slate-400 hover:border-orange-500 hover:text-orange-300 transition whitespace-nowrap"
+                          x-text="next.l"></button>
+                      </template>
+                    </div>
+                  </div>
+                </template>
+                <div x-show="cases.filter(c=>c.status===col.key).length===0"
+                  class="flex items-center justify-center h-16 text-slate-600 text-xs italic">
+                  Sin casos
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
       </div>
 
       <!-- ===== TAB: HISTORIAL ===== -->
@@ -2130,6 +2378,21 @@
           <textarea x-model="alertRowData.reason" rows="3" placeholder="Describe el patrón sospechoso observado..."
             class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-red-500 resize-none mono"></textarea>
         </div>
+        <!-- Priority -->
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-2">Prioridad</label>
+          <div class="flex gap-2">
+            <button @click="alertRowData.priority='high'"
+              :class="alertRowData.priority==='high' ? 'bg-red-700 text-white border-red-600' : 'bg-slate-900 text-slate-400 border-slate-600 hover:bg-slate-700'"
+              class="flex-1 py-1.5 text-xs font-medium rounded-lg border transition">🔴 Alta</button>
+            <button @click="alertRowData.priority='medium'"
+              :class="alertRowData.priority==='medium' ? 'bg-yellow-700 text-white border-yellow-600' : 'bg-slate-900 text-slate-400 border-slate-600 hover:bg-slate-700'"
+              class="flex-1 py-1.5 text-xs font-medium rounded-lg border transition">🟡 Media</button>
+            <button @click="alertRowData.priority='low'"
+              :class="alertRowData.priority==='low' ? 'bg-green-800 text-white border-green-700' : 'bg-slate-900 text-slate-400 border-slate-600 hover:bg-slate-700'"
+              class="flex-1 py-1.5 text-xs font-medium rounded-lg border transition">🟢 Baja</button>
+          </div>
+        </div>
         <!-- Report context -->
         <div x-show="alertRowData.report_name" class="text-xs text-slate-500 bg-slate-900/50 rounded-lg px-3 py-2">
           Reporte: <span class="text-slate-300" x-text="alertRowData.report_name?.replace(/_/g,' ')"></span>
@@ -2145,6 +2408,286 @@
             ⚠️ Marcar como Alertado
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: REVIEW ALERT (with notes) ===== -->
+  <div x-show="reviewModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="reviewModal.open=false"></div>
+    <div class="relative bg-slate-800 border border-green-900/50 rounded-2xl shadow-2xl w-full max-w-md mx-auto p-6">
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-lg font-bold text-white flex items-center gap-2">✅ Marcar como Revisado</h2>
+        <button @click="reviewModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Notas de la revisión <span class="text-slate-500 font-normal">(opcional)</span></label>
+          <textarea x-model="reviewModal.notes" rows="4"
+            placeholder="Describe el resultado de la investigación: qué se verificó, por qué se cierra, evidencia relevante..."
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-600 resize-none"></textarea>
+        </div>
+        <div class="flex gap-3 pt-1">
+          <button @click="reviewModal.open=false"
+            class="flex-1 py-2 text-sm text-slate-400 hover:text-white border border-slate-600 rounded-lg transition">
+            Cancelar
+          </button>
+          <button @click="confirmReview()"
+            class="flex-1 py-2 text-sm font-semibold text-white bg-green-700 hover:bg-green-600 rounded-lg transition">
+            ✓ Confirmar revisión
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: ASSIGN ALERT ===== -->
+  <div x-show="assignModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="assignModal.open=false"></div>
+    <div class="relative bg-slate-800 border border-blue-900/50 rounded-2xl shadow-2xl w-full max-w-sm mx-auto p-6">
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-lg font-bold text-white flex items-center gap-2">👤 Asignar Alerta</h2>
+        <button @click="assignModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Asignar a</label>
+          <select x-model="assignModal.assigned_to"
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">Sin asignar</option>
+            <template x-for="u in crmUsers" :key="u.email">
+              <option :value="u.email" x-text="u.full_name + ' (' + u.email + ')'"></option>
+            </template>
+          </select>
+        </div>
+        <div class="flex gap-3 pt-1">
+          <button @click="assignModal.open=false"
+            class="flex-1 py-2 text-sm text-slate-400 hover:text-white border border-slate-600 rounded-lg transition">
+            Cancelar
+          </button>
+          <button @click="confirmAssign()"
+            class="flex-1 py-2 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-600 rounded-lg transition">
+            Confirmar
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: CREAR CASO ===== -->
+  <div x-show="createCaseModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="createCaseModal.open=false"></div>
+    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg mx-auto p-6">
+      <div class="flex items-center justify-between mb-5">
+        <h2 class="text-lg font-bold text-white flex items-center gap-2">📁 Nuevo Caso de Investigación</h2>
+        <button @click="createCaseModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+      </div>
+      <!-- Titulo -->
+      <div class="mb-4">
+        <label class="block text-xs text-slate-400 mb-1">Título *</label>
+        <input x-model="newCaseForm.title" type="text" placeholder="Describe el caso brevemente"
+          class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-orange-400">
+      </div>
+      <!-- Descripción -->
+      <div class="mb-4">
+        <label class="block text-xs text-slate-400 mb-1">Descripción</label>
+        <textarea x-model="newCaseForm.description" rows="3" placeholder="Contexto, evidencia inicial..."
+          class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-orange-400 resize-none"></textarea>
+      </div>
+      <!-- Prioridad -->
+      <div class="mb-4">
+        <label class="block text-xs text-slate-400 mb-2">Prioridad</label>
+        <div class="flex gap-2">
+          <button @click="newCaseForm.priority='high'"
+            :class="newCaseForm.priority==='high' ? 'bg-red-700 border-red-500 text-white' : 'border-slate-600 text-slate-400 hover:border-red-500'"
+            class="flex-1 py-2 text-sm border rounded-lg transition">Alta</button>
+          <button @click="newCaseForm.priority='medium'"
+            :class="newCaseForm.priority==='medium' ? 'bg-yellow-700 border-yellow-500 text-white' : 'border-slate-600 text-slate-400 hover:border-yellow-500'"
+            class="flex-1 py-2 text-sm border rounded-lg transition">Media</button>
+          <button @click="newCaseForm.priority='low'"
+            :class="newCaseForm.priority==='low' ? 'bg-slate-600 border-slate-400 text-white' : 'border-slate-600 text-slate-400 hover:border-slate-400'"
+            class="flex-1 py-2 text-sm border rounded-lg transition">Baja</button>
+        </div>
+      </div>
+      <!-- Asignar a -->
+      <div class="mb-4">
+        <label class="block text-xs text-slate-400 mb-1">Asignar a</label>
+        <select x-model="newCaseForm.assigned_to"
+          class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-orange-400">
+          <option value="">Sin asignar</option>
+          <template x-for="u in crmUsers" :key="u.email">
+            <option :value="u.email" x-text="u.full_name + ' (' + u.email + ')'"></option>
+          </template>
+        </select>
+      </div>
+      <!-- Entidad (pre-filled from alert if linking) -->
+      <div class="grid grid-cols-2 gap-3 mb-5" x-show="newCaseForm.entity_id">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Entidad</label>
+          <input x-model="newCaseForm.entity_type" type="text" readonly
+            class="w-full bg-slate-700/50 border border-slate-700 text-slate-400 text-sm rounded-lg px-3 py-2">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">ID Entidad</label>
+          <input x-model="newCaseForm.entity_id" type="text" readonly
+            class="w-full bg-slate-700/50 border border-slate-700 text-slate-400 text-sm rounded-lg px-3 py-2">
+        </div>
+      </div>
+      <div class="flex gap-3">
+        <button @click="createCaseModal.open=false"
+          class="flex-1 py-2 text-sm text-slate-400 hover:text-white border border-slate-600 rounded-lg transition">
+          Cancelar
+        </button>
+        <button @click="submitCreateCase()"
+          :disabled="!newCaseForm.title.trim()"
+          class="flex-1 py-2 text-sm font-semibold text-white bg-orange-600 hover:bg-orange-500 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+          Crear Caso
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: DETALLE CASO ===== -->
+  <div x-show="caseDetailModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="caseDetailModal.open=false"></div>
+    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-2xl mx-auto flex flex-col max-h-[90vh]">
+      <!-- Modal header -->
+      <div class="flex items-start justify-between p-6 border-b border-slate-700 shrink-0">
+        <div class="flex-1 pr-4">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs font-mono text-slate-500" x-text="activeCase.case_id ? activeCase.case_id.slice(0,8)+'…' : ''"></span>
+            <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+              :class="caseStatusColor(activeCase.status)"
+              x-text="caseStatusLabel(activeCase.status)"></span>
+            <span class="text-xs px-2 py-0.5 rounded font-medium"
+              :class="activeCase.priority==='high' ? 'bg-red-900/50 text-red-300' : activeCase.priority==='medium' ? 'bg-yellow-900/50 text-yellow-300' : 'bg-slate-700 text-slate-300'"
+              x-text="activeCase.priority==='high'?'Alta':activeCase.priority==='medium'?'Media':'Baja'"></span>
+          </div>
+          <h2 class="text-lg font-bold text-white" x-text="activeCase.title"></h2>
+          <p class="text-sm text-slate-400 mt-1" x-text="activeCase.description"></p>
+        </div>
+        <button @click="caseDetailModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none shrink-0">×</button>
+      </div>
+      <!-- Scrollable body -->
+      <div class="overflow-y-auto flex-1 p-6 space-y-5">
+        <!-- Meta grid -->
+        <div class="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <span class="text-xs text-slate-500 block mb-0.5">Asignado a</span>
+            <div class="flex items-center gap-2">
+              <span class="text-slate-200" x-text="activeCase.assigned_to || 'Sin asignar'"></span>
+              <button @click="openCaseAssignModal()" class="text-xs text-orange-400 hover:text-orange-300 transition">✎</button>
+            </div>
+          </div>
+          <div>
+            <span class="text-xs text-slate-500 block mb-0.5">Creado por</span>
+            <span class="text-slate-200" x-text="activeCase.created_by"></span>
+          </div>
+          <div>
+            <span class="text-xs text-slate-500 block mb-0.5">Creado</span>
+            <span class="text-slate-300 text-xs" x-text="activeCase.created_at ? new Date(activeCase.created_at).toLocaleString('es-CL') : '—'"></span>
+          </div>
+          <div>
+            <span class="text-xs text-slate-500 block mb-0.5">Actualizado</span>
+            <span class="text-slate-300 text-xs" x-text="activeCase.updated_at ? new Date(activeCase.updated_at).toLocaleString('es-CL') : '—'"></span>
+          </div>
+        </div>
+        <!-- Status change buttons -->
+        <div>
+          <span class="text-xs text-slate-500 block mb-2">Cambiar estado</span>
+          <div class="flex flex-wrap gap-2">
+            <template x-for="st in [{k:'open',l:'Abierto'},{k:'in_progress',l:'En Investigación'},{k:'under_review',l:'Bajo Revisión'},{k:'closed',l:'Cerrado'}]" :key="st.k">
+              <button @click="changeCaseStatus(activeCase.case_id, st.k)"
+                :class="activeCase.status===st.k ? 'bg-orange-700 border-orange-500 text-white' : 'border-slate-600 text-slate-400 hover:border-orange-400 hover:text-white'"
+                class="px-3 py-1.5 text-xs border rounded-lg transition"
+                x-text="st.l"></button>
+            </template>
+          </div>
+        </div>
+        <!-- Linked alerts -->
+        <div x-show="activeCaseAlerts.length > 0">
+          <span class="text-xs text-slate-500 block mb-2">Alertas vinculadas</span>
+          <div class="space-y-1">
+            <template x-for="a in activeCaseAlerts" :key="a.alert_id">
+              <div class="bg-slate-700/50 rounded-lg px-3 py-2 text-xs text-slate-300 flex items-center justify-between">
+                <span x-text="a.entity_value + ' — ' + a.reason"></span>
+                <span class="text-slate-500" x-text="a.report_name"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+        <!-- Notes timeline -->
+        <div>
+          <span class="text-xs text-slate-500 block mb-3">Notas de investigación (<span x-text="activeCaseNotes.length"></span>)</span>
+          <div x-show="activeCaseNotes.length === 0" class="text-sm text-slate-600 italic">Sin notas aún.</div>
+          <div class="space-y-3">
+            <template x-for="n in activeCaseNotes" :key="n.note_id">
+              <div class="flex gap-3">
+                <div class="w-7 h-7 rounded-full bg-slate-700 flex items-center justify-center text-xs text-slate-400 shrink-0 mt-0.5"
+                  x-text="(n.author_email || '?').charAt(0).toUpperCase()"></div>
+                <div class="flex-1">
+                  <div class="flex items-center gap-2 mb-1">
+                    <span class="text-xs font-medium text-slate-300" x-text="n.author_email || 'Anónimo'"></span>
+                    <span class="text-xs text-slate-600" x-text="new Date(n.created_at).toLocaleString('es-CL')"></span>
+                  </div>
+                  <p class="text-sm text-slate-200 bg-slate-700/50 rounded-lg px-3 py-2" x-text="n.content"></p>
+                </div>
+              </div>
+            </template>
+          </div>
+          <!-- Add note form -->
+          <div class="mt-4 pt-4 border-t border-slate-700">
+            <textarea x-model="newCaseNote" rows="2" placeholder="Agregar nota de investigación..."
+              class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-orange-400 resize-none mb-2"></textarea>
+            <div class="flex items-center gap-2">
+              <button @click="submitCaseNote()"
+                :disabled="!newCaseNote.trim()"
+                class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+                Agregar nota
+              </button>
+            </div>
+          </div>
+
+          <!-- IA Analysis -->
+          <div class="mt-4 pt-4 border-t border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs text-slate-500">Análisis IA</span>
+              <button @click="analyzeCaseWithAI()"
+                :disabled="activeCaseAILoading"
+                class="flex items-center gap-1.5 px-3 py-1.5 bg-purple-900/50 hover:bg-purple-800/60 border border-purple-700 text-purple-300 text-xs font-medium rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+                <span :class="activeCaseAILoading ? 'animate-spin inline-block' : ''">🤖</span>
+                <span x-text="activeCaseAILoading ? 'Analizando...' : 'Analizar con IA'"></span>
+              </button>
+            </div>
+            <div x-show="activeCaseAI"
+              class="bg-purple-950/30 border border-purple-800/40 rounded-xl p-4 text-sm text-slate-200 whitespace-pre-wrap leading-relaxed"
+              x-text="activeCaseAI"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: ASIGNAR CASO ===== -->
+  <div x-show="caseAssignModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="caseAssignModal.open=false"></div>
+    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-sm mx-auto p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-base font-bold text-white">Asignar caso</h2>
+        <button @click="caseAssignModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+      </div>
+      <select x-model="caseAssignModal.assigned_to"
+        class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-orange-400 mb-4">
+        <option value="">Sin asignar</option>
+        <template x-for="u in crmUsers" :key="u.email">
+          <option :value="u.email" x-text="u.full_name + ' (' + u.email + ')'"></option>
+        </template>
+      </select>
+      <div class="flex gap-3">
+        <button @click="caseAssignModal.open=false"
+          class="flex-1 py-2 text-sm text-slate-400 hover:text-white border border-slate-600 rounded-lg transition">Cancelar</button>
+        <button @click="confirmCaseAssign()"
+          class="flex-1 py-2 text-sm font-semibold text-white bg-orange-600 hover:bg-orange-500 rounded-lg transition">Confirmar</button>
       </div>
     </div>
   </div>
@@ -2976,7 +3519,35 @@
       alertsLoading: false,
       alertsView: 'active',          // 'active' | 'reviewed'
       alertRowOpen: false,
-      alertRowData: { entity_field: 'customer_id', entity_value: '', reason: '', report_name: '', row_data: {} },
+      alertRowData: { entity_field: 'customer_id', entity_value: '', reason: '', report_name: '', row_data: {}, priority: 'medium' },
+      alertFilter: { priority: '', assigned_to: '' },
+      reviewModal: { open: false, alert_id: null, notes: '', reviewed_by: '' },
+      assignModal: { open: false, alert_id: null, assigned_to: '' },
+      crmUsers: [],
+
+      // Cases CRM
+      cases: [],
+      casesLoading: false,
+      casesViewMode: 'cards',
+      caseStatusFilter: 'all',
+      casePriorityFilter: '',
+      caseAssignedFilter: '',
+      activeCase: {},
+      activeCaseNotes: [],
+      activeCaseAlerts: [],
+      newCaseNote: '',
+      activeCaseAI: '',
+      activeCaseAILoading: false,
+      createCaseModal: { open: false },
+      caseDetailModal: { open: false },
+      caseAssignModal: { open: false, case_id: null, assigned_to: '' },
+      newCaseForm: { title: '', description: '', priority: 'medium', assigned_to: '', entity_type: '', entity_id: '', report_name: '', from_alert_id: null },
+      kanbanColumns: [
+        { key: 'open',         label: 'Abierto',           dot: 'bg-blue-400',   nextStatuses: [{k:'in_progress', l:'→ Investigar'}] },
+        { key: 'in_progress',  label: 'En Investigación',  dot: 'bg-yellow-400', nextStatuses: [{k:'open', l:'← Reabrir'}, {k:'under_review', l:'→ Revisar'}] },
+        { key: 'under_review', label: 'Bajo Revisión',     dot: 'bg-purple-400', nextStatuses: [{k:'in_progress', l:'← Volver'}, {k:'closed', l:'→ Cerrar'}] },
+        { key: 'closed',       label: 'Cerrado',           dot: 'bg-slate-500',  nextStatuses: [{k:'open', l:'↺ Reabrir'}] },
+      ],
 
       // Settings
       settingsOpen: false,
@@ -3065,6 +3636,8 @@
           this.loadRuns(),
           this.loadWhitelist(),
           this.loadAlerts(),
+          this.loadCrmUsers(),
+          this.loadCases(),
           this.loadClusterStatus(),
           this.loadPendientes(),
           ...(this.isAdmin() ? [this.loadAdminUsers()] : []),
@@ -4290,21 +4863,221 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         const d = await this.api('POST', '/alerts', payload);
         if (d?.alert_id) {
           this.alertRowOpen = false;
-          this.alertRowData = { entity_field: 'customer_id', entity_value: '', reason: '', report_name: '', row_data: {} };
+          this.alertRowData = { entity_field: 'customer_id', entity_value: '', reason: '', report_name: '', row_data: {}, priority: 'medium' };
           await this.loadAlerts();
         }
       },
 
-      async reviewAlert(alert_id) {
-        if (!confirm('¿Marcar como revisado? Se moverá a "Ya Revisados".')) return;
-        await this.api('PUT', '/alerts/' + alert_id + '/review');
+      openReviewModal(alert_id) {
+        this.reviewModal = { open: true, alert_id, notes: '', reviewed_by: this.userEmail || '' };
+      },
+
+      async confirmReview() {
+        const { alert_id, notes, reviewed_by } = this.reviewModal;
+        await this.api('PUT', '/alerts/' + alert_id + '/review', { notes, reviewed_by });
+        this.reviewModal.open = false;
         await this.loadAlerts();
+      },
+
+      openAssignModal(alert_id, current_assigned) {
+        this.assignModal = { open: true, alert_id, assigned_to: current_assigned || '' };
+      },
+
+      async confirmAssign() {
+        const { alert_id, assigned_to } = this.assignModal;
+        await this.api('PUT', '/alerts/' + alert_id + '/assign', { assigned_to });
+        this.assignModal.open = false;
+        await this.loadAlerts();
+      },
+
+      filteredAlerts() {
+        let result = this.alerts;
+        if (this.alertFilter.priority) {
+          result = result.filter(a => (a.priority || 'medium') === this.alertFilter.priority);
+        }
+        if (this.alertFilter.assigned_to) {
+          if (this.alertFilter.assigned_to === '__unassigned__') {
+            result = result.filter(a => !a.assigned_to);
+          } else {
+            result = result.filter(a => a.assigned_to === this.alertFilter.assigned_to);
+          }
+        }
+        return result;
+      },
+
+      async loadCrmUsers() {
+        const d = await this.api('GET', '/crm/users');
+        this.crmUsers = d?.users || [];
       },
 
       async deleteAlert(alert_id) {
         if (!confirm('¿Eliminar definitivamente este registro?')) return;
         await this.api('DELETE', '/alerts/' + alert_id);
         await this.loadAlerts();
+      },
+
+      // -----------------------------------------------
+      // CASES CRM
+      // -----------------------------------------------
+
+      async loadCases() {
+        this.casesLoading = true;
+        try {
+          const qs = new URLSearchParams();
+          if (this.caseStatusFilter && this.caseStatusFilter !== 'all') qs.set('status', this.caseStatusFilter);
+          if (this.casePriorityFilter) qs.set('priority', this.casePriorityFilter);
+          if (this.caseAssignedFilter) qs.set('assigned_to', this.caseAssignedFilter);
+          const path = '/cases' + (qs.toString() ? '?' + qs.toString() : '');
+          const d = await this.api('GET', path);
+          this.cases = d?.cases || [];
+        } finally {
+          this.casesLoading = false;
+        }
+      },
+
+      filteredCases() {
+        return this.cases;
+      },
+
+      async openCaseDetail(case_id) {
+        this.activeCase = {};
+        this.activeCaseNotes = [];
+        this.activeCaseAlerts = [];
+        this.newCaseNote = '';
+        this.activeCaseAI = '';
+        this.activeCaseAILoading = false;
+        this.caseDetailModal.open = true;
+        const d = await this.api('GET', '/cases/' + case_id);
+        if (d?.case) {
+          this.activeCase = d.case;
+          this.activeCaseNotes = d.notes || [];
+          this.activeCaseAlerts = d.alerts || [];
+        }
+      },
+
+      openCreateCaseModal(fromAlert = null) {
+        this.newCaseForm = {
+          title: fromAlert ? ('Caso: ' + (fromAlert.reason || fromAlert.entity_value || '')) : '',
+          description: '',
+          priority: 'medium',
+          assigned_to: '',
+          entity_type: fromAlert ? (fromAlert.entity_field || '') : '',
+          entity_id: fromAlert ? (fromAlert.entity_value || '') : '',
+          report_name: fromAlert ? (fromAlert.report_name || '') : '',
+          from_alert_id: fromAlert ? fromAlert.alert_id : null,
+        };
+        this.createCaseModal.open = true;
+      },
+
+      async submitCreateCase() {
+        if (!this.newCaseForm.title.trim()) return;
+        const payload = {
+          title: this.newCaseForm.title.trim(),
+          description: this.newCaseForm.description.trim(),
+          priority: this.newCaseForm.priority,
+          assigned_to: this.newCaseForm.assigned_to,
+          entity_type: this.newCaseForm.entity_type,
+          entity_id: this.newCaseForm.entity_id,
+          report_name: this.newCaseForm.report_name,
+          created_by: this.currentUserEmail || this.userEmail || 'unknown',
+        };
+        const d = await this.api('POST', '/cases', payload);
+        if (d?.case_id) {
+          this.createCaseModal.open = false;
+          if (this.newCaseForm.from_alert_id) {
+            await this.api('POST', '/alerts/' + this.newCaseForm.from_alert_id + '/link-case', { case_id: d.case_id });
+          }
+          await this.loadCases();
+          await this.openCaseDetail(d.case_id);
+        }
+      },
+
+      async submitCaseNote() {
+        if (!this.newCaseNote.trim() || !this.activeCase.case_id) return;
+        await this.api('POST', '/cases/' + this.activeCase.case_id + '/notes', {
+          content: this.newCaseNote.trim(),
+          author_email: this.currentUserEmail || this.userEmail || '',
+        });
+        this.newCaseNote = '';
+        const d = await this.api('GET', '/cases/' + this.activeCase.case_id);
+        if (d?.case) {
+          this.activeCase = d.case;
+          this.activeCaseNotes = d.notes || [];
+        }
+        await this.loadCases();
+      },
+
+      async changeCaseStatus(case_id, status) {
+        await this.api('PUT', '/cases/' + case_id + '/status', { status });
+        const d = await this.api('GET', '/cases/' + case_id);
+        if (d?.case) this.activeCase = d.case;
+        await this.loadCases();
+      },
+
+      openCaseAssignModal() {
+        this.caseAssignModal = { open: true, case_id: this.activeCase.case_id, assigned_to: this.activeCase.assigned_to || '' };
+      },
+
+      async confirmCaseAssign() {
+        await this.api('PUT', '/cases/' + this.caseAssignModal.case_id + '/assign', { assigned_to: this.caseAssignModal.assigned_to });
+        this.caseAssignModal.open = false;
+        const d = await this.api('GET', '/cases/' + this.caseAssignModal.case_id);
+        if (d?.case) this.activeCase = d.case;
+        await this.loadCases();
+      },
+
+      caseStatusLabel(status) {
+        const MAP = { open: 'Abierto', in_progress: 'En Investigación', under_review: 'Bajo Revisión', closed: 'Cerrado', archived: 'Archivado' };
+        return MAP[status] || status;
+      },
+
+      caseStatusColor(status) {
+        const MAP = { open: 'bg-blue-900/60 text-blue-300', in_progress: 'bg-yellow-900/60 text-yellow-300', under_review: 'bg-purple-900/60 text-purple-300', closed: 'bg-slate-700 text-slate-400', archived: 'bg-slate-800 text-slate-600' };
+        return MAP[status] || 'bg-slate-700 text-slate-400';
+      },
+
+      async analyzeCaseWithAI() {
+        if (!this.activeCase.case_id) return;
+        this.activeCaseAILoading = true;
+        this.activeCaseAI = '';
+        try {
+          const notesText = this.activeCaseNotes.length
+            ? this.activeCaseNotes.map(n => `[${n.author_email || 'anónimo'} ${n.created_at}]: ${n.content}`).join('\n')
+            : 'Sin notas aún.';
+          const alertsText = this.activeCaseAlerts.length
+            ? this.activeCaseAlerts.map(a => `- ${a.entity_value}: ${a.reason} (${a.report_name})`).join('\n')
+            : 'Sin alertas vinculadas.';
+          const prompt = `Eres un analista AML/Compliance senior en Global66 (fintech LATAM de remesas internacionales).
+
+Analiza el siguiente caso de investigación y proporciona:
+1. **Evaluación de riesgo** (Alto/Medio/Bajo) con justificación breve
+2. **Patrones detectados** (estructuración, layering, smurfing, u otros indicadores AML relevantes)
+3. **Próximos pasos recomendados** (acciones concretas para el analista)
+4. **Observaciones adicionales** si las hay
+
+--- CASO ---
+Título: ${this.activeCase.title}
+Descripción: ${this.activeCase.description || 'Sin descripción'}
+Estado: ${this.caseStatusLabel(this.activeCase.status)}
+Prioridad: ${this.activeCase.priority}
+Entidad: ${this.activeCase.entity_type || '—'} / ${this.activeCase.entity_id || '—'}
+Reporte origen: ${this.activeCase.report_name || '—'}
+
+--- ALERTAS VINCULADAS ---
+${alertsText}
+
+--- NOTAS DE INVESTIGACIÓN ---
+${notesText}
+
+Responde en español, de forma estructurada y concisa.`;
+
+          const d = await this.api('POST', '/ai/generate', { prompt, temperature: 0.3, max_tokens: 1500 });
+          this.activeCaseAI = d?.text || 'Sin respuesta de la IA.';
+        } catch (e) {
+          this.activeCaseAI = 'Error al consultar la IA: ' + (e?.message || e);
+        } finally {
+          this.activeCaseAILoading = false;
+        }
       },
 
       // -----------------------------------------------

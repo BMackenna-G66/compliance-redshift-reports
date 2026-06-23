@@ -101,3 +101,31 @@ variable "google_client_secret" {
   default     = ""
   sensitive   = true
 }
+
+# ---------------------------------------------------------------------------
+# CRM V2 Phase 0 — VPC + RDS
+# ---------------------------------------------------------------------------
+
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC. Change only if this conflicts with existing networks."
+  type        = string
+  default     = "10.66.0.0/16"
+}
+
+variable "rds_instance_class" {
+  description = "RDS instance type. db.t3.micro is free-tier eligible."
+  type        = string
+  default     = "db.t3.micro"
+}
+
+variable "rds_storage_gb" {
+  description = "Allocated storage for RDS MySQL in GB."
+  type        = number
+  default     = 20
+}
+
+variable "rds_master_password" {
+  description = "Master password for RDS MySQL (watchtower_admin user). Stored in Secrets Manager."
+  type        = string
+  sensitive   = true
+}

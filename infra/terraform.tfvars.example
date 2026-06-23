@@ -31,3 +31,16 @@ tags = {
   ManagedBy   = "terraform"
   Owner       = "compliance"
 }
+
+# ---------------------------------------------------------------------------
+# CRM V2 Phase 0 — VPC + RDS MySQL
+# ---------------------------------------------------------------------------
+
+# Leave default (10.66.0.0/16) unless it conflicts with existing VPCs
+# vpc_cidr = "10.66.0.0/16"
+
+# db.t3.micro = free-tier eligible, enough for CRM V2 at this scale
+# rds_instance_class = "db.t3.micro"
+
+# Master password for RDS MySQL. Store securely — goes into Secrets Manager.
+rds_master_password = "REPLACE_WITH_STRONG_PASSWORD"

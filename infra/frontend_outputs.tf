@@ -24,7 +24,7 @@ output "cognito_domain" {
 }
 
 output "add_user_command" {
-  value = <<-EOT
+  value       = <<-EOT
     # Create the first Compliance user:
     aws cognito-idp admin-create-user \
       --user-pool-id ${aws_cognito_user_pool.main.id} \

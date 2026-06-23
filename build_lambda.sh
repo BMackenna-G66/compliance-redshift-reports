@@ -18,6 +18,8 @@ echo "→ Copying source files"
 cp lambda/handler.py "$BUILD_DIR/"
 cp lambda/api_handler.py "$BUILD_DIR/"
 cp lambda/aml_individual.py "$BUILD_DIR/"
+cp lambda/db_mysql.py "$BUILD_DIR/"
+cp lambda/db_redshift.py "$BUILD_DIR/"
 cp lambda/email_template.html "$BUILD_DIR/"
 mkdir -p "$BUILD_DIR/queries" "$BUILD_DIR/config"
 cp lambda/queries/*.sql "$BUILD_DIR/queries/"
@@ -41,4 +43,8 @@ find "$BUILD_DIR" -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
 find "$BUILD_DIR" -type f -name "*.pyc" -delete 2>/dev/null || true
 
 echo "→ Build complete: $(du -sh "$BUILD_DIR" | cut -f1)"
-echo "→ Ready for: cd infra && terraform apply"
+
+echo "→ Zipping from inside build dir (files at zip root for Lambda)"
+(cd "$BUILD_DIR" && zip -r ../lambda_package.zip . -q)
+echo "→ lambda_package.zip created"
+echo "→ Deploy: aws s3 cp lambda_package.zip s3://compliance-redshift-reports-561521480266-us-east-1/ --profile compliance-admin && aws lambda update-function-code --function-name compliance-redshift-reports-api --s3-bucket compliance-redshift-reports-561521480266-us-east-1 --s3-key lambda_package.zip --region us-east-1 --profile compliance-admin"

@@ -912,10 +912,49 @@ def handler(event, context):  # noqa: ARG001
             return add_alert(body)
         # PUT /alerts/{id}/review
         if method == "PUT" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "review":
-            return review_alert(parts[1])
+            return review_alert(parts[1], body)
+        # PUT /alerts/{id}/assign
+        if method == "PUT" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "assign":
+            return assign_alert(parts[1], body)
+        # PUT /alerts/{id}/notes
+        if method == "PUT" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "notes":
+            return update_alert_notes(parts[1], body)
         # DELETE /alerts/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "alerts":
             return delete_alert(parts[1])
+
+        # GET /crm/users
+        if method == "GET" and parts == ["crm", "users"]:
+            return get_crm_users()
+
+        # ---------------------------------------------------------------------------
+        # CASES CRM
+        # ---------------------------------------------------------------------------
+        # GET /cases
+        if method == "GET" and parts == ["cases"]:
+            qs = event.get("queryStringParameters") or {}
+            return get_cases(qs.get("status"), qs.get("priority"), qs.get("assigned_to"))
+        # POST /cases
+        if method == "POST" and parts == ["cases"]:
+            return create_case(body)
+        # GET /cases/{id}
+        if method == "GET" and len(parts) == 2 and parts[0] == "cases":
+            return get_case_detail(parts[1])
+        # PUT /cases/{id}  (update title / description / priority)
+        if method == "PUT" and len(parts) == 2 and parts[0] == "cases":
+            return update_case(parts[1], body)
+        # PUT /cases/{id}/status
+        if method == "PUT" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "status":
+            return update_case_status(parts[1], body)
+        # PUT /cases/{id}/assign
+        if method == "PUT" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "assign":
+            return update_case_assign(parts[1], body)
+        # POST /cases/{id}/notes
+        if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "notes":
+            return add_case_note(parts[1], body)
+        # POST /alerts/{id}/link-case
+        if method == "POST" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "link-case":
+            return link_alert_to_case(parts[1], body)
 
         # POST /alerts/notify
         if method == "POST" and parts == ["alerts", "notify"]:
@@ -1196,10 +1235,16 @@ def get_alerts(status: str = "active"):
         sql = (
             "SELECT alert_id, entity_field, entity_value, reason, report_name, row_data, "
             "created_at::VARCHAR AS created_at, status, "
-            "COALESCE(reviewed_at::VARCHAR, '') AS reviewed_at "
+            "COALESCE(reviewed_at::VARCHAR, '') AS reviewed_at, "
+            "COALESCE(priority, 'medium') AS priority, "
+            "COALESCE(assigned_to, '') AS assigned_to, "
+            "COALESCE(reviewed_by, '') AS reviewed_by, "
+            "COALESCE(notes, '') AS notes "
             "FROM compliance.alerts "
             f"WHERE status = '{_esc(status)}' "
-            "ORDER BY created_at DESC"
+            "ORDER BY "
+            "  CASE COALESCE(priority,'medium') WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC, "
+            "  created_at DESC"
         )
         items = _rs_exec(sql)
         return resp(200, {"alerts": items})
@@ -1213,6 +1258,9 @@ def add_alert(body: dict):
     reason = body.get("reason", "").strip()
     report_name = body.get("report_name", "").strip()
     row_data = body.get("row_data", {})
+    priority = body.get("priority", "medium").strip()
+    if priority not in ("high", "medium", "low"):
+        priority = "medium"
 
     if not entity_field or not entity_value:
         return resp(400, {"error": "entity_field and entity_value are required"})
@@ -1226,17 +1274,28 @@ def add_alert(body: dict):
 
     sql = (
         f"INSERT INTO compliance.alerts "
-        f"(alert_id, entity_field, entity_value, reason, report_name, row_data, status) "
-        f"VALUES ('{aid}', '{ef}', '{ev}', '{reason_esc}', '{rn}', '{row_data_escaped}', 'active')"
+        f"(alert_id, entity_field, entity_value, reason, report_name, row_data, status, priority) "
+        f"VALUES ('{aid}', '{ef}', '{ev}', '{reason_esc}', '{rn}', '{row_data_escaped}', 'active', '{priority}')"
     )
     _rs_exec(sql)
     return resp(201, {"alert_id": aid})
 
 
-def review_alert(alert_id: str):
+def review_alert(alert_id: str, body: dict | None = None):
     """Move an alert from 'active' to 'reviewed' (ya revisados)."""
+    if body is None:
+        body = {}
+    reviewed_by = _esc(body.get("reviewed_by", "").strip())
+    notes = _esc(body.get("notes", "").strip())
+
+    set_clauses = ["status = 'reviewed'", "reviewed_at = SYSDATE"]
+    if reviewed_by:
+        set_clauses.append(f"reviewed_by = '{reviewed_by}'")
+    if notes:
+        set_clauses.append(f"notes = '{notes}'")
+
     sql = (
-        f"UPDATE compliance.alerts SET status = 'reviewed', reviewed_at = SYSDATE "
+        f"UPDATE compliance.alerts SET {', '.join(set_clauses)} "
         f"WHERE alert_id = '{_esc(alert_id)}'"
     )
     _rs_exec(sql)
@@ -1248,6 +1307,218 @@ def delete_alert(alert_id: str):
     sql = f"DELETE FROM compliance.alerts WHERE alert_id = '{_esc(alert_id)}'"
     _rs_exec(sql)
     return resp(200, {"message": f"Alert '{alert_id}' permanently deleted"})
+
+
+def assign_alert(alert_id: str, body: dict):
+    """Assign an alert to a CRM user (by email)."""
+    assigned_to = body.get("assigned_to", "").strip()
+    if not assigned_to:
+        return resp(400, {"error": "assigned_to is required"})
+    sql = (
+        f"UPDATE compliance.alerts SET assigned_to = '{_esc(assigned_to)}' "
+        f"WHERE alert_id = '{_esc(alert_id)}'"
+    )
+    _rs_exec(sql)
+    return resp(200, {"message": f"Alert '{alert_id}' assigned to {assigned_to}"})
+
+
+def update_alert_notes(alert_id: str, body: dict):
+    """Update the analyst notes on an alert."""
+    notes = body.get("notes", "").strip()
+    sql = (
+        f"UPDATE compliance.alerts SET notes = '{_esc(notes)}' "
+        f"WHERE alert_id = '{_esc(alert_id)}'"
+    )
+    _rs_exec(sql)
+    return resp(200, {"message": "Notes updated"})
+
+
+def get_crm_users():
+    """Return active CRM users for the assignee dropdown."""
+    try:
+        sql = (
+            "SELECT email, COALESCE(full_name, email) AS full_name "
+            "FROM crm.users WHERE is_active = TRUE ORDER BY full_name"
+        )
+        users = _rs_exec(sql)
+        return resp(200, {"users": users})
+    except Exception as e:
+        return resp(200, {"users": [], "warning": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# CASES CRM
+# ---------------------------------------------------------------------------
+
+def get_cases(status_filter=None, priority_filter=None, assigned_filter=None):
+    """List cases with optional filters. Ordered by status urgency + priority."""
+    try:
+        conditions = ["1=1"]
+        if status_filter and status_filter != "all":
+            conditions.append(f"c.status = '{_esc(status_filter)}'")
+        if priority_filter:
+            conditions.append(f"c.priority = '{_esc(priority_filter)}'")
+        if assigned_filter:
+            conditions.append(f"c.assigned_to = '{_esc(assigned_filter)}'")
+
+        sql = (
+            "SELECT c.case_id, c.title, c.description, c.status, c.priority, "
+            "c.entity_type, c.entity_id, c.report_name, "
+            "COALESCE(c.assigned_to, '') AS assigned_to, c.created_by, "
+            "c.created_at::VARCHAR AS created_at, "
+            "c.updated_at::VARCHAR AS updated_at, "
+            "COALESCE(c.closed_at::VARCHAR, '') AS closed_at, "
+            "COUNT(n.note_id) AS note_count "
+            "FROM crm.cases c "
+            "LEFT JOIN crm.case_notes n ON n.case_id = c.case_id "
+            f"WHERE {' AND '.join(conditions)} "
+            "GROUP BY c.case_id, c.title, c.description, c.status, c.priority, "
+            "c.entity_type, c.entity_id, c.report_name, c.assigned_to, c.created_by, "
+            "c.created_at, c.updated_at, c.closed_at "
+            "ORDER BY "
+            "  CASE c.status WHEN 'open' THEN 1 WHEN 'in_progress' THEN 2 "
+            "    WHEN 'under_review' THEN 3 WHEN 'closed' THEN 4 ELSE 5 END, "
+            "  CASE c.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, "
+            "  c.updated_at DESC"
+        )
+        cases = _rs_exec(sql)
+        return resp(200, {"cases": cases})
+    except Exception as e:
+        return resp(200, {"cases": [], "warning": str(e)})
+
+
+def create_case(body: dict):
+    title = body.get("title", "").strip()
+    if not title:
+        return resp(400, {"error": "title is required"})
+
+    description = body.get("description", "").strip()
+    priority = body.get("priority", "medium").strip()
+    if priority not in ("high", "medium", "low"):
+        priority = "medium"
+    entity_type = body.get("entity_type", "").strip()
+    entity_id = body.get("entity_id", "").strip()
+    report_name = body.get("report_name", "").strip()
+    assigned_to = body.get("assigned_to", "").strip()
+    created_by = body.get("created_by", "unknown").strip()
+
+    cid = str(uuid.uuid4())
+    sql = (
+        f"INSERT INTO crm.cases "
+        f"(case_id, title, description, priority, entity_type, entity_id, "
+        f"report_name, assigned_to, created_by, status) "
+        f"VALUES ("
+        f"'{cid}', '{_esc(title)}', '{_esc(description)}', '{priority}', "
+        f"'{_esc(entity_type)}', '{_esc(entity_id)}', '{_esc(report_name)}', "
+        f"'{_esc(assigned_to)}', '{_esc(created_by)}', 'open')"
+    )
+    _rs_exec(sql)
+    return resp(201, {"case_id": cid})
+
+
+def get_case_detail(case_id: str):
+    """Return full case data including notes and linked alerts."""
+    try:
+        case_sql = (
+            "SELECT case_id, title, description, status, priority, entity_type, entity_id, "
+            "report_name, COALESCE(assigned_to, '') AS assigned_to, created_by, "
+            "created_at::VARCHAR AS created_at, updated_at::VARCHAR AS updated_at, "
+            "COALESCE(closed_at::VARCHAR, '') AS closed_at "
+            f"FROM crm.cases WHERE case_id = '{_esc(case_id)}'"
+        )
+        notes_sql = (
+            "SELECT note_id, case_id, COALESCE(author_email, '') AS author_email, "
+            "content, created_at::VARCHAR AS created_at "
+            f"FROM crm.case_notes WHERE case_id = '{_esc(case_id)}' ORDER BY created_at ASC"
+        )
+        alerts_sql = (
+            "SELECT alert_id, entity_field, entity_value, reason, report_name, "
+            "created_at::VARCHAR AS created_at, status, "
+            "COALESCE(priority, 'medium') AS priority "
+            f"FROM compliance.alerts WHERE case_id = '{_esc(case_id)}'"
+        )
+        case_rows = _rs_exec(case_sql)
+        if not case_rows:
+            return resp(404, {"error": f"Case '{case_id}' not found"})
+        notes = _rs_exec(notes_sql)
+        alerts = _rs_exec(alerts_sql)
+        return resp(200, {"case": case_rows[0], "notes": notes, "alerts": alerts})
+    except Exception as e:
+        return resp(500, {"error": str(e)})
+
+
+def update_case(case_id: str, body: dict):
+    """Update title, description, or priority."""
+    set_parts = []
+    if "title" in body:
+        set_parts.append(f"title = '{_esc(str(body['title']))}'")
+    if "description" in body:
+        set_parts.append(f"description = '{_esc(str(body['description']))}'")
+    if "priority" in body and body["priority"] in ("high", "medium", "low"):
+        set_parts.append(f"priority = '{body['priority']}'")
+    if not set_parts:
+        return resp(400, {"error": "No valid fields to update"})
+    set_parts.append("updated_at = SYSDATE")
+    sql = f"UPDATE crm.cases SET {', '.join(set_parts)} WHERE case_id = '{_esc(case_id)}'"
+    _rs_exec(sql)
+    return resp(200, {"message": "Case updated"})
+
+
+def update_case_status(case_id: str, body: dict):
+    """Change case status. Sets closed_at when status = 'closed'."""
+    status = body.get("status", "").strip()
+    valid = ("open", "in_progress", "under_review", "closed", "archived")
+    if status not in valid:
+        return resp(400, {"error": f"status must be one of {valid}"})
+
+    set_parts = [f"status = '{status}'", "updated_at = SYSDATE"]
+    if status == "closed":
+        set_parts.append("closed_at = SYSDATE")
+    elif status != "archived":
+        set_parts.append("closed_at = NULL")
+
+    sql = f"UPDATE crm.cases SET {', '.join(set_parts)} WHERE case_id = '{_esc(case_id)}'"
+    _rs_exec(sql)
+    return resp(200, {"message": f"Case status updated to {status}"})
+
+
+def update_case_assign(case_id: str, body: dict):
+    assigned_to = body.get("assigned_to", "").strip()
+    sql = (
+        f"UPDATE crm.cases SET assigned_to = '{_esc(assigned_to)}', updated_at = SYSDATE "
+        f"WHERE case_id = '{_esc(case_id)}'"
+    )
+    _rs_exec(sql)
+    return resp(200, {"message": f"Case assigned to {assigned_to}"})
+
+
+def add_case_note(case_id: str, body: dict):
+    content = body.get("content", "").strip()
+    if not content:
+        return resp(400, {"error": "content is required"})
+    author_email = body.get("author_email", "").strip()
+    sql = (
+        f"INSERT INTO crm.case_notes (case_id, author_email, content) "
+        f"VALUES ('{_esc(case_id)}', '{_esc(author_email)}', '{_esc(content)}')"
+    )
+    _rs_exec(sql)
+    # Also bump updated_at on the case so it floats to the top of the list
+    _rs_exec(f"UPDATE crm.cases SET updated_at = SYSDATE WHERE case_id = '{_esc(case_id)}'")
+    return resp(201, {"message": "Note added"})
+
+
+def link_alert_to_case(alert_id: str, body: dict):
+    """Link a compliance.alerts row to a crm.cases row."""
+    case_id = body.get("case_id", "").strip()
+    if not case_id:
+        return resp(400, {"error": "case_id is required"})
+    sql = (
+        f"UPDATE compliance.alerts SET case_id = '{_esc(case_id)}' "
+        f"WHERE alert_id = '{_esc(alert_id)}'"
+    )
+    _rs_exec(sql)
+    _rs_exec(f"UPDATE crm.cases SET updated_at = SYSDATE WHERE case_id = '{_esc(case_id)}'")
+    return resp(200, {"message": f"Alert '{alert_id}' linked to case '{case_id}'"})
 
 
 # ---------------------------------------------------------------------------
