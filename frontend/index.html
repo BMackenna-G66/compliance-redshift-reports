@@ -3095,6 +3095,16 @@
             class="pb-3 px-2 text-sm font-medium transition">
             🔔 Notificaciones
           </button>
+          <button @click="adminSubtab='auditoria'; loadAuditLog()"
+            :class="adminSubtab==='auditoria' ? 'border-b-2 border-orange-500 text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="pb-3 px-2 text-sm font-medium transition">
+            🔍 Auditoría
+          </button>
+          <button @click="adminSubtab='automatizacion'; loadSchedules()"
+            :class="adminSubtab==='automatizacion' ? 'border-b-2 border-orange-500 text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="pb-3 px-2 text-sm font-medium transition">
+            ⚙ Automatización
+          </button>
         </div>
 
         <!-- ---- Sub-tab: Users ---- -->
@@ -3320,6 +3330,108 @@
           </div>
         </div>
 
+        <!-- ---- Sub-tab: Auditoría ---- -->
+        <div x-show="adminSubtab==='auditoria'">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-white">Log de Auditoría</h3>
+            <div class="flex items-center gap-2">
+              <select x-model="auditFilter.entity_type" @change="loadAuditLog()"
+                class="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-orange-400">
+                <option value="">Todos los tipos</option>
+                <option value="case">Casos</option>
+                <option value="alert">Alertas</option>
+              </select>
+              <select x-model="auditFilter.user_email" @change="loadAuditLog()"
+                class="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-orange-400">
+                <option value="">Todos los analistas</option>
+                <template x-for="u in crmUsers" :key="u.email">
+                  <option :value="u.email" x-text="u.full_name"></option>
+                </template>
+              </select>
+              <button @click="loadAuditLog()" class="text-xs text-slate-400 hover:text-white transition">↺</button>
+            </div>
+          </div>
+          <div x-show="auditLoading" class="text-center py-8 text-slate-400 text-sm">Cargando...</div>
+          <div x-show="!auditLoading && auditEntries.length === 0" class="text-center py-8 text-slate-600 text-sm">Sin registros</div>
+          <div x-show="!auditLoading" class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-xs text-slate-500 uppercase tracking-wider border-b border-slate-700">
+                  <th class="pb-2 pr-4">Fecha</th>
+                  <th class="pb-2 pr-4">Usuario</th>
+                  <th class="pb-2 pr-4">Acción</th>
+                  <th class="pb-2 pr-4">Tipo</th>
+                  <th class="pb-2">Entidad</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800">
+                <template x-for="e in auditEntries" :key="e.log_id">
+                  <tr class="text-slate-300 hover:bg-slate-700/30 transition">
+                    <td class="py-2 pr-4 text-xs text-slate-500 whitespace-nowrap"
+                      x-text="new Date(e.created_at).toLocaleString('es-CL')"></td>
+                    <td class="py-2 pr-4 text-xs" x-text="e.user_email"></td>
+                    <td class="py-2 pr-4">
+                      <span class="text-xs px-2 py-0.5 rounded font-medium"
+                        :class="e.action.startsWith('case') ? 'bg-orange-900/40 text-orange-300' : 'bg-blue-900/40 text-blue-300'"
+                        x-text="e.action"></span>
+                    </td>
+                    <td class="py-2 pr-4 text-xs text-slate-400" x-text="e.entity_type"></td>
+                    <td class="py-2 text-xs font-mono text-slate-500"
+                      x-text="e.entity_id ? e.entity_id.slice(0,12)+'…' : '—'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ---- Sub-tab: Automatización ---- -->
+        <div x-show="adminSubtab==='automatizacion'">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-white">Reglas de EventBridge</h3>
+            <button @click="loadSchedules()" class="text-xs text-slate-400 hover:text-white transition">↺ Actualizar</button>
+          </div>
+          <div x-show="schedulesLoading" class="text-center py-8 text-slate-400 text-sm">Cargando...</div>
+          <div x-show="!schedulesLoading && schedules.length === 0" class="text-center py-8 text-slate-600 text-sm">Sin reglas encontradas</div>
+          <div class="space-y-3">
+            <template x-for="s in schedules" :key="s.name">
+              <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+                <div class="flex items-start justify-between gap-4">
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="w-2 h-2 rounded-full flex-shrink-0"
+                        :class="s.state==='ENABLED' ? 'bg-green-400' : 'bg-slate-600'"></span>
+                      <span class="text-sm font-medium text-white truncate" x-text="s.name"></span>
+                    </div>
+                    <p class="text-xs text-slate-400 mb-1" x-text="s.description || 'Sin descripción'"></p>
+                    <!-- Schedule expression editor -->
+                    <div class="flex items-center gap-2 mt-2">
+                      <code class="text-xs text-orange-300 bg-slate-900 px-2 py-1 rounded" x-text="s.schedule || '—'"></code>
+                      <button @click="editingSchedule=s.name; editScheduleExpr=s.schedule"
+                        x-show="editingSchedule !== s.name"
+                        class="text-xs text-slate-500 hover:text-slate-300 transition">✎ editar</button>
+                    </div>
+                    <div x-show="editingSchedule === s.name" class="flex items-center gap-2 mt-2">
+                      <input x-model="editScheduleExpr" type="text"
+                        placeholder="ej: cron(0 8 ? * MON *)"
+                        class="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1 focus:outline-none focus:border-orange-400 w-64">
+                      <button @click="saveScheduleExpression(s.name)"
+                        class="text-xs px-2 py-1 bg-orange-700 hover:bg-orange-600 text-white rounded transition">Guardar</button>
+                      <button @click="editingSchedule=null"
+                        class="text-xs text-slate-500 hover:text-slate-300 transition">Cancelar</button>
+                    </div>
+                  </div>
+                  <!-- Toggle -->
+                  <button @click="toggleSchedule(s.name, s.state==='ENABLED' ? 'disable' : 'enable')"
+                    :class="s.state==='ENABLED' ? 'bg-green-700 hover:bg-red-800 text-white' : 'bg-slate-700 hover:bg-green-800 text-slate-300'"
+                    class="text-xs px-3 py-1.5 rounded-lg font-medium transition flex-shrink-0"
+                    x-text="s.state==='ENABLED' ? 'Activa' : 'Inactiva'"></button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
         </div><!-- end inner max-w container -->
       </div><!-- end admin tab overlay -->
 
@@ -3433,6 +3545,17 @@
         { key: 'aml_individual', label: '🔬 Análisis Individual' },
         { key: 'pendientes',     label: '📬 Pendientes' },
       ],
+
+      // Audit log
+      auditEntries: [],
+      auditLoading: false,
+      auditFilter: { entity_type: '', user_email: '' },
+
+      // Scheduler
+      schedules: [],
+      schedulesLoading: false,
+      editingSchedule: null,
+      editScheduleExpr: '',
 
       // Admin panel
       adminSubtab:      'users',
@@ -5078,6 +5201,51 @@ Responde en español, de forma estructurada y concisa.`;
         } finally {
           this.activeCaseAILoading = false;
         }
+      },
+
+      // -----------------------------------------------
+      // AUDIT LOG
+      // -----------------------------------------------
+
+      async loadAuditLog() {
+        this.auditLoading = true;
+        try {
+          const qs = new URLSearchParams({ limit: 200 });
+          if (this.auditFilter.entity_type) qs.set('entity_type', this.auditFilter.entity_type);
+          if (this.auditFilter.user_email)  qs.set('user_email', this.auditFilter.user_email);
+          const d = await this.api('GET', '/audit?' + qs.toString());
+          this.auditEntries = d?.entries || [];
+        } finally {
+          this.auditLoading = false;
+        }
+      },
+
+      // -----------------------------------------------
+      // SCHEDULER
+      // -----------------------------------------------
+
+      async loadSchedules() {
+        this.schedulesLoading = true;
+        try {
+          const d = await this.api('GET', '/schedules');
+          this.schedules = d?.schedules || [];
+        } finally {
+          this.schedulesLoading = false;
+        }
+      },
+
+      async toggleSchedule(name, action) {
+        await this.api('PUT', `/schedules/${encodeURIComponent(name)}/toggle`, { action });
+        await this.loadSchedules();
+      },
+
+      async saveScheduleExpression(name) {
+        if (!this.editScheduleExpr.trim()) return;
+        await this.api('PUT', `/schedules/${encodeURIComponent(name)}/expression`, {
+          schedule_expression: this.editScheduleExpr.trim(),
+        });
+        this.editingSchedule = null;
+        await this.loadSchedules();
       },
 
       // -----------------------------------------------

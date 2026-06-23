@@ -38,6 +38,12 @@ import uuid
 import boto3
 from boto3.dynamodb.conditions import Attr
 
+try:
+    from db_redshift import write_audit as _write_audit
+except Exception:
+    def _write_audit(**kwargs):  # noqa: ANN001
+        pass
+
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
 s3 = boto3.client("s3")
@@ -802,6 +808,89 @@ def ai_generate(body: dict):
 
 
 # ---------------------------------------------------------------------------
+# AUDIT LOG
+# ---------------------------------------------------------------------------
+
+def get_audit_log(limit: int = 200, entity_type: str | None = None,
+                  user_email: str | None = None, action: str | None = None):
+    """Query crm.audit_log with optional filters. Most recent first."""
+    try:
+        conditions = ["1=1"]
+        if entity_type:
+            conditions.append(f"entity_type = '{_esc(entity_type)}'")
+        if user_email:
+            conditions.append(f"user_email = '{_esc(user_email)}'")
+        if action:
+            conditions.append(f"action LIKE '%{_esc(action)}%'")
+        sql = (
+            "SELECT log_id, user_email, action, entity_type, entity_id, "
+            "created_at::VARCHAR AS created_at "
+            f"FROM crm.audit_log WHERE {' AND '.join(conditions)} "
+            f"ORDER BY created_at DESC LIMIT {int(limit)}"
+        )
+        rows = _rs_exec(sql)
+        return resp(200, {"entries": rows})
+    except Exception as e:
+        return resp(200, {"entries": [], "warning": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# SCHEDULER (EventBridge rules)
+# ---------------------------------------------------------------------------
+
+_events = boto3.client("events", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+
+def get_schedules():
+    """List EventBridge rules tagged for this project."""
+    try:
+        result = _events.list_rules(NamePrefix="compliance-")
+        rules = []
+        for r in result.get("Rules", []):
+            rules.append({
+                "name":        r["Name"],
+                "state":       r["State"],
+                "description": r.get("Description", ""),
+                "schedule":    r.get("ScheduleExpression", ""),
+            })
+        return resp(200, {"schedules": rules})
+    except Exception as e:
+        return resp(200, {"schedules": [], "warning": str(e)})
+
+
+def toggle_schedule(name: str, body: dict):
+    """Enable or disable an EventBridge rule."""
+    action = body.get("action", "").lower()  # "enable" | "disable"
+    if action not in ("enable", "disable"):
+        return resp(400, {"error": "action must be 'enable' or 'disable'"})
+    try:
+        if action == "enable":
+            _events.enable_rule(Name=name)
+        else:
+            _events.disable_rule(Name=name)
+        return resp(200, {"message": f"Rule '{name}' {action}d"})
+    except Exception as e:
+        return resp(500, {"error": str(e)})
+
+
+def update_schedule_expression(name: str, body: dict):
+    """Update cron/rate expression of an EventBridge rule."""
+    expression = body.get("schedule_expression", "").strip()
+    if not expression:
+        return resp(400, {"error": "schedule_expression is required"})
+    try:
+        existing = _events.describe_rule(Name=name)
+        _events.put_rule(
+            Name=name,
+            ScheduleExpression=expression,
+            State=existing.get("State", "ENABLED"),
+            Description=existing.get("Description", ""),
+        )
+        return resp(200, {"message": f"Rule '{name}' expression updated to: {expression}"})
+    except Exception as e:
+        return resp(500, {"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 def handler(event, context):  # noqa: ARG001
@@ -962,6 +1051,26 @@ def handler(event, context):  # noqa: ARG001
 
         if method == "POST" and parts == ["ai", "generate"]:
             return ai_generate(body)
+
+        # GET /audit
+        if method == "GET" and parts == ["audit"]:
+            qs = event.get("queryStringParameters") or {}
+            return get_audit_log(
+                limit=int(qs.get("limit", 200)),
+                entity_type=qs.get("entity_type"),
+                user_email=qs.get("user_email"),
+                action=qs.get("action"),
+            )
+
+        # GET /schedules
+        if method == "GET" and parts == ["schedules"]:
+            return get_schedules()
+        # PUT /schedules/{name}/toggle
+        if method == "PUT" and len(parts) == 3 and parts[0] == "schedules" and parts[2] == "toggle":
+            return toggle_schedule(parts[1], body)
+        # PUT /schedules/{name}/expression
+        if method == "PUT" and len(parts) == 3 and parts[0] == "schedules" and parts[2] == "expression":
+            return update_schedule_expression(parts[1], body)
 
         # GET /dashboard/stats (submit queries, returns stmt_ids)
         if method == "GET" and parts == ["dashboard", "stats"]:
@@ -1299,6 +1408,8 @@ def review_alert(alert_id: str, body: dict | None = None):
         f"WHERE alert_id = '{_esc(alert_id)}'"
     )
     _rs_exec(sql)
+    _write_audit(user_email=reviewed_by or "unknown", action="alert.review",
+                 entity_type="alert", entity_id=alert_id)
     return resp(200, {"message": f"Alert '{alert_id}' marked as reviewed"})
 
 
@@ -1319,6 +1430,9 @@ def assign_alert(alert_id: str, body: dict):
         f"WHERE alert_id = '{_esc(alert_id)}'"
     )
     _rs_exec(sql)
+    actor = body.get("actor_email", "unknown")
+    _write_audit(user_email=actor, action="alert.assign", entity_type="alert",
+                 entity_id=alert_id, new_value={"assigned_to": assigned_to})
     return resp(200, {"message": f"Alert '{alert_id}' assigned to {assigned_to}"})
 
 
@@ -1413,6 +1527,8 @@ def create_case(body: dict):
         f"'{_esc(assigned_to)}', '{_esc(created_by)}', 'open')"
     )
     _rs_exec(sql)
+    _write_audit(user_email=created_by, action="case.create", entity_type="case",
+                 entity_id=cid, new_value={"title": title, "priority": priority})
     return resp(201, {"case_id": cid})
 
 
@@ -1479,16 +1595,22 @@ def update_case_status(case_id: str, body: dict):
 
     sql = f"UPDATE crm.cases SET {', '.join(set_parts)} WHERE case_id = '{_esc(case_id)}'"
     _rs_exec(sql)
+    actor = body.get("actor_email", "unknown")
+    _write_audit(user_email=actor, action="case.status_change", entity_type="case",
+                 entity_id=case_id, new_value={"status": status})
     return resp(200, {"message": f"Case status updated to {status}"})
 
 
 def update_case_assign(case_id: str, body: dict):
     assigned_to = body.get("assigned_to", "").strip()
+    actor = body.get("actor_email", "unknown")
     sql = (
         f"UPDATE crm.cases SET assigned_to = '{_esc(assigned_to)}', updated_at = SYSDATE "
         f"WHERE case_id = '{_esc(case_id)}'"
     )
     _rs_exec(sql)
+    _write_audit(user_email=actor, action="case.assign", entity_type="case",
+                 entity_id=case_id, new_value={"assigned_to": assigned_to})
     return resp(200, {"message": f"Case assigned to {assigned_to}"})
 
 
@@ -1502,8 +1624,9 @@ def add_case_note(case_id: str, body: dict):
         f"VALUES ('{_esc(case_id)}', '{_esc(author_email)}', '{_esc(content)}')"
     )
     _rs_exec(sql)
-    # Also bump updated_at on the case so it floats to the top of the list
     _rs_exec(f"UPDATE crm.cases SET updated_at = SYSDATE WHERE case_id = '{_esc(case_id)}'")
+    _write_audit(user_email=author_email or "unknown", action="case.note_add",
+                 entity_type="case", entity_id=case_id)
     return resp(201, {"message": "Note added"})
 
 
