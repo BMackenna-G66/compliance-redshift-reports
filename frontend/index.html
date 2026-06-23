@@ -375,6 +375,95 @@
 
         </div>
 
+        <!-- ===== ANALYTICS CRM ===== -->
+        <div class="mt-6">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-base font-semibold text-white flex items-center gap-2">
+              <span class="text-indigo-400">📊</span> Analytics CRM
+            </h2>
+            <button @click="loadAnalyticsCrm()"
+              class="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white bg-slate-800 border border-slate-700 hover:border-indigo-500 px-3 py-1.5 rounded-lg transition">
+              <span :class="analyticsLoading ? 'spin' : ''">↻</span> Actualizar
+            </button>
+          </div>
+
+          <!-- Loading / paused state -->
+          <div x-show="analyticsLoading && !analyticsLoaded"
+            class="flex items-center justify-center h-32 text-slate-400 text-sm gap-2">
+            <span class="spin text-xl">⏳</span> Cargando analíticas desde Redshift…
+          </div>
+          <div x-show="analyticsPaused && !analyticsLoaded"
+            class="flex items-center justify-center h-20 text-slate-500 text-sm gap-2 bg-slate-800/40 border border-slate-700 rounded-xl">
+            ⚠️ Cluster pausado — haz clic en Actualizar cuando esté activo
+          </div>
+
+          <!-- Charts 2×2 grid -->
+          <div x-show="analyticsLoaded" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+            <!-- Doughnut: Casos por estado -->
+            <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+              <h3 class="text-sm font-semibold text-white mb-4">Casos por Estado</h3>
+              <div class="chart-container" style="height:220px">
+                <canvas id="chartCasesStatus"></canvas>
+              </div>
+            </div>
+
+            <!-- Bar: Casos creados por semana -->
+            <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+              <h3 class="text-sm font-semibold text-white mb-4">Casos Creados por Semana (8 sem)</h3>
+              <div class="chart-container" style="height:220px">
+                <canvas id="chartCasesWeek"></canvas>
+              </div>
+            </div>
+
+            <!-- Bar horizontal: Alertas por reporte (Redshift, 90d) -->
+            <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+              <h3 class="text-sm font-semibold text-white mb-4">Alertas por Reporte (90d)</h3>
+              <div class="chart-container" style="height:220px">
+                <canvas id="chartAlertsReport"></canvas>
+              </div>
+            </div>
+
+            <!-- Line: Alertas diarias (30d) -->
+            <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+              <h3 class="text-sm font-semibold text-white mb-4">Actividad Diaria de Alertas (30d)</h3>
+              <div class="chart-container" style="height:220px">
+                <canvas id="chartAlertsDaily"></canvas>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Top 5 entities table -->
+          <div x-show="analyticsLoaded && analyticsTopEntities.length > 0"
+            class="mt-4 bg-slate-800 rounded-xl border border-slate-700 p-5">
+            <h3 class="text-sm font-semibold text-white mb-3">Top 5 Entidades con más Alertas</h3>
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="text-slate-500 border-b border-slate-700">
+                  <th class="text-left pb-2 font-medium">#</th>
+                  <th class="text-left pb-2 font-medium">Entidad</th>
+                  <th class="text-left pb-2 font-medium">Tipo</th>
+                  <th class="text-right pb-2 font-medium">Alertas</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row, idx) in analyticsTopEntities" :key="idx">
+                  <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition">
+                    <td class="py-2 text-slate-500" x-text="idx+1"></td>
+                    <td class="py-2 text-white font-medium" x-text="row.entity_value || '—'"></td>
+                    <td class="py-2 text-slate-400" x-text="row.entity_type || '—'"></td>
+                    <td class="py-2 text-right">
+                      <span class="bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded-full font-semibold"
+                        x-text="row.n"></span>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- ===== SESSION RESULTS BOARD ===== -->
         <div x-show="sessionResults.length > 0" class="mt-8">
           <div class="flex items-center justify-between mb-4">
@@ -3766,6 +3855,16 @@
       // Case export
       caseExportLoading: false,
 
+      // Analytics CRM (Phase 6)
+      analyticsLoading: false,
+      analyticsLoaded: false,
+      analyticsPaused: false,
+      analyticsTopEntities: [],
+      _chartCasesStatus: null,
+      _chartCasesWeek: null,
+      _chartAlertsReport: null,
+      _chartAlertsDaily: null,
+
       // Cases CRM
       cases: [],
       casesLoading: false,
@@ -4804,6 +4903,11 @@
         } else if (this.clusterStatus !== 'available' && !this.dashboardStats) {
           this.dashboardStatsError = 'cluster_paused';
         }
+
+        // Load CRM analytics (non-blocking)
+        if (forceReload || !this.analyticsLoaded) {
+          this.loadAnalyticsCrm();
+        }
       },
 
       _renderCharts() {
@@ -4889,6 +4993,131 @@
             }
           }
         });
+      },
+
+      // -----------------------------------------------
+      // ANALYTICS CRM (Phase 6)
+      // -----------------------------------------------
+      async loadAnalyticsCrm() {
+        if (this.analyticsLoading) return;
+        this.analyticsLoading = true;
+        this.analyticsPaused = false;
+        try {
+          const initRes = await this.apiCall('GET', 'analytics/summary');
+          if (initRes.error === 'cluster_paused') {
+            this.analyticsPaused = true;
+            this.analyticsLoading = false;
+            return;
+          }
+          if (!initRes.stmt_ids || initRes.stmt_ids.length < 5) {
+            this.analyticsLoading = false;
+            return;
+          }
+          const [q0, q1, q2, q3, q4] = initRes.stmt_ids;
+
+          // Poll until all done (max 30s)
+          let data = null;
+          for (let attempt = 0; attempt < 15; attempt++) {
+            await new Promise(r => setTimeout(r, 2000));
+            data = await this.apiCall('GET', `analytics/result?q0=${q0}&q1=${q1}&q2=${q2}&q3=${q3}&q4=${q4}`);
+            if (data.all_done) break;
+          }
+          if (!data) { this.analyticsLoading = false; return; }
+
+          this.analyticsTopEntities = data.top_entities || [];
+          this.analyticsLoaded = true;
+          this.analyticsLoading = false;
+          this.$nextTick(() => this._renderAnalyticsCharts(data));
+        } catch(e) {
+          this.analyticsLoading = false;
+        }
+      },
+
+      _renderAnalyticsCharts(data) {
+        Chart.defaults.color = '#94a3b8';
+        Chart.defaults.font = { family: 'system-ui, sans-serif', size: 11 };
+        const gridColor = '#1e293b';
+
+        // ── Doughnut: Casos por estado ──
+        if (this._chartCasesStatus) { this._chartCasesStatus.destroy(); this._chartCasesStatus = null; }
+        const csByStatus = data.cases_by_status || [];
+        const statusCanvas = document.getElementById('chartCasesStatus');
+        if (statusCanvas && csByStatus.length) {
+          const statusColors = { open:'#3b82f6', in_progress:'#eab308', under_review:'#a855f7', closed:'#64748b' };
+          this._chartCasesStatus = new Chart(statusCanvas, {
+            type: 'doughnut',
+            data: {
+              labels: csByStatus.map(r => ({ open:'Abierto', in_progress:'En Investigación', under_review:'Bajo Revisión', closed:'Cerrado' }[r.status] || r.status)),
+              datasets: [{ data: csByStatus.map(r => r.n), backgroundColor: csByStatus.map(r => statusColors[r.status] || '#94a3b8'), borderWidth: 0 }],
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false, cutout: '65%',
+              plugins: { legend: { position: 'right', labels: { boxWidth: 12, padding: 10 } } },
+            },
+          });
+        }
+
+        // ── Bar: Casos por semana ──
+        if (this._chartCasesWeek) { this._chartCasesWeek.destroy(); this._chartCasesWeek = null; }
+        const csByWeek = data.cases_by_week || [];
+        const weekCanvas = document.getElementById('chartCasesWeek');
+        if (weekCanvas) {
+          this._chartCasesWeek = new Chart(weekCanvas, {
+            type: 'bar',
+            data: {
+              labels: csByWeek.map(r => (r.week_start||'').slice(5)),
+              datasets: [{ label: 'Casos', data: csByWeek.map(r => r.n), backgroundColor: '#6366f1', borderRadius: 4 }],
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { display: false } },
+              scales: { x: { grid: { color: gridColor } }, y: { grid: { color: gridColor }, beginAtZero: true, ticks: { stepSize: 1 } } },
+            },
+          });
+        }
+
+        // ── Bar horizontal: Alertas por reporte ──
+        if (this._chartAlertsReport) { this._chartAlertsReport.destroy(); this._chartAlertsReport = null; }
+        const alertsByReport = data.alerts_by_report || [];
+        const reportCanvas = document.getElementById('chartAlertsReport');
+        if (reportCanvas && alertsByReport.length) {
+          this._chartAlertsReport = new Chart(reportCanvas, {
+            type: 'bar',
+            data: {
+              labels: alertsByReport.map(r => (r.report_name||'').replace(/_/g,' ')),
+              datasets: [{ label: 'Alertas', data: alertsByReport.map(r => r.n), backgroundColor: '#f97316', borderRadius: 4 }],
+            },
+            options: {
+              indexAxis: 'y',
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { display: false } },
+              scales: { x: { grid: { color: gridColor }, beginAtZero: true }, y: { grid: { color: gridColor }, ticks: { font: { size: 10 } } } },
+            },
+          });
+        }
+
+        // ── Line: Alertas diarias 30d ──
+        if (this._chartAlertsDaily) { this._chartAlertsDaily.destroy(); this._chartAlertsDaily = null; }
+        const alertsDaily = data.alerts_daily_30d || [];
+        const dailyCanvas = document.getElementById('chartAlertsDaily');
+        if (dailyCanvas) {
+          this._chartAlertsDaily = new Chart(dailyCanvas, {
+            type: 'line',
+            data: {
+              labels: alertsDaily.map(r => (r.day||'').slice(5)),
+              datasets: [{
+                label: 'Alertas', data: alertsDaily.map(r => r.n),
+                borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)',
+                fill: true, tension: 0.3, pointRadius: 3, pointBackgroundColor: '#10b981',
+              }],
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { display: false } },
+              scales: { x: { grid: { color: gridColor }, ticks: { maxTicksLimit: 10 } }, y: { grid: { color: gridColor }, beginAtZero: true, ticks: { stepSize: 1 } } },
+            },
+          });
+        }
       },
 
       // -----------------------------------------------

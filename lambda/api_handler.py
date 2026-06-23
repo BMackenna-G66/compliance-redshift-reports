@@ -24,6 +24,8 @@ Routes:
   GET  /dashboard/stats        → submit 3 queries to Redshift; returns stmt_ids immediately
   GET  /dashboard/stats/result → poll results for stmt_ids (q0=, q1=, q2=); returns per-query
                                  rows when done, null when still running, all_done flag
+  GET  /analytics/summary      → submit 5 CRM analytics queries; returns stmt_ids immediately
+  GET  /analytics/result       → poll analytics results (q0..q4); all_done flag
 """
 
 from __future__ import annotations
@@ -1260,6 +1262,17 @@ def handler(event, context):  # noqa: ARG001
             qs = event.get("queryStringParameters") or {}
             return get_dashboard_stats_result(qs.get("q0", ""), qs.get("q1", ""), qs.get("q2", ""))
 
+        # GET /analytics/summary — submit 5 CRM analytics queries, return stmt_ids
+        if method == "GET" and parts == ["analytics", "summary"]:
+            return get_analytics_summary()
+        # GET /analytics/result?q0=&q1=&q2=&q3=&q4= — poll analytics results
+        if method == "GET" and parts == ["analytics", "result"]:
+            qs = event.get("queryStringParameters") or {}
+            return get_analytics_result(
+                qs.get("q0", ""), qs.get("q1", ""), qs.get("q2", ""),
+                qs.get("q3", ""), qs.get("q4", ""),
+            )
+
         return resp(404, {"error": "Not found", "path": path, "method": method})
 
     except Exception as e:  # noqa: BLE001
@@ -1981,6 +1994,109 @@ def get_dashboard_stats_result(q0: str, q1: str, q2: str):
                 result[key] = None   # null signals "still pending" to the frontend
         except Exception:
             result[key] = []         # treat errors as done-empty
+
+    result["all_done"] = all_done
+    return resp(200, result)
+
+
+# ---------------------------------------------------------------------------
+# Analytics CRM — Phase 6
+# ---------------------------------------------------------------------------
+
+_SQL_CASES_BY_STATUS = """
+SELECT status, COUNT(*) AS n
+FROM crm.cases
+GROUP BY status
+ORDER BY n DESC
+"""
+
+_SQL_CASES_BY_WEEK = """
+SELECT DATE_TRUNC('week', created_at)::DATE AS week_start, COUNT(*) AS n
+FROM crm.cases
+WHERE created_at >= DATEADD(week, -8, GETDATE())
+GROUP BY 1
+ORDER BY 1
+"""
+
+_SQL_ALERTS_BY_REPORT = """
+SELECT report_name, COUNT(*) AS n
+FROM compliance.alerts
+WHERE created_at >= DATEADD(day, -90, GETDATE())
+GROUP BY report_name
+ORDER BY n DESC
+LIMIT 10
+"""
+
+_SQL_ALERTS_DAILY_30D = """
+SELECT created_at::DATE AS day, COUNT(*) AS n
+FROM compliance.alerts
+WHERE created_at >= DATEADD(day, -30, GETDATE())
+GROUP BY 1
+ORDER BY 1
+"""
+
+_SQL_TOP_ENTITIES = """
+SELECT entity_value, entity_type, COUNT(*) AS n
+FROM compliance.alerts
+WHERE entity_value IS NOT NULL AND TRIM(entity_value) <> ''
+GROUP BY entity_value, entity_type
+ORDER BY n DESC
+LIMIT 5
+"""
+
+
+def get_analytics_summary():
+    """Submit 5 CRM analytics queries; return stmt_ids immediately (async pattern)."""
+    try:
+        stmt_ids: list[str] = []
+        for sql in [
+            _SQL_CASES_BY_STATUS,
+            _SQL_CASES_BY_WEEK,
+            _SQL_ALERTS_BY_REPORT,
+            _SQL_ALERTS_DAILY_30D,
+            _SQL_TOP_ENTITIES,
+        ]:
+            r = redshift_data.execute_statement(
+                ClusterIdentifier=CLUSTER_ID,
+                Database=DATABASE_NAME,
+                DbUser=DB_USER,
+                Sql=sql.strip(),
+            )
+            stmt_ids.append(r["Id"])
+        return resp(200, {"stmt_ids": stmt_ids})
+    except Exception as e:
+        msg = str(e)
+        if "paused" in msg.lower() or "unavailable" in msg.lower() or "not available" in msg.lower():
+            return resp(200, {
+                "error": "cluster_paused",
+                "message": "El cluster está pausado. Las analíticas se cargarán cuando esté activo.",
+            })
+        return resp(200, {"error": str(e), "message": "Error al enviar consultas analytics."})
+
+
+def get_analytics_result(q0: str, q1: str, q2: str, q3: str, q4: str):
+    """Poll results for 5 analytics stmt_ids."""
+    stmt_ids = [q0, q1, q2, q3, q4]
+    keys = ["cases_by_status", "cases_by_week", "alerts_by_report", "alerts_daily_30d", "top_entities"]
+    result: dict = {}
+    all_done = True
+
+    for stmt_id, key in zip(stmt_ids, keys):
+        if not stmt_id:
+            result[key] = []
+            continue
+        try:
+            desc = redshift_data.describe_statement(Id=stmt_id)
+            status = desc["Status"]
+            if status == "FINISHED":
+                result[key] = _rs_get_rows(stmt_id) if desc.get("HasResultSet") else []
+            elif status in ("FAILED", "ABORTED"):
+                result[key] = []
+            else:
+                all_done = False
+                result[key] = None
+        except Exception:
+            result[key] = []
 
     result["all_done"] = all_done
     return resp(200, result)
