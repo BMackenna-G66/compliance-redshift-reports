@@ -54,6 +54,12 @@ from openpyxl.utils import get_column_letter
 
 from aml_individual import build_aml_excel
 
+try:
+    from api_handler import apply_auto_case_rules as _apply_auto_case_rules
+except Exception:
+    def _apply_auto_case_rules(*args, **kwargs):  # noqa: ANN001
+        pass
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -1190,6 +1196,12 @@ ORDER BY start_date DESC
             row_count=total_rows,
             result_preview=json.dumps(result_preview, default=str),
         )
+
+        # Phase 10 — apply auto-case rules (non-blocking)
+        try:
+            _apply_auto_case_rules(report_name, total_rows, run_id)
+        except Exception:
+            pass
 
         return {
             "status": "ok",

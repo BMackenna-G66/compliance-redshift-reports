@@ -3303,6 +3303,21 @@
             class="pb-3 px-2 text-sm font-medium transition">
             ⚙ Automatización
           </button>
+          <button @click="adminSubtab='analistas'; loadCrmUsers()"
+            :class="adminSubtab==='analistas' ? 'border-b-2 border-indigo-500 text-indigo-400' : 'text-slate-400 hover:text-white'"
+            class="pb-3 px-2 text-sm font-medium transition">
+            👤 Analistas CRM
+          </button>
+          <button @click="adminSubtab='reglas'; loadRules()"
+            :class="adminSubtab==='reglas' ? 'border-b-2 border-emerald-500 text-emerald-400' : 'text-slate-400 hover:text-white'"
+            class="pb-3 px-2 text-sm font-medium transition">
+            🤖 Reglas Auto
+          </button>
+          <button @click="adminSubtab='sla'; loadSla()"
+            :class="adminSubtab==='sla' ? 'border-b-2 border-cyan-500 text-cyan-400' : 'text-slate-400 hover:text-white'"
+            class="pb-3 px-2 text-sm font-medium transition">
+            📊 SLA
+          </button>
         </div>
 
         <!-- ---- Sub-tab: Users ---- -->
@@ -3630,6 +3645,299 @@
           </div>
         </div>
 
+        <!-- ---- Sub-tab: Analistas CRM (Phase 7) ---- -->
+        <div x-show="adminSubtab==='analistas'">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-white">Analistas CRM (Redshift)</h3>
+            <button @click="crmUserModal={open:true,mode:'create',form:{email:'',full_name:'',role_id:1}}"
+              class="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition">
+              + Nuevo analista
+            </button>
+          </div>
+          <div x-show="crmUsersLoading" class="text-center py-8 text-slate-400 text-sm">Cargando...</div>
+          <div x-show="!crmUsersLoading && crmUsers.length===0" class="text-center py-8 text-slate-600 text-sm">Sin analistas registrados</div>
+          <div class="space-y-2">
+            <template x-for="u in crmUsers" :key="u.id">
+              <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 flex items-center gap-4">
+                <div class="w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 bg-indigo-700"
+                  x-text="(u.full_name||u.email||'?').substring(0,2).toUpperCase()"></div>
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium text-white" x-text="u.full_name || u.email"></p>
+                  <p class="text-xs text-slate-400" x-text="u.email"></p>
+                </div>
+                <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                  :class="u.role_name==='SUPER_ADMIN' ? 'bg-orange-500/20 text-orange-400' : u.role_name==='ADMIN' ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-600/40 text-slate-300'"
+                  x-text="u.role_name"></span>
+                <span class="text-xs px-2 py-0.5 rounded-full"
+                  :class="u.is_active ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'"
+                  x-text="u.is_active ? 'Activo' : 'Inactivo'"></span>
+                <div class="flex gap-2 shrink-0">
+                  <button @click="crmUserModal={open:true,mode:'edit',userId:u.id,form:{full_name:u.full_name||'',role_id:u.role_id,is_active:u.is_active}}"
+                    class="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition">✏️</button>
+                  <button x-show="u.is_active" @click="deactivateCrmUser(u.id)"
+                    class="text-xs px-2 py-1 bg-red-900/40 hover:bg-red-800/60 text-red-400 rounded-lg transition">Desactivar</button>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Create/Edit user modal -->
+          <div x-show="crmUserModal.open" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+            @click.self="crmUserModal={open:false}">
+            <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md">
+              <h3 class="text-white font-semibold mb-4"
+                x-text="crmUserModal.mode==='create' ? 'Nuevo analista CRM' : 'Editar analista'"></h3>
+              <div class="space-y-4">
+                <template x-if="crmUserModal.mode==='create'">
+                  <div>
+                    <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Email</label>
+                    <input type="email" x-model="crmUserModal.form.email" placeholder="analista@global66.com"
+                      class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-indigo-500 focus:outline-none">
+                  </div>
+                </template>
+                <div>
+                  <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Nombre completo</label>
+                  <input type="text" x-model="crmUserModal.form.full_name" placeholder="Nombre Apellido"
+                    class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-indigo-500 focus:outline-none">
+                </div>
+                <div>
+                  <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Rol</label>
+                  <select x-model.number="crmUserModal.form.role_id"
+                    class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-indigo-500 focus:outline-none">
+                    <template x-for="r in crmRoles" :key="r.id">
+                      <option :value="r.id" x-text="r.name"></option>
+                    </template>
+                  </select>
+                </div>
+                <template x-if="crmUserModal.mode==='edit'">
+                  <div class="flex items-center gap-3">
+                    <label class="text-xs text-slate-400 uppercase tracking-wider">Activo</label>
+                    <button @click="crmUserModal.form.is_active = !crmUserModal.form.is_active"
+                      :class="crmUserModal.form.is_active ? 'bg-green-600' : 'bg-slate-600'"
+                      class="relative w-10 h-5 rounded-full transition">
+                      <span :class="crmUserModal.form.is_active ? 'translate-x-5' : 'translate-x-1'"
+                        class="absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform block"></span>
+                    </button>
+                  </div>
+                </template>
+              </div>
+              <div class="flex gap-3 mt-6">
+                <button @click="saveCrmUser()"
+                  class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium py-2 rounded-xl transition">
+                  Guardar
+                </button>
+                <button @click="crmUserModal={open:false}"
+                  class="px-4 py-2 text-slate-400 hover:text-white text-sm transition">
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Sub-tab: Reglas Auto (Phase 10) ---- -->
+        <div x-show="adminSubtab==='reglas'">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="text-sm font-semibold text-white">Reglas de Creación Automática de Casos</h3>
+              <p class="text-xs text-slate-500 mt-0.5">Cuando un reporte supera el umbral de filas, se crea un caso automáticamente.</p>
+            </div>
+            <button @click="ruleModal={open:true,mode:'create',form:{name:'',report_name:'',row_threshold:1,case_title_template:'Alerta automática: {report_name} ({row_count} filas)',priority:'medium',assigned_to:'',enabled:true}}"
+              class="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg transition">
+              + Nueva regla
+            </button>
+          </div>
+          <div x-show="rulesLoading" class="text-center py-8 text-slate-400 text-sm">Cargando...</div>
+          <div x-show="!rulesLoading && rules.length===0" class="text-center py-8 text-slate-600 text-sm">Sin reglas configuradas</div>
+          <div class="space-y-3">
+            <template x-for="r in rules" :key="r.id">
+              <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+                <div class="flex items-start justify-between gap-4">
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-sm font-medium text-white" x-text="r.name"></span>
+                      <span :class="r.enabled ? 'bg-green-500/20 text-green-400' : 'bg-slate-600/40 text-slate-400'"
+                        class="text-xs px-2 py-0.5 rounded-full" x-text="r.enabled ? 'Activa' : 'Inactiva'"></span>
+                      <span class="text-xs text-slate-500" x-text="'≥ '+r.row_threshold+' filas'"></span>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-1" x-text="'Reporte: '+(r.report_name||'cualquiera')"></p>
+                    <p class="text-xs text-slate-500 mt-0.5" x-text="'Título: '+r.case_title_template"></p>
+                    <p x-show="r.assigned_to" class="text-xs text-slate-500 mt-0.5" x-text="'Asignar a: '+r.assigned_to"></p>
+                  </div>
+                  <div class="flex gap-2 shrink-0">
+                    <button @click="ruleModal={open:true,mode:'edit',ruleId:r.id,form:JSON.parse(JSON.stringify(r))}"
+                      class="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition">✏️</button>
+                    <button @click="deleteRule(r.id)"
+                      class="text-xs px-2 py-1 bg-red-900/40 hover:bg-red-800/60 text-red-400 rounded-lg transition">🗑</button>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Rule modal -->
+          <div x-show="ruleModal.open" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+            @click.self="ruleModal={open:false}">
+            <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-lg">
+              <h3 class="text-white font-semibold mb-4"
+                x-text="ruleModal.mode==='create' ? 'Nueva regla automática' : 'Editar regla'"></h3>
+              <div class="space-y-3">
+                <div>
+                  <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Nombre de la regla</label>
+                  <input type="text" x-model="ruleModal.form.name" placeholder="Ej: Alto volumen países riesgo"
+                    class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Reporte (dejar vacío = todos)</label>
+                    <input type="text" x-model="ruleModal.form.report_name" placeholder="high_risk_countries"
+                      class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
+                  </div>
+                  <div>
+                    <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Umbral filas</label>
+                    <input type="number" x-model.number="ruleModal.form.row_threshold" min="1"
+                      class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
+                  </div>
+                </div>
+                <div>
+                  <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Título del caso (use {report_name}, {row_count})</label>
+                  <input type="text" x-model="ruleModal.form.case_title_template"
+                    class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Prioridad</label>
+                    <select x-model="ruleModal.form.priority"
+                      class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
+                      <option value="low">Baja</option>
+                      <option value="medium">Media</option>
+                      <option value="high">Alta</option>
+                      <option value="critical">Crítica</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Asignar a (email)</label>
+                    <input type="email" x-model="ruleModal.form.assigned_to" placeholder="analista@global66.com"
+                      class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
+                  </div>
+                </div>
+                <div class="flex items-center gap-3">
+                  <span class="text-xs text-slate-400 uppercase tracking-wider">Activa</span>
+                  <button @click="ruleModal.form.enabled = !ruleModal.form.enabled"
+                    :class="ruleModal.form.enabled ? 'bg-green-600' : 'bg-slate-600'"
+                    class="relative w-10 h-5 rounded-full transition">
+                    <span :class="ruleModal.form.enabled ? 'translate-x-5' : 'translate-x-1'"
+                      class="absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform block"></span>
+                  </button>
+                </div>
+              </div>
+              <div class="flex gap-3 mt-5">
+                <button @click="saveRule()"
+                  class="flex-1 bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium py-2 rounded-xl transition">
+                  Guardar
+                </button>
+                <button @click="ruleModal={open:false}"
+                  class="px-4 py-2 text-slate-400 hover:text-white text-sm transition">
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Sub-tab: SLA (Phase 9) ---- -->
+        <div x-show="adminSubtab==='sla'">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-white">SLA de Casos de Investigación</h3>
+            <button @click="loadSla()" class="text-xs text-slate-400 hover:text-white transition flex items-center gap-1">
+              <span :class="slaLoading ? 'spin' : ''">↻</span> Actualizar
+            </button>
+          </div>
+          <div x-show="slaLoading && !slaLoaded" class="flex items-center justify-center h-24 text-slate-400 text-sm gap-2">
+            <span class="spin text-xl">⏳</span> Consultando Redshift…
+          </div>
+
+          <div x-show="slaLoaded">
+            <!-- Overdue KPI cards -->
+            <div x-show="slaOverdue" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+              <div class="bg-red-900/20 border border-red-800/40 rounded-xl p-4 text-center">
+                <p class="text-xs text-red-400 uppercase tracking-wider mb-1">Crítico vencido</p>
+                <p class="text-2xl font-bold text-red-300" x-text="slaOverdue?.critical_overdue ?? 0"></p>
+                <p class="text-xs text-slate-500 mt-1">&gt;1 día sin cerrar</p>
+              </div>
+              <div class="bg-orange-900/20 border border-orange-800/40 rounded-xl p-4 text-center">
+                <p class="text-xs text-orange-400 uppercase tracking-wider mb-1">Alto vencido</p>
+                <p class="text-2xl font-bold text-orange-300" x-text="slaOverdue?.high_overdue ?? 0"></p>
+                <p class="text-xs text-slate-500 mt-1">&gt;3 días sin cerrar</p>
+              </div>
+              <div class="bg-yellow-900/20 border border-yellow-800/40 rounded-xl p-4 text-center">
+                <p class="text-xs text-yellow-400 uppercase tracking-wider mb-1">Medio vencido</p>
+                <p class="text-2xl font-bold text-yellow-300" x-text="slaOverdue?.medium_overdue ?? 0"></p>
+                <p class="text-xs text-slate-500 mt-1">&gt;7 días sin cerrar</p>
+              </div>
+              <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-4 text-center">
+                <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">Total abiertos</p>
+                <p class="text-2xl font-bold text-white" x-text="slaOverdue?.total_open ?? 0"></p>
+              </div>
+            </div>
+
+            <!-- Avg resolution table -->
+            <div x-show="slaAvgResolution.length > 0" class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-4">
+              <h4 class="text-sm font-medium text-white mb-3">Tiempo Promedio de Resolución (casos cerrados)</h4>
+              <table class="w-full text-xs">
+                <thead>
+                  <tr class="text-slate-500 border-b border-slate-700">
+                    <th class="text-left pb-2 font-medium">Prioridad</th>
+                    <th class="text-right pb-2 font-medium">Casos cerrados</th>
+                    <th class="text-right pb-2 font-medium">Promedio</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="row in slaAvgResolution" :key="row.priority">
+                    <tr class="border-b border-slate-700/50">
+                      <td class="py-2">
+                        <span class="px-2 py-0.5 rounded-full text-xs font-medium"
+                          :class="{critical:'bg-red-500/20 text-red-400',high:'bg-orange-500/20 text-orange-400',medium:'bg-yellow-500/20 text-yellow-400',low:'bg-green-500/20 text-green-400'}[row.priority] || 'bg-slate-700 text-slate-300'"
+                          x-text="row.priority"></span>
+                      </td>
+                      <td class="py-2 text-right text-slate-300" x-text="row.total_closed"></td>
+                      <td class="py-2 text-right text-white font-medium"
+                        x-text="row.avg_hours ? Math.round(row.avg_hours)+'h' : '—'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- By priority+status matrix -->
+            <div x-show="slaByPriority.length > 0" class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+              <h4 class="text-sm font-medium text-white mb-3">Distribución por Prioridad y Estado</h4>
+              <table class="w-full text-xs">
+                <thead>
+                  <tr class="text-slate-500 border-b border-slate-700">
+                    <th class="text-left pb-2 font-medium">Prioridad</th>
+                    <th class="text-left pb-2 font-medium">Estado</th>
+                    <th class="text-right pb-2 font-medium">Casos</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="row in slaByPriority" :key="row.priority+row.status">
+                    <tr class="border-b border-slate-700/50">
+                      <td class="py-1.5">
+                        <span class="px-2 py-0.5 rounded-full text-xs font-medium"
+                          :class="{critical:'bg-red-500/20 text-red-400',high:'bg-orange-500/20 text-orange-400',medium:'bg-yellow-500/20 text-yellow-400',low:'bg-green-500/20 text-green-400'}[row.priority] || 'bg-slate-700 text-slate-300'"
+                          x-text="row.priority"></span>
+                      </td>
+                      <td class="py-1.5 text-slate-300" x-text="row.status"></td>
+                      <td class="py-1.5 text-right text-white font-semibold" x-text="row.n"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         </div><!-- end inner max-w container -->
       </div><!-- end admin tab overlay -->
 
@@ -3864,6 +4172,24 @@
       _chartCasesWeek: null,
       _chartAlertsReport: null,
       _chartAlertsDaily: null,
+
+      // Phase 7 — CRM Users
+      crmUsers: [],
+      crmRoles: [],
+      crmUsersLoading: false,
+      crmUserModal: { open: false, mode: 'create', form: {} },
+
+      // Phase 9 — SLA
+      slaLoading: false,
+      slaLoaded: false,
+      slaAvgResolution: [],
+      slaOverdue: null,
+      slaByPriority: [],
+
+      // Phase 10 — Auto-case rules
+      rules: [],
+      rulesLoading: false,
+      ruleModal: { open: false, mode: 'create', form: {} },
 
       // Cases CRM
       cases: [],
@@ -5118,6 +5444,105 @@
             },
           });
         }
+      },
+
+      // -----------------------------------------------
+      // PHASE 7 — CRM User Management
+      // -----------------------------------------------
+      async loadCrmUsers() {
+        if (this.crmUsersLoading) return;
+        this.crmUsersLoading = true;
+        try {
+          const [uRes, rRes] = await Promise.all([
+            this.apiCall('GET', 'users'),
+            this.apiCall('GET', 'roles'),
+          ]);
+          this.crmUsers = uRes.users || [];
+          this.crmRoles = rRes.roles || [];
+        } catch(e) {}
+        this.crmUsersLoading = false;
+      },
+
+      async saveCrmUser() {
+        const f = this.crmUserModal.form;
+        try {
+          if (this.crmUserModal.mode === 'create') {
+            await this.apiCall('POST', 'users', { email: f.email, full_name: f.full_name, role_id: f.role_id });
+          } else {
+            await this.apiCall('PUT', `users/${this.crmUserModal.userId}`, { full_name: f.full_name, role_id: f.role_id, is_active: f.is_active });
+          }
+          this.crmUserModal = { open: false };
+          await this.loadCrmUsers();
+        } catch(e) { alert('Error: ' + e.message); }
+      },
+
+      async deactivateCrmUser(userId) {
+        if (!confirm('¿Desactivar este analista?')) return;
+        try {
+          await this.apiCall('DELETE', `users/${userId}`);
+          await this.loadCrmUsers();
+        } catch(e) {}
+      },
+
+      // -----------------------------------------------
+      // PHASE 9 — SLA Analytics
+      // -----------------------------------------------
+      async loadSla() {
+        if (this.slaLoading) return;
+        this.slaLoading = true;
+        try {
+          const initRes = await this.apiCall('GET', 'analytics/sla');
+          if (initRes.error === 'cluster_paused' || !initRes.stmt_ids) {
+            this.slaLoading = false;
+            return;
+          }
+          const [q0, q1, q2] = initRes.stmt_ids;
+          let data = null;
+          for (let i = 0; i < 15; i++) {
+            await new Promise(r => setTimeout(r, 2000));
+            data = await this.apiCall('GET', `analytics/sla/result?q0=${q0}&q1=${q1}&q2=${q2}`);
+            if (data.all_done) break;
+          }
+          if (!data) { this.slaLoading = false; return; }
+          this.slaAvgResolution = data.avg_resolution || [];
+          this.slaOverdue = (data.overdue || [])[0] || null;
+          this.slaByPriority = data.by_priority || [];
+          this.slaLoaded = true;
+        } catch(e) {}
+        this.slaLoading = false;
+      },
+
+      // -----------------------------------------------
+      // PHASE 10 — Auto-case Rules
+      // -----------------------------------------------
+      async loadRules() {
+        this.rulesLoading = true;
+        try {
+          const res = await this.apiCall('GET', 'rules');
+          this.rules = res.rules || [];
+        } catch(e) {}
+        this.rulesLoading = false;
+      },
+
+      async saveRule() {
+        const f = this.ruleModal.form;
+        try {
+          if (this.ruleModal.mode === 'create') {
+            await this.apiCall('POST', 'rules', f);
+          } else {
+            await this.apiCall('PUT', `rules/${this.ruleModal.ruleId}`, f);
+          }
+          this.ruleModal = { open: false };
+          await this.loadRules();
+        } catch(e) { alert('Error: ' + e.message); }
+      },
+
+      async deleteRule(ruleId) {
+        if (!confirm('¿Eliminar esta regla?')) return;
+        try {
+          await this.apiCall('DELETE', `rules/${ruleId}`);
+          await this.loadRules();
+        } catch(e) {}
       },
 
       // -----------------------------------------------

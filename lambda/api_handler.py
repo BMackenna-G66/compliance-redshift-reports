@@ -26,6 +26,17 @@ Routes:
                                  rows when done, null when still running, all_done flag
   GET  /analytics/summary      → submit 5 CRM analytics queries; returns stmt_ids immediately
   GET  /analytics/result       → poll analytics results (q0..q4); all_done flag
+  GET  /analytics/sla          → submit 3 SLA queries; returns stmt_ids
+  GET  /analytics/sla/result   → poll SLA results (q0..q2); all_done flag
+  GET  /users                  → list all CRM users with role name
+  POST /users                  → create user {email, full_name, role_id}
+  PUT  /users/{id}             → update user {full_name, role_id, is_active}
+  DELETE /users/{id}           → deactivate user (soft delete)
+  GET  /roles                  → list all roles
+  GET  /rules                  → list auto-case rules (S3 JSON)
+  POST /rules                  → create auto-case rule
+  PUT  /rules/{id}             → update auto-case rule
+  DELETE /rules/{id}           → delete auto-case rule
 """
 
 from __future__ import annotations
@@ -89,6 +100,13 @@ RUNS_TABLE_NAME = os.environ["RUNS_TABLE"]
 CATALOG_TABLE_NAME = os.environ["CATALOG_TABLE"]
 REPORT_LAMBDA_NAME = os.environ["REPORT_LAMBDA"]
 S3_BUCKET = os.environ["S3_BUCKET"]
+
+# Phase 8 — Email notifications
+GMAIL_USER = os.environ.get("GMAIL_USER", "benjamin.mackenna@global66.com")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+
+# Phase 10 — Auto-case rules S3 key
+AUTO_RULES_KEY = "config/auto_case_rules.json"
 
 runs_table = dynamodb.Table(RUNS_TABLE_NAME)
 catalog_table = dynamodb.Table(CATALOG_TABLE_NAME)
@@ -1273,6 +1291,44 @@ def handler(event, context):  # noqa: ARG001
                 qs.get("q3", ""), qs.get("q4", ""),
             )
 
+        # GET /analytics/sla — submit 3 SLA queries
+        if method == "GET" and parts == ["analytics", "sla"]:
+            return get_analytics_sla()
+        # GET /analytics/sla/result?q0=&q1=&q2=
+        if method == "GET" and parts == ["analytics", "sla", "result"]:
+            qs = event.get("queryStringParameters") or {}
+            return get_analytics_sla_result(qs.get("q0", ""), qs.get("q1", ""), qs.get("q2", ""))
+
+        # GET /users
+        if method == "GET" and parts == ["users"]:
+            return get_users()
+        # POST /users
+        if method == "POST" and parts == ["users"]:
+            return create_user(body)
+        # PUT /users/{id}
+        if method == "PUT" and len(parts) == 2 and parts[0] == "users":
+            return update_user(parts[1], body)
+        # DELETE /users/{id}
+        if method == "DELETE" and len(parts) == 2 and parts[0] == "users":
+            return deactivate_user(parts[1])
+
+        # GET /roles
+        if method == "GET" and parts == ["roles"]:
+            return get_roles()
+
+        # GET /rules
+        if method == "GET" and parts == ["rules"]:
+            return get_rules()
+        # POST /rules
+        if method == "POST" and parts == ["rules"]:
+            return create_rule(body)
+        # PUT /rules/{id}
+        if method == "PUT" and len(parts) == 2 and parts[0] == "rules":
+            return update_rule(parts[1], body)
+        # DELETE /rules/{id}
+        if method == "DELETE" and len(parts) == 2 and parts[0] == "rules":
+            return delete_rule(parts[1])
+
         return resp(404, {"error": "Not found", "path": path, "method": method})
 
     except Exception as e:  # noqa: BLE001
@@ -1727,6 +1783,8 @@ def create_case(body: dict):
         f"Prioridad: {priority} | Asignado a: {assigned_to or 'Sin asignar'}\n"
         f"Creado por: {created_by}"
     )
+    if assigned_to and "@" in assigned_to:
+        _case_assignment_email(assigned_to, cid, title, priority, created_by)
     return resp(201, {"case_id": cid})
 
 
@@ -1816,6 +1874,10 @@ def update_case_assign(case_id: str, body: dict):
     _rs_exec(sql)
     _write_audit(user_email=actor, action="case.assign", entity_type="case",
                  entity_id=case_id, new_value={"assigned_to": assigned_to})
+    if assigned_to and "@" in assigned_to:
+        case_rows = _rs_exec(f"SELECT title, priority FROM crm.cases WHERE case_id = '{_esc(case_id)}'")
+        if case_rows:
+            _case_assignment_email(assigned_to, case_id, case_rows[0]["title"], case_rows[0].get("priority","medium"), actor)
     return resp(200, {"message": f"Case assigned to {assigned_to}"})
 
 
@@ -2100,3 +2162,308 @@ def get_analytics_result(q0: str, q1: str, q2: str, q3: str, q4: str):
 
     result["all_done"] = all_done
     return resp(200, result)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — Email notifications
+# ---------------------------------------------------------------------------
+
+def _send_email(to: str, subject: str, html_body: str) -> None:
+    """Send an email via Gmail SMTP (non-blocking — errors are swallowed)."""
+    if not GMAIL_APP_PASSWORD or not to or not to.strip():
+        return
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = GMAIL_USER
+    msg["To"] = to
+    msg.attach(MIMEText(html_body, "html"))
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as server:
+            server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_USER, [to], msg.as_string())
+    except Exception:
+        pass
+
+
+def _case_assignment_email(to_email: str, case_id: str, title: str, priority: str, assigned_by: str) -> None:
+    priority_color = {"critical": "#ef4444", "high": "#f97316", "medium": "#eab308", "low": "#22c55e"}.get(priority, "#94a3b8")
+    html = f"""
+<div style="font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;border-radius:12px;max-width:560px">
+  <div style="background:#1e293b;border-radius:8px;padding:16px 20px;margin-bottom:16px">
+    <p style="margin:0;font-size:13px;color:#94a3b8">WatchTower AML &middot; Global66 Compliance</p>
+    <h2 style="margin:8px 0 0;font-size:18px;color:#fff">Caso asignado a ti</h2>
+  </div>
+  <p style="font-size:14px;color:#cbd5e1">Se te ha asignado el siguiente caso de investigaci&#xf3;n:</p>
+  <div style="background:#1e293b;border-left:4px solid {priority_color};border-radius:4px;padding:14px 18px;margin:12px 0">
+    <p style="margin:0 0 4px;font-size:12px;color:#64748b;font-family:monospace">{case_id}</p>
+    <p style="margin:0;font-size:15px;font-weight:600;color:#f1f5f9">{title}</p>
+    <span style="display:inline-block;margin-top:8px;background:{priority_color}22;color:{priority_color};border-radius:999px;padding:2px 10px;font-size:11px;font-weight:600;text-transform:uppercase">{priority}</span>
+  </div>
+  <p style="font-size:12px;color:#475569;margin-top:16px">Asignado por: <strong style="color:#94a3b8">{assigned_by}</strong></p>
+</div>
+"""
+    _send_email(to_email, f"[WatchTower] Caso asignado: {title}", html)
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — SLA Analytics
+# ---------------------------------------------------------------------------
+
+_SQL_SLA_AVG_RESOLUTION = """
+SELECT priority,
+       COUNT(*) AS total_closed,
+       AVG(DATEDIFF(hour, created_at, closed_at)) AS avg_hours
+FROM crm.cases
+WHERE status = 'closed' AND closed_at IS NOT NULL
+GROUP BY priority
+ORDER BY priority
+"""
+
+_SQL_SLA_OVERDUE = """
+SELECT
+  SUM(CASE WHEN priority='critical' AND created_at < DATEADD(day,-1,GETDATE())  THEN 1 ELSE 0 END) AS critical_overdue,
+  SUM(CASE WHEN priority='high'     AND created_at < DATEADD(day,-3,GETDATE())  THEN 1 ELSE 0 END) AS high_overdue,
+  SUM(CASE WHEN priority='medium'   AND created_at < DATEADD(day,-7,GETDATE())  THEN 1 ELSE 0 END) AS medium_overdue,
+  SUM(CASE WHEN priority='low'      AND created_at < DATEADD(day,-30,GETDATE()) THEN 1 ELSE 0 END) AS low_overdue,
+  COUNT(*) AS total_open
+FROM crm.cases
+WHERE status NOT IN ('closed')
+"""
+
+_SQL_SLA_BY_PRIORITY = """
+SELECT priority, status, COUNT(*) AS n
+FROM crm.cases
+GROUP BY priority, status
+ORDER BY
+  CASE priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
+  status
+"""
+
+
+def get_analytics_sla():
+    """Submit 3 SLA analytics queries async."""
+    try:
+        stmt_ids: list[str] = []
+        for sql in [_SQL_SLA_AVG_RESOLUTION, _SQL_SLA_OVERDUE, _SQL_SLA_BY_PRIORITY]:
+            r = redshift_data.execute_statement(
+                ClusterIdentifier=CLUSTER_ID,
+                Database=DATABASE_NAME,
+                DbUser=DB_USER,
+                Sql=sql.strip(),
+            )
+            stmt_ids.append(r["Id"])
+        return resp(200, {"stmt_ids": stmt_ids})
+    except Exception as e:
+        msg = str(e)
+        if "paused" in msg.lower() or "unavailable" in msg.lower() or "not available" in msg.lower():
+            return resp(200, {"error": "cluster_paused", "message": "Cluster pausado."})
+        return resp(200, {"error": str(e)})
+
+
+def get_analytics_sla_result(q0: str, q1: str, q2: str):
+    """Poll results for 3 SLA stmt_ids."""
+    stmt_ids = [q0, q1, q2]
+    keys = ["avg_resolution", "overdue", "by_priority"]
+    result: dict = {}
+    all_done = True
+    for stmt_id, key in zip(stmt_ids, keys):
+        if not stmt_id:
+            result[key] = []
+            continue
+        try:
+            desc = redshift_data.describe_statement(Id=stmt_id)
+            status = desc["Status"]
+            if status == "FINISHED":
+                result[key] = _rs_get_rows(stmt_id) if desc.get("HasResultSet") else []
+            elif status in ("FAILED", "ABORTED"):
+                result[key] = []
+            else:
+                all_done = False
+                result[key] = None
+        except Exception:
+            result[key] = []
+    result["all_done"] = all_done
+    return resp(200, result)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — User Management
+# ---------------------------------------------------------------------------
+
+def get_users():
+    try:
+        rows = _rs_exec("""
+            SELECT u.id, u.email, u.full_name, u.is_active,
+                   u.created_at, u.last_login_at, r.name AS role_name, r.id AS role_id
+            FROM crm.users u
+            JOIN crm.roles r ON r.id = u.role_id
+            ORDER BY u.created_at DESC
+        """)
+        return resp(200, {"users": rows})
+    except RuntimeError as e:
+        return resp(503, {"error": str(e)})
+
+
+def get_roles():
+    try:
+        rows = _rs_exec("SELECT id, name, description FROM crm.roles ORDER BY id")
+        return resp(200, {"roles": rows})
+    except RuntimeError as e:
+        return resp(503, {"error": str(e)})
+
+
+def create_user(body: dict):
+    email = str(body.get("email", "")).strip().lower()[:255]
+    full_name = str(body.get("full_name", "")).strip()[:255]
+    role_id = int(body.get("role_id", 1))
+    if not email:
+        return resp(400, {"error": "email is required"})
+    safe_name = full_name.replace("'", "''")
+    try:
+        _rs_exec(f"""
+            INSERT INTO crm.users (email, full_name, role_id, is_active)
+            VALUES ('{email}', '{safe_name}', {role_id}, TRUE)
+        """)
+        _write_audit(user_email="admin", action="create_user", entity_type="user", entity_id=email)
+        return resp(201, {"message": "Usuario creado", "email": email})
+    except RuntimeError as e:
+        return resp(503, {"error": str(e)})
+
+
+def update_user(user_id: str, body: dict):
+    try:
+        uid = int(user_id)
+    except (ValueError, TypeError):
+        return resp(400, {"error": "invalid user id"})
+    parts_set = []
+    if "full_name" in body:
+        parts_set.append(f"full_name = '{str(body['full_name']).replace(chr(39), chr(39)*2)}'")
+    if "role_id" in body:
+        parts_set.append(f"role_id = {int(body['role_id'])}")
+    if "is_active" in body:
+        parts_set.append(f"is_active = {'TRUE' if body['is_active'] else 'FALSE'}")
+    if not parts_set:
+        return resp(400, {"error": "nothing to update"})
+    parts_set.append("updated_at = GETDATE()")
+    try:
+        _rs_exec(f"UPDATE crm.users SET {', '.join(parts_set)} WHERE id = {uid}")
+        _write_audit(user_email="admin", action="update_user", entity_type="user", entity_id=str(uid))
+        return resp(200, {"message": "Usuario actualizado"})
+    except RuntimeError as e:
+        return resp(503, {"error": str(e)})
+
+
+def deactivate_user(user_id: str):
+    try:
+        uid = int(user_id)
+    except (ValueError, TypeError):
+        return resp(400, {"error": "invalid user id"})
+    try:
+        _rs_exec(f"UPDATE crm.users SET is_active = FALSE, updated_at = GETDATE() WHERE id = {uid}")
+        _write_audit(user_email="admin", action="deactivate_user", entity_type="user", entity_id=str(uid))
+        return resp(200, {"message": "Usuario desactivado"})
+    except RuntimeError as e:
+        return resp(503, {"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — Auto-case Rules (stored as JSON in S3)
+# ---------------------------------------------------------------------------
+
+def _load_rules() -> list[dict]:
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=AUTO_RULES_KEY)
+        return json.loads(obj["Body"].read())
+    except Exception:
+        return []
+
+
+def _save_rules(rules: list[dict]) -> None:
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=AUTO_RULES_KEY,
+        Body=json.dumps(rules, default=str).encode(),
+        ContentType="application/json",
+    )
+
+
+def get_rules():
+    return resp(200, {"rules": _load_rules()})
+
+
+def create_rule(body: dict):
+    rules = _load_rules()
+    rule = {
+        "id": str(uuid.uuid4()),
+        "name": str(body.get("name", "")).strip()[:100],
+        "report_name": str(body.get("report_name", "")).strip()[:100],
+        "row_threshold": int(body.get("row_threshold", 1)),
+        "case_title_template": str(body.get("case_title_template", "Alerta automática: {report_name}")).strip()[:255],
+        "priority": str(body.get("priority", "medium")),
+        "assigned_to": str(body.get("assigned_to", "")).strip()[:255],
+        "enabled": bool(body.get("enabled", True)),
+        "created_at": dt.datetime.utcnow().isoformat(),
+    }
+    rules.append(rule)
+    _save_rules(rules)
+    return resp(201, {"message": "Regla creada", "rule": rule})
+
+
+def update_rule(rule_id: str, body: dict):
+    rules = _load_rules()
+    for rule in rules:
+        if rule["id"] == rule_id:
+            for field in ["name", "report_name", "row_threshold", "case_title_template", "priority", "assigned_to", "enabled"]:
+                if field in body:
+                    rule[field] = body[field]
+            _save_rules(rules)
+            return resp(200, {"message": "Regla actualizada", "rule": rule})
+    return resp(404, {"error": "Rule not found"})
+
+
+def delete_rule(rule_id: str):
+    rules = _load_rules()
+    new_rules = [r for r in rules if r["id"] != rule_id]
+    if len(new_rules) == len(rules):
+        return resp(404, {"error": "Rule not found"})
+    _save_rules(new_rules)
+    return resp(200, {"message": "Regla eliminada"})
+
+
+def apply_auto_case_rules(report_name: str, row_count: int, run_id: str) -> None:
+    """Called after a report completes — creates cases for matching enabled rules."""
+    try:
+        rules = _load_rules()
+        for rule in rules:
+            if not rule.get("enabled", True):
+                continue
+            if rule.get("report_name") and rule["report_name"] != report_name:
+                continue
+            if row_count < int(rule.get("row_threshold", 1)):
+                continue
+            title = rule.get("case_title_template", "Alerta automática: {report_name}").format(
+                report_name=report_name, row_count=row_count, run_id=run_id
+            )
+            case_id = str(uuid.uuid4())
+            now = dt.datetime.utcnow().isoformat()
+            assigned = str(rule.get("assigned_to", "")).strip()
+            safe_title = title.replace("'", "''")
+            safe_rule_name = str(rule.get("name", "")).replace("'", "''")
+            safe_assigned = assigned.replace("'", "''")
+            _rs_exec(f"""
+                INSERT INTO crm.cases (case_id, title, description, status, priority,
+                                       entity_type, report_name, assigned_to, created_by, created_at, updated_at)
+                VALUES (
+                    '{case_id}', '{safe_title}',
+                    'Creado automáticamente por regla "{safe_rule_name}" — {report_name} con {row_count} filas (run {run_id}).',
+                    'open', '{rule.get("priority","medium")}', 'report',
+                    '{report_name}', '{safe_assigned}', 'sistema@auto', '{now}', '{now}'
+                )
+            """)
+            if assigned:
+                _case_assignment_email(assigned, case_id, title, rule.get("priority", "medium"), "sistema automático")
+    except Exception:
+        pass
