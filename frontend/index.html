@@ -188,6 +188,11 @@
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             🔬 Análisis Individual
           </button>
+          <button @click="switchTab('busqueda')"
+            :class="activeTab==='busqueda' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
+            🔎 Búsqueda
+          </button>
           <!-- Admin tab: only for admins -->
           <button x-show="isAdmin()" @click="switchTab('admin'); loadAdminUsers()"
             :class="activeTab==='admin' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
@@ -2566,7 +2571,15 @@
           <h2 class="text-lg font-bold text-white" x-text="activeCase.title"></h2>
           <p class="text-sm text-slate-400 mt-1" x-text="activeCase.description"></p>
         </div>
-        <button @click="caseDetailModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none shrink-0">×</button>
+        <div class="flex items-center gap-2 shrink-0">
+          <button @click="exportCase(activeCase.case_id)"
+            :disabled="caseExportLoading"
+            class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 text-xs font-medium rounded-lg transition disabled:opacity-50">
+            <span :class="caseExportLoading ? 'animate-spin inline-block' : ''">📥</span>
+            <span x-text="caseExportLoading ? 'Generando...' : 'Excel'"></span>
+          </button>
+          <button @click="caseDetailModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+        </div>
       </div>
       <!-- Scrollable body -->
       <div class="overflow-y-auto flex-1 p-6 space-y-5">
@@ -2952,6 +2965,102 @@
   </div>
 
       <!-- ===== TAB: PENDIENTES ===== -->
+      <!-- ===== TAB: BÚSQUEDA DE ENTIDAD ===== -->
+      <div x-show="activeTab==='busqueda'" x-cloak class="max-w-4xl mx-auto">
+        <div class="flex items-center justify-between mb-6">
+          <h1 class="text-xl font-bold text-white">🔎 Búsqueda de Entidad</h1>
+        </div>
+
+        <!-- Search bar -->
+        <div class="flex gap-3 mb-6">
+          <div class="flex-1 relative">
+            <input x-model="entityQuery"
+              @keydown.enter="searchEntity()"
+              type="text"
+              placeholder="Buscar por ID de cliente, nombre, valor de alerta..."
+              class="w-full bg-slate-800 border border-slate-600 text-slate-200 rounded-xl px-4 py-3 pl-10 focus:outline-none focus:border-orange-400 text-sm">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">🔍</span>
+          </div>
+          <button @click="searchEntity()"
+            :disabled="entitySearchLoading || entityQuery.trim().length < 3"
+            class="px-6 py-3 bg-orange-600 hover:bg-orange-500 text-white text-sm font-semibold rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed">
+            <span x-text="entitySearchLoading ? 'Buscando...' : 'Buscar'"></span>
+          </button>
+        </div>
+
+        <!-- Loading -->
+        <div x-show="entitySearchLoading" class="text-center py-12 text-slate-400">
+          <div class="animate-spin text-3xl mb-2">⟳</div>
+          <p class="text-sm">Consultando alertas y casos...</p>
+        </div>
+
+        <!-- No results -->
+        <div x-show="!entitySearchLoading && entitySearchDone && entityResults.length === 0"
+          class="text-center py-16 text-slate-500">
+          <div class="text-4xl mb-3">🔍</div>
+          <p class="text-slate-400">Sin resultados para "<span x-text="entityQuery"></span>"</p>
+        </div>
+
+        <!-- Results summary -->
+        <div x-show="!entitySearchLoading && entityResults.length > 0" class="mb-4">
+          <div class="flex items-center gap-4 text-sm text-slate-400">
+            <span><span class="text-white font-semibold" x-text="entityResults.length"></span> resultados</span>
+            <span class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-orange-400"></span>
+              <span x-text="entityResults.filter(r=>r.source_type==='alert').length"></span> alertas
+            </span>
+            <span class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+              <span x-text="entityResults.filter(r=>r.source_type==='case').length"></span> casos
+            </span>
+          </div>
+        </div>
+
+        <!-- Timeline -->
+        <div x-show="!entitySearchLoading && entityResults.length > 0" class="relative">
+          <!-- Vertical line -->
+          <div class="absolute left-4 top-0 bottom-0 w-0.5 bg-slate-700"></div>
+
+          <div class="space-y-3 pl-12">
+            <template x-for="(r, idx) in entityResults" :key="idx">
+              <div class="relative">
+                <!-- Timeline dot -->
+                <div class="absolute -left-8 top-3 w-3 h-3 rounded-full border-2 border-slate-900 flex-shrink-0"
+                  :class="r.source_type==='alert' ? 'bg-orange-400' : 'bg-blue-400'"></div>
+
+                <!-- Card -->
+                <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 hover:border-orange-500/50 transition"
+                  :class="r.source_type==='case' ? 'cursor-pointer' : ''"
+                  @click="r.source_type==='case' ? openCaseDetail(r.source_id) : null">
+                  <div class="flex items-start justify-between gap-3 mb-1">
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs px-2 py-0.5 rounded font-medium"
+                        :class="r.source_type==='alert' ? 'bg-orange-900/50 text-orange-300' : 'bg-blue-900/50 text-blue-300'"
+                        x-text="r.source_type==='alert' ? '⚠ Alerta' : '📁 Caso'"></span>
+                      <span class="text-xs text-slate-500" x-text="r.event_date ? new Date(r.event_date).toLocaleString('es-CL') : '—'"></span>
+                    </div>
+                    <span class="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-400"
+                      x-text="r.status"></span>
+                  </div>
+                  <p class="text-sm font-medium text-white mb-1" x-text="r.detail"></p>
+                  <div class="flex items-center gap-3 text-xs text-slate-500">
+                    <span x-show="r.entity_value" x-text="r.entity_value"></span>
+                    <span x-show="r.report_name" class="text-slate-600" x-text="r.report_name"></span>
+                    <span x-show="r.source_type==='case'" class="text-blue-400 text-xs">← clic para abrir</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Empty prompt (before first search) -->
+        <div x-show="!entitySearchLoading && !entitySearchDone" class="text-center py-20 text-slate-600">
+          <div class="text-5xl mb-4">🔎</div>
+          <p class="text-slate-500 text-sm">Busca un cliente, entidad o razón de alerta para ver<br>su historial completo de alertas y casos de investigación.</p>
+        </div>
+      </div>
+
       <div x-show="activeTab==='pendientes' && hasModule('pendientes')" x-cloak class="p-6 max-w-4xl mx-auto">
         <div class="flex items-center justify-between mb-6">
           <div>
@@ -3647,6 +3756,15 @@
       reviewModal: { open: false, alert_id: null, notes: '', reviewed_by: '' },
       assignModal: { open: false, alert_id: null, assigned_to: '' },
       crmUsers: [],
+
+      // Entity search
+      entityQuery: '',
+      entitySearchLoading: false,
+      entitySearchDone: false,
+      entityResults: [],
+
+      // Case export
+      caseExportLoading: false,
 
       // Cases CRM
       cases: [],
@@ -5200,6 +5318,47 @@ Responde en español, de forma estructurada y concisa.`;
           this.activeCaseAI = 'Error al consultar la IA: ' + (e?.message || e);
         } finally {
           this.activeCaseAILoading = false;
+        }
+      },
+
+      // -----------------------------------------------
+      // CASE EXPORT
+      // -----------------------------------------------
+
+      async exportCase(case_id) {
+        if (!case_id) return;
+        this.caseExportLoading = true;
+        try {
+          const d = await this.api('GET', '/cases/' + case_id + '/export');
+          if (d?.download_url) {
+            const a = document.createElement('a');
+            a.href = d.download_url;
+            a.download = d.filename || 'caso.xlsx';
+            a.target = '_blank';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          }
+        } finally {
+          this.caseExportLoading = false;
+        }
+      },
+
+      // -----------------------------------------------
+      // ENTITY SEARCH
+      // -----------------------------------------------
+
+      async searchEntity() {
+        if (this.entityQuery.trim().length < 3) return;
+        this.entitySearchLoading = true;
+        this.entitySearchDone = false;
+        this.entityResults = [];
+        try {
+          const d = await this.api('GET', '/search/entity?q=' + encodeURIComponent(this.entityQuery.trim()));
+          this.entityResults = d?.results || [];
+          this.entitySearchDone = true;
+        } finally {
+          this.entitySearchLoading = false;
         }
       },
 

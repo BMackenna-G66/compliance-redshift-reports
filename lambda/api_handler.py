@@ -49,6 +49,35 @@ lambda_client = boto3.client("lambda")
 s3 = boto3.client("s3")
 redshift = boto3.client("redshift")
 redshift_data = boto3.client("redshift-data")
+secrets_client = boto3.client("secretsmanager")
+
+SLACK_SECRET_ARN = os.environ.get("SLACK_WEBHOOK_SECRET_ARN", "")
+
+def _get_slack_url() -> str:
+    if not SLACK_SECRET_ARN:
+        return ""
+    try:
+        val = secrets_client.get_secret_value(SecretId=SLACK_SECRET_ARN)
+        raw = val.get("SecretString", "")
+        try:
+            return json.loads(raw).get("webhook_url", raw)
+        except Exception:
+            return raw.strip()
+    except Exception:
+        return ""
+
+def _post_slack(text: str) -> None:
+    url = _get_slack_url()
+    if not url:
+        return
+    import urllib.request as _ur
+    payload = json.dumps({"text": text}).encode()
+    try:
+        _ur.urlopen(_ur.Request(url, data=payload,
+                                headers={"Content-Type": "application/json"},
+                                method="POST"), timeout=5)
+    except Exception:
+        pass
 
 CLUSTER_ID = os.environ.get("CLUSTER_IDENTIFIER", "compliance-redshift-cluster")
 DATABASE_NAME = os.environ.get("DATABASE_NAME", "dev")
@@ -808,6 +837,148 @@ def ai_generate(body: dict):
 
 
 # ---------------------------------------------------------------------------
+# CASE EXCEL EXPORT
+# ---------------------------------------------------------------------------
+
+def export_case(case_id: str):
+    """Generate an Excel workbook for a case and return a 1h presigned S3 URL."""
+    import io
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        return resp(500, {"error": "openpyxl not available"})
+
+    case_rows = _rs_exec(
+        "SELECT case_id, title, description, status, priority, entity_type, entity_id, "
+        "report_name, COALESCE(assigned_to,'') AS assigned_to, created_by, "
+        "created_at::VARCHAR AS created_at, updated_at::VARCHAR AS updated_at, "
+        f"COALESCE(closed_at::VARCHAR,'') AS closed_at FROM crm.cases WHERE case_id='{_esc(case_id)}'"
+    )
+    if not case_rows:
+        return resp(404, {"error": "Case not found"})
+    case = case_rows[0]
+
+    notes = _rs_exec(
+        "SELECT note_id, COALESCE(author_email,'') AS author_email, content, "
+        f"created_at::VARCHAR AS created_at FROM crm.case_notes WHERE case_id='{_esc(case_id)}' ORDER BY created_at ASC"
+    )
+    alerts = _rs_exec(
+        "SELECT alert_id, entity_field, entity_value, reason, report_name, "
+        f"created_at::VARCHAR AS created_at, status FROM compliance.alerts WHERE case_id='{_esc(case_id)}'"
+    )
+
+    wb = openpyxl.Workbook()
+    HEADER_FILL = PatternFill("solid", fgColor="1E293B")
+    HEADER_FONT = Font(bold=True, color="F97316", size=11)
+    LABEL_FONT  = Font(bold=True, color="94A3B8")
+
+    # ── Sheet 1: Resumen ──
+    ws = wb.active
+    ws.title = "Resumen"
+    ws.sheet_view.showGridLines = False
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 60
+
+    def add_row(label, value, row):
+        c_a = ws.cell(row=row, column=1, value=label)
+        c_a.font = LABEL_FONT
+        c_b = ws.cell(row=row, column=2, value=str(value) if value else "—")
+        c_b.alignment = Alignment(wrap_text=True)
+        return row + 1
+
+    r = 1
+    ws.cell(r, 1, "REPORTE DE CASO — WatchTower AML").font = Font(bold=True, size=14, color="F97316")
+    ws.merge_cells(f"A{r}:B{r}")
+    r += 2
+    for label, key in [
+        ("ID del Caso", "case_id"), ("Título", "title"), ("Descripción", "description"),
+        ("Estado", "status"), ("Prioridad", "priority"), ("Tipo entidad", "entity_type"),
+        ("ID entidad", "entity_id"), ("Reporte origen", "report_name"),
+        ("Asignado a", "assigned_to"), ("Creado por", "created_by"),
+        ("Fecha creación", "created_at"), ("Última actualización", "updated_at"),
+        ("Fecha cierre", "closed_at"),
+    ]:
+        r = add_row(label, case.get(key, ""), r)
+
+    # ── Sheet 2: Notas ──
+    ws2 = wb.create_sheet("Notas")
+    ws2.sheet_view.showGridLines = False
+    headers = ["#", "Autor", "Fecha", "Contenido"]
+    widths   = [5, 30, 22, 80]
+    for col, (h, w) in enumerate(zip(headers, widths), 1):
+        cell = ws2.cell(1, col, h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        ws2.column_dimensions[cell.column_letter].width = w
+    for i, n in enumerate(notes, 1):
+        ws2.append([i, n.get("author_email",""), n.get("created_at",""), n.get("content","")])
+        ws2.cell(i+1, 4).alignment = Alignment(wrap_text=True)
+
+    # ── Sheet 3: Alertas vinculadas ──
+    ws3 = wb.create_sheet("Alertas vinculadas")
+    ws3.sheet_view.showGridLines = False
+    a_headers = ["ID Alerta", "Campo", "Valor", "Razón", "Reporte", "Fecha", "Estado"]
+    a_widths   = [36, 16, 24, 40, 24, 22, 12]
+    for col, (h, w) in enumerate(zip(a_headers, a_widths), 1):
+        cell = ws3.cell(1, col, h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        ws3.column_dimensions[cell.column_letter].width = w
+    for a in alerts:
+        ws3.append([a.get("alert_id",""), a.get("entity_field",""), a.get("entity_value",""),
+                    a.get("reason",""), a.get("report_name",""), a.get("created_at",""), a.get("status","")])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    key = f"case-reports/{case_id}/caso_{case_id[:8]}_{dt.datetime.utcnow().strftime('%Y%m%dT%H%M%S')}.xlsx"
+    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=buf.getvalue(),
+                  ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    url = s3.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": key},
+                                    ExpiresIn=3600)
+    return resp(200, {"download_url": url, "filename": key.split("/")[-1]})
+
+
+# ---------------------------------------------------------------------------
+# ENTITY TIMELINE SEARCH
+# ---------------------------------------------------------------------------
+
+def search_entity_timeline(query: str, limit: int = 100):
+    """Search alerts + cases for an entity value. Returns unified timeline sorted by date."""
+    if not query or len(query) < 3:
+        return resp(400, {"error": "query must be at least 3 characters"})
+    q = _esc(query.strip())
+    try:
+        alerts_sql = (
+            "SELECT 'alert' AS source_type, alert_id AS source_id, "
+            "entity_value AS entity_value, reason AS detail, "
+            "report_name, created_at::VARCHAR AS event_date, status "
+            f"FROM compliance.alerts WHERE LOWER(entity_value) LIKE LOWER('%{q}%') "
+            f"OR LOWER(reason) LIKE LOWER('%{q}%') "
+            f"ORDER BY created_at DESC LIMIT {int(limit)}"
+        )
+        cases_sql = (
+            "SELECT 'case' AS source_type, case_id AS source_id, "
+            "COALESCE(entity_id, '') AS entity_value, title AS detail, "
+            "report_name, created_at::VARCHAR AS event_date, status "
+            f"FROM crm.cases WHERE LOWER(title) LIKE LOWER('%{q}%') "
+            f"OR LOWER(COALESCE(entity_id,'')) LIKE LOWER('%{q}%') "
+            f"OR LOWER(COALESCE(description,'')) LIKE LOWER('%{q}%') "
+            f"ORDER BY created_at DESC LIMIT {int(limit)}"
+        )
+        alert_rows = _rs_exec(alerts_sql)
+        case_rows  = _rs_exec(cases_sql)
+        combined = sorted(alert_rows + case_rows,
+                          key=lambda x: x.get("event_date", ""), reverse=True)
+        return resp(200, {"results": combined[:int(limit)], "query": query,
+                          "alert_count": len(alert_rows), "case_count": len(case_rows)})
+    except Exception as e:
+        return resp(200, {"results": [], "warning": str(e), "query": query})
+
+
+# ---------------------------------------------------------------------------
 # AUDIT LOG
 # ---------------------------------------------------------------------------
 
@@ -1051,6 +1222,15 @@ def handler(event, context):  # noqa: ARG001
 
         if method == "POST" and parts == ["ai", "generate"]:
             return ai_generate(body)
+
+        # GET /cases/{id}/export
+        if method == "GET" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "export":
+            return export_case(parts[1])
+
+        # GET /search/entity
+        if method == "GET" and parts == ["search", "entity"]:
+            qs = event.get("queryStringParameters") or {}
+            return search_entity_timeline(qs.get("q", ""), int(qs.get("limit", 100)))
 
         # GET /audit
         if method == "GET" and parts == ["audit"]:
@@ -1529,6 +1709,11 @@ def create_case(body: dict):
     _rs_exec(sql)
     _write_audit(user_email=created_by, action="case.create", entity_type="case",
                  entity_id=cid, new_value={"title": title, "priority": priority})
+    _post_slack(
+        f"📁 *Nuevo caso creado* — {title}\n"
+        f"Prioridad: {priority} | Asignado a: {assigned_to or 'Sin asignar'}\n"
+        f"Creado por: {created_by}"
+    )
     return resp(201, {"case_id": cid})
 
 
@@ -1598,6 +1783,13 @@ def update_case_status(case_id: str, body: dict):
     actor = body.get("actor_email", "unknown")
     _write_audit(user_email=actor, action="case.status_change", entity_type="case",
                  entity_id=case_id, new_value={"status": status})
+    _STATUS_LABEL = {"under_review": "⚠️ Bajo Revisión", "closed": "✅ Cerrado", "open": "🔵 Abierto", "in_progress": "🔄 En Investigación"}
+    if status in ("under_review", "closed"):
+        _post_slack(
+            f"{_STATUS_LABEL.get(status, status)} *Caso actualizado*\n"
+            f"ID: {case_id[:8]}… | Nuevo estado: {_STATUS_LABEL.get(status, status)}\n"
+            f"Por: {actor}"
+        )
     return resp(200, {"message": f"Case status updated to {status}"})
 
 
