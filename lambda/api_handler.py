@@ -1084,6 +1084,35 @@ def update_schedule_expression(name: str, body: dict):
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
+# Admin — verifica capacidad de escritura en S3 (diagnóstico de permisos)
+# ---------------------------------------------------------------------------
+def admin_s3check():
+    key = "crm/_s3check.json"
+    result = {"bucket": S3_BUCKET}
+    try:
+        s3.put_object(Bucket=S3_BUCKET, Key=key, Body=b'{"ok":true}',
+                      ContentType="application/json")
+        result["write"] = True
+    except Exception as e:
+        result["write"] = False
+        result["error"] = str(e)
+        return resp(200, result)
+    try:
+        s3.get_object(Bucket=S3_BUCKET, Key=key)
+        result["read"] = True
+    except Exception as e:
+        result["read"] = False
+        result["read_error"] = str(e)
+    try:
+        s3.delete_object(Bucket=S3_BUCKET, Key=key)
+        result["delete"] = True
+    except Exception as e:
+        result["delete"] = False
+        result["delete_error"] = str(e)
+    return resp(200, result)
+
+
+# ---------------------------------------------------------------------------
 def handler(event, context):  # noqa: ARG001
     method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
     path = event.get("rawPath", "/").rstrip("/") or "/"
@@ -1170,6 +1199,10 @@ def handler(event, context):  # noqa: ARG001
         # POST /cluster/pause
         if method == "POST" and parts == ["cluster", "pause"]:
             return pause_cluster_api()
+
+        # POST /admin/s3check — verifica si la Lambda puede escribir/leer/borrar en S3
+        if method == "POST" and parts == ["admin", "s3check"]:
+            return admin_s3check()
 
         # GET /whitelist
         if method == "GET" and parts == ["whitelist"]:
