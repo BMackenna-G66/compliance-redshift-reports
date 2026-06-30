@@ -111,45 +111,6 @@ AUTO_RULES_KEY = "config/auto_case_rules.json"
 runs_table = dynamodb.Table(RUNS_TABLE_NAME)
 catalog_table = dynamodb.Table(CATALOG_TABLE_NAME)
 
-# CRM operational data lives in DynamoDB (always-on) so the UI works even when
-# the Redshift cluster is paused. Table names come from Terraform env vars.
-WHITELIST_TABLE_NAME = os.environ.get("WHITELIST_TABLE", "compliance-redshift-reports-whitelist")
-whitelist_table = dynamodb.Table(WHITELIST_TABLE_NAME)
-
-
-def _scan_all(table, **kwargs) -> list[dict]:
-    """Scan a DynamoDB table fully, following pagination. Fine for low-volume
-    operational tables (whitelist, alerts, cases)."""
-    items: list[dict] = []
-    result = table.scan(**kwargs)
-    items.extend(result.get("Items", []))
-    while "LastEvaluatedKey" in result:
-        result = table.scan(ExclusiveStartKey=result["LastEvaluatedKey"], **kwargs)
-        items.extend(result.get("Items", []))
-    return items
-
-
-def _epoch_to_str(epoch) -> str:
-    """Format a Unix epoch (int/Decimal) as 'YYYY-MM-DD HH:MM:SS' UTC."""
-    try:
-        return dt.datetime.utcfromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return ""
-
-
-def _str_to_epoch(ts) -> int:
-    """Parse a Redshift timestamp string ('YYYY-MM-DD HH:MM:SS' / ISO / date)
-    into a Unix epoch (UTC). Returns 0 if it can't be parsed."""
-    if not ts:
-        return 0
-    s = str(ts)[:19]
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-        try:
-            return int(dt.datetime.strptime(s, fmt).timestamp())
-        except ValueError:
-            continue
-    return 0
-
 # ---------------------------------------------------------------------------
 # Built-in report definitions (mirrors REPORT_CONFIGS in handler.py)
 # ---------------------------------------------------------------------------
@@ -1210,10 +1171,6 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["cluster", "pause"]:
             return pause_cluster_api()
 
-        # POST /admin/migrate  — one-time Redshift→DynamoDB data migration (cluster must be online)
-        if method == "POST" and parts == ["admin", "migrate"]:
-            return admin_migrate(body)
-
         # GET /whitelist
         if method == "GET" and parts == ["whitelist"]:
             return get_whitelist()
@@ -1573,29 +1530,17 @@ def delete_query(report_name: str):
 
 
 def get_whitelist():
-    # DynamoDB-backed: works with the Redshift cluster paused.
     try:
-        now = int(time.time())
-        items = _scan_all(whitelist_table)
-        out = []
-        for i in items:
-            # Skip expired entries (DynamoDB TTL deletes lazily, so filter here too)
-            exp = int(i.get("expires_at", 0))
-            if exp and exp <= now:
-                continue
-            out.append({
-                "whitelist_id": i.get("whitelist_id", ""),
-                "entity_field": i.get("entity_field", ""),
-                "entity_value": i.get("entity_value", ""),
-                "duration_days": int(i.get("duration_days", 0)),
-                "reason": i.get("reason", ""),
-                "scope": i.get("scope", "global"),
-                "report_name": i.get("report_name", ""),
-                "created_at": i.get("created_at", ""),
-                "expires_at": _epoch_to_str(exp),
-            })
-        out.sort(key=lambda x: x["created_at"], reverse=True)
-        return resp(200, {"whitelist": out})
+        today = dt.datetime.utcnow().strftime("%Y-%m-%d")
+        sql = (
+            "SELECT whitelist_id, entity_field, entity_value, duration_days, reason, scope, "
+            "report_name, created_at::VARCHAR AS created_at, expires_at::VARCHAR AS expires_at "
+            "FROM compliance.whitelist "
+            f"WHERE expires_at > '{today}' "
+            "ORDER BY created_at DESC"
+        )
+        items = _rs_exec(sql)
+        return resp(200, {"whitelist": items})
     except Exception as e:
         return resp(200, {"whitelist": [], "warning": str(e)})
 
@@ -1614,74 +1559,29 @@ def add_to_whitelist(body: dict):
         return resp(400, {"error": "duration_days must be 30, 60, or 90"})
 
     wid = str(uuid.uuid4())
-    now = dt.datetime.utcnow()
-    expires_epoch = int((now + dt.timedelta(days=duration_days)).timestamp())
+    ef = _esc(entity_field)
+    ev = _esc(entity_value)
+    reason_esc = _esc(reason)
+    scope_esc = _esc(scope)
+    rn = _esc(report_name if scope == "report" else "")
 
-    whitelist_table.put_item(Item={
-        "whitelist_id": wid,
-        "entity_field": entity_field,
-        "entity_value": entity_value,
-        "duration_days": duration_days,
-        "reason": reason,
-        "scope": scope,
-        "report_name": report_name if scope == "report" else "",
-        "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "expires_at": expires_epoch,  # epoch seconds → drives DynamoDB TTL auto-delete
-    })
+    # Compute expiry in Python to avoid Redshift DATEADD timezone issues
+    expires_at = (dt.datetime.utcnow() + dt.timedelta(days=duration_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+    sql = (
+        f"INSERT INTO compliance.whitelist "
+        f"(whitelist_id, entity_field, entity_value, duration_days, reason, scope, report_name, expires_at) "
+        f"VALUES ('{wid}', '{ef}', '{ev}', {duration_days}, '{reason_esc}', '{scope_esc}', '{rn}', "
+        f"'{expires_at}')"
+    )
+    _rs_exec(sql)
     return resp(201, {"whitelist_id": wid})
 
 
 def remove_from_whitelist(whitelist_id: str):
-    whitelist_table.delete_item(Key={"whitelist_id": whitelist_id})
+    sql = f"DELETE FROM compliance.whitelist WHERE whitelist_id = '{_esc(whitelist_id)}'"
+    _rs_exec(sql)
     return resp(200, {"message": f"Whitelist entry '{whitelist_id}' removed"})
-
-
-# ---------------------------------------------------------------------------
-# ADMIN — one-time data migration Redshift → DynamoDB
-# Runs inside the Lambda (which has both redshift-data + dynamodb permissions),
-# so it does NOT depend on the caller's personal IAM. Requires cluster ONLINE.
-# Idempotent: re-running overwrites the same rows by id, never duplicates.
-# ---------------------------------------------------------------------------
-
-def admin_migrate(body: dict):
-    module = (body.get("module") or "").strip()
-    migrators = {
-        "whitelist": _migrate_whitelist_rs_to_ddb,
-    }
-    fn = migrators.get(module)
-    if not fn:
-        return resp(400, {"error": f"unknown module '{module}'", "available": list(migrators)})
-    try:
-        n = fn()
-        return resp(200, {"module": module, "migrated": n})
-    except Exception as e:
-        return resp(500, {"module": module, "error": str(e)})
-
-
-def _migrate_whitelist_rs_to_ddb() -> int:
-    rows = _rs_exec(
-        "SELECT whitelist_id, entity_field, entity_value, duration_days, reason, scope, "
-        "report_name, created_at::VARCHAR AS created_at, expires_at::VARCHAR AS expires_at "
-        "FROM compliance.whitelist"
-    )
-    n = 0
-    for r in rows:
-        wid = r.get("whitelist_id")
-        if not wid:
-            continue
-        whitelist_table.put_item(Item={
-            "whitelist_id": str(wid),
-            "entity_field": r.get("entity_field") or "",
-            "entity_value": r.get("entity_value") or "",
-            "duration_days": int(r.get("duration_days") or 0),
-            "reason": r.get("reason") or "",
-            "scope": r.get("scope") or "global",
-            "report_name": r.get("report_name") or "",
-            "created_at": (str(r.get("created_at") or ""))[:19],
-            "expires_at": _str_to_epoch(r.get("expires_at")),
-        })
-        n += 1
-    return n
 
 
 # ---------------------------------------------------------------------------
