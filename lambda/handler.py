@@ -87,6 +87,7 @@ REPORT_NAME = os.environ.get("REPORT_NAME", "high_risk_countries")
 AUTO_PAUSE = os.environ.get("AUTO_PAUSE", "true").lower() == "true"
 RUNS_TABLE_NAME = os.environ.get("RUNS_TABLE", "")
 CATALOG_TABLE_NAME = os.environ.get("CATALOG_TABLE", "")
+WHITELIST_TABLE_NAME = os.environ.get("WHITELIST_TABLE", "compliance-redshift-reports-whitelist")
 
 BASE_DIR = Path(__file__).parent
 QUERIES_DIR = BASE_DIR / "queries"
@@ -340,56 +341,34 @@ def pause_cluster() -> None:
 # Whitelist support
 # ---------------------------------------------------------------------------
 def fetch_active_whitelist(report_name: str = "") -> list[dict]:
-    """Fetch non-expired whitelist entries from Redshift. Returns global + report-specific."""
-    report_name_escaped = report_name.replace("'", "''")
-    sql = (
-        "SELECT entity_field, entity_value, scope, report_name "
-        "FROM compliance.whitelist "
-        "WHERE expires_at > CURRENT_TIMESTAMP "
-        f"AND (scope = 'global' OR report_name = '{report_name_escaped}')"
-    )
+    """Fetch non-expired whitelist entries from DynamoDB. Returns global +
+    report-specific. Reads from DynamoDB (not Redshift) so it never depends on
+    cluster state and stays in sync with the CRM UI."""
     try:
-        stmt = redshift_data.execute_statement(
-            ClusterIdentifier=CLUSTER_ID,
-            Database=DATABASE,
-            DbUser=DB_USER,
-            Sql=sql,
-        )
-        statement_id = stmt["Id"]
+        now = int(time.time())
+        table = dynamodb.Table(WHITELIST_TABLE_NAME)
+        items: list[dict] = []
+        result = table.scan()
+        items.extend(result.get("Items", []))
+        while "LastEvaluatedKey" in result:
+            result = table.scan(ExclusiveStartKey=result["LastEvaluatedKey"])
+            items.extend(result.get("Items", []))
 
-        for _ in range(20):
-            desc = redshift_data.describe_statement(Id=statement_id)
-            status = desc["Status"]
-            if status == "FINISHED":
-                if not desc.get("HasResultSet"):
-                    return []
-                result = redshift_data.get_statement_result(Id=statement_id)
-                columns = [c["name"] for c in result["ColumnMetadata"]]
-                rows: list[dict] = []
-                for record in result["Records"]:
-                    row = {}
-                    for i, cell in enumerate(record):
-                        if cell.get("isNull"):
-                            row[columns[i]] = None
-                        elif "stringValue" in cell:
-                            row[columns[i]] = cell["stringValue"]
-                        elif "longValue" in cell:
-                            row[columns[i]] = cell["longValue"]
-                        elif "doubleValue" in cell:
-                            row[columns[i]] = cell["doubleValue"]
-                        elif "booleanValue" in cell:
-                            row[columns[i]] = cell["booleanValue"]
-                        else:
-                            row[columns[i]] = None
-                    rows.append(row)
-                return rows
-            if status in ("FAILED", "ABORTED"):
-                logger.warning("fetch_active_whitelist query %s: %s", status, desc.get("Error"))
-                return []
-            time.sleep(0.5)
-
-        logger.warning("fetch_active_whitelist timed out after 10s")
-        return []
+        rows: list[dict] = []
+        for i in items:
+            exp = int(i.get("expires_at", 0))
+            if exp and exp <= now:
+                continue  # skip expired (TTL deletes lazily)
+            scope = i.get("scope", "global")
+            rn = i.get("report_name", "")
+            if scope == "global" or rn == report_name:
+                rows.append({
+                    "entity_field": i.get("entity_field"),
+                    "entity_value": i.get("entity_value"),
+                    "scope": scope,
+                    "report_name": rn,
+                })
+        return rows
 
     except Exception as e:  # noqa: BLE001
         logger.warning("fetch_active_whitelist failed (non-blocking): %s", e)
