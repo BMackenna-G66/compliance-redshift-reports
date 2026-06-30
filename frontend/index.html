@@ -4011,7 +4011,8 @@
       historyPage: 1,
       historyPageSize: 50,
       historyAI: { loading: false, text: '', error: '' },
-      chat: { open: false, messages: [], input: '', loading: false },
+      chat: { open: false, messages: [], input: '', loading: false,
+              customerId: '', days: 30, dossier: null, ctxLoading: false },
 
       // Whitelist
       whitelist: [],
@@ -5657,6 +5658,44 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       },
 
       // -----------------------------------------------
+      // CHATBOT — customer context (memoria del CRM + transacciones)
+      // -----------------------------------------------
+      async loadCustomerContext() {
+        const cid = (this.chat.customerId || '').trim();
+        if (!cid || this.chat.ctxLoading) return;
+        this.chat.ctxLoading = true;
+        try {
+          const d = await this.api('GET', `/customer/context?customer_id=${encodeURIComponent(cid)}&days=${this.chat.days}`);
+          if (!d || d.error) {
+            this.chat.messages = [...this.chat.messages, { role: 'assistant',
+              text: '⚠️ No pude cargar el contexto del cliente: ' + (d?.error || 'error de servidor') }];
+            return;
+          }
+          this.chat.dossier = d;
+          const crm = d.crm || {};
+          const tx = d.transactions || {};
+          const txLine = tx.available
+            ? `${(tx.payin?.count||0)} pay-in / ${(tx.payout?.count||0)} pay-out (últimos ${d.days}d)`
+            : 'transacciones no cargadas (cluster apagado)';
+          this.chat.messages = [...this.chat.messages, { role: 'assistant',
+            text: `📋 Contexto cargado para el cliente **${d.customer_id}**:\n`
+              + `• ${crm.alert_count||0} alerta(s)${crm.recurrent ? ' (recurrente)' : ''}${crm.combines_alerts ? ', combina tipologías' : ''}\n`
+              + `• ${crm.case_count||0} caso(s) de investigación\n`
+              + `• ${txLine}\n\nPreguntame lo que quieras sobre este cliente.` }];
+          this.$nextTick(() => { const el = document.getElementById('chat-messages'); if (el) el.scrollTop = el.scrollHeight; });
+        } catch (e) {
+          this.chat.messages = [...this.chat.messages, { role: 'assistant', text: '⚠️ Error al cargar contexto: ' + (e?.message || e) }];
+        } finally {
+          this.chat.ctxLoading = false;
+        }
+      },
+
+      clearCustomerContext() {
+        this.chat.dossier = null;
+        this.chat.customerId = '';
+      },
+
+      // -----------------------------------------------
       // CHATBOT
       // -----------------------------------------------
       async sendChat() {
@@ -5700,6 +5739,29 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           parts.push(`El usuario también tiene abierto el análisis de un registro: ${summary}.`);
         }
         parts.push('Responde preguntas sobre AML, tipologías de lavado, normativa, análisis de transacciones, KYC/KYB, o los datos cargados.');
+
+        // Dossier del cliente bajo evaluación (memoria del CRM + transacciones)
+        const dos = this.chat.dossier;
+        if (dos) {
+          const crm = dos.crm || {};
+          const tx = dos.transactions || {};
+          let block = `\n\n=== EXPEDIENTE DEL CLIENTE ${dos.customer_id} (evaluación a ${dos.days} días) ===\n`;
+          block += `HISTORIAL CRM:\n`;
+          block += `- Alertas: ${crm.alert_count||0}${crm.recurrent ? ' (RECURRENTE — alertado más de una vez)' : ''}${crm.combines_alerts ? ' — COMBINA tipologías de varios reportes: '+(crm.distinct_reports||[]).join(', ') : ''}\n`;
+          (crm.alerts||[]).forEach(a => { block += `   • [${a.created_at}] ${a.report_name} — ${a.reason} (estado: ${a.status}, prioridad: ${a.priority})\n`; });
+          block += `- Casos de investigación: ${crm.case_count||0}\n`;
+          (crm.cases||[]).forEach(c => { block += `   • ${c.title} (estado: ${c.status}, prioridad: ${c.priority}, ${c.created_at})\n`; });
+          if (tx.available) {
+            block += `TRANSACCIONES (cash calls PAID, últimos ${dos.days}d):\n`;
+            block += `- PAY IN (CR): ${tx.payin?.count||0} operaciones, total destino USD ${tx.payin?.total_destiny_usd||0}\n`;
+            block += `- PAY OUT (DR): ${tx.payout?.count||0} operaciones, total destino USD ${tx.payout?.total_destiny_usd||0}\n`;
+            block += `Detalle (muestra):\n${JSON.stringify({ pay_in: tx.payin?.rows||[], pay_out: tx.payout?.rows||[] }, null, 1)}\n`;
+          } else {
+            block += `TRANSACCIONES: no disponibles (cluster Redshift apagado). Razoná solo con el historial CRM y aclará que faltan las transacciones.\n`;
+          }
+          block += `=== FIN EXPEDIENTE ===\nUsá este expediente como contexto principal para responder sobre este cliente.`;
+          parts.push(block);
+        }
         return parts.join(' ');
       },
 
@@ -6815,6 +6877,36 @@ Responde en español, de forma estructurada y concisa.`;
       <div class="flex items-center gap-2">
         <button @click="chat.messages=[]" class="text-slate-500 hover:text-slate-300 text-xs transition" title="Limpiar chat">🗑</button>
         <button @click="chat.open=false" class="text-slate-400 hover:text-white text-xl leading-none">×</button>
+      </div>
+    </div>
+    <!-- Customer context bar -->
+    <div class="px-3 py-2.5 bg-slate-950/60 border-b border-slate-800 flex-shrink-0 space-y-2">
+      <div class="flex items-center gap-2">
+        <input x-model="chat.customerId" @keydown.enter.prevent="loadCustomerContext()"
+          placeholder="Customer ID a evaluar"
+          class="flex-1 bg-slate-800 text-white text-xs rounded-lg px-2.5 py-1.5 outline-none border border-slate-700 focus:border-purple-500 placeholder-slate-500 font-mono" />
+        <button @click="loadCustomerContext()" :disabled="!chat.customerId.trim() || chat.ctxLoading"
+          class="text-xs px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white rounded-lg whitespace-nowrap transition">
+          <span x-show="!chat.ctxLoading">Cargar</span><span x-show="chat.ctxLoading">…</span>
+        </button>
+        <button x-show="chat.dossier" @click="clearCustomerContext()" title="Quitar contexto"
+          class="text-xs px-2 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg transition">✕</button>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <span class="text-[11px] text-slate-500">Período:</span>
+        <template x-for="d in [5,15,30,60]" :key="d">
+          <button @click="chat.days=d; if(chat.customerId.trim()) loadCustomerContext()"
+            :class="chat.days===d ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'"
+            class="text-[11px] px-2.5 py-1 rounded-full transition" x-text="d+'d'"></button>
+        </template>
+      </div>
+      <div x-show="chat.dossier" class="text-[11px] text-slate-300 bg-slate-800/70 rounded-lg px-2.5 py-1.5 leading-relaxed">
+        <span class="text-purple-300 font-semibold">Cliente <span x-text="chat.dossier?.customer_id"></span></span>
+        · <span x-text="(chat.dossier?.crm?.alert_count||0)+' alertas'"></span>
+        <span x-show="chat.dossier?.crm?.combines_alerts" class="text-amber-400" title="Combina tipologías">⚠ combina</span>
+        · <span x-text="(chat.dossier?.crm?.case_count||0)+' casos'"></span>
+        · <template x-if="chat.dossier?.transactions?.available"><span x-text="((chat.dossier.transactions.payin?.count||0)+(chat.dossier.transactions.payout?.count||0))+' tx ('+chat.dossier.days+'d)'"></span></template>
+        <template x-if="chat.dossier && !chat.dossier.transactions?.available"><span class="text-amber-400">cluster apagado — transacciones no cargadas</span></template>
       </div>
     </div>
     <!-- Messages -->

@@ -857,6 +857,117 @@ def ai_generate(body: dict):
 
 
 # ---------------------------------------------------------------------------
+# CUSTOMER CONTEXT — dossier para la IA (CRM siempre + transacciones si cluster on)
+# ---------------------------------------------------------------------------
+_ALLOWED_DAYS = (5, 15, 30, 60)
+
+
+def _cluster_available() -> bool:
+    try:
+        r = redshift.describe_clusters(ClusterIdentifier=CLUSTER_ID)
+        return r["Clusters"][0]["ClusterStatus"] == "available"
+    except Exception:
+        return False
+
+
+def _customer_cashcall_sql(direction: str, customer_id: str, days: int) -> str:
+    """Cash calls de un cliente. direction: 'DR' (pay out) | 'CR' (pay in).
+    customer_id ya validado como dígitos; days dentro de _ALLOWED_DAYS."""
+    return f"""
+SELECT cc.cash_call_id, cc.external_reference_number, cc.transaction_id,
+    cc.customer_id, c.email, c.name, c.last_name,
+    cc.created_at, cc.paid_date, cc.type, cc.status, cc.currency_code,
+    cc.amount, cc.origin_amount_usd, cc.destiny_amount_usd,
+    cc.remitter_name, cc.remitter_lastname, cc.remitter_dni, cc.remitter_email,
+    cc.beneficiary_name, cc.beneficiary_lastname, cc.beneficiary_dni, cc.beneficiary_email,
+    cc.origin_country, cc.destiny_country,
+    cc.business_bank_id, bb.bank_code, bb.bank_name
+FROM "db_prod"."treasury"."cash_call" AS cc
+LEFT JOIN "db_prod"."customer"."customer_v2" AS c
+    ON cc.customer_id::VARCHAR = c.customer_id::VARCHAR
+LEFT JOIN "db_prod"."treasury"."business_bank" AS bb
+    ON cc.business_bank_id = bb.business_bank_id
+WHERE cc.type = '{direction}'
+  AND cc.customer_id::VARCHAR = '{customer_id}'
+  AND cc.created_at >= DATEADD(day, -{days}, CURRENT_TIMESTAMP)
+  AND cc.status = 'PAID'
+ORDER BY cc.created_at DESC
+"""
+
+
+def _tx_summary(rows: list, sample: int = 40) -> dict:
+    """Resumen + muestra acotada (para no inflar el prompt de la IA)."""
+    def _fnum(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+    total_origin = sum(_fnum(r.get("origin_amount_usd")) for r in rows)
+    total_destiny = sum(_fnum(r.get("destiny_amount_usd")) for r in rows)
+    return {
+        "count": len(rows),
+        "total_origin_usd": round(total_origin, 2),
+        "total_destiny_usd": round(total_destiny, 2),
+        "rows": rows[:sample],
+        "truncated": len(rows) > sample,
+    }
+
+
+def _customer_crm_dossier(customer_id: str) -> dict:
+    """Historial CRM del cliente desde S3 (siempre disponible)."""
+    alerts = _crm_list("alerts")
+    cust_alerts = [a for a in alerts
+                   if str(a.get("entity_value", "")) == customer_id
+                   and (a.get("entity_field") in ("customer_id", "", None) or True)]
+    reports = sorted({a.get("report_name", "") for a in cust_alerts if a.get("report_name")})
+
+    cases = _crm_list("cases")
+    linked_ids = {a.get("case_id") for a in cust_alerts if a.get("case_id")}
+    cust_cases = [c for c in cases
+                  if str(c.get("entity_id", "")) == customer_id or c.get("case_id") in linked_ids]
+
+    return {
+        "alert_count": len(cust_alerts),
+        "recurrent": len(cust_alerts) > 1,
+        "combines_alerts": len(reports) > 1,
+        "distinct_reports": reports,
+        "alerts": [{
+            "report_name": a.get("report_name", ""), "reason": a.get("reason", ""),
+            "status": a.get("status", ""), "priority": a.get("priority", "medium"),
+            "created_at": a.get("created_at", ""), "entity_field": a.get("entity_field", ""),
+        } for a in sorted(cust_alerts, key=lambda x: x.get("created_at", ""), reverse=True)],
+        "case_count": len(cust_cases),
+        "cases": [{
+            "case_id": c.get("case_id", ""), "title": c.get("title", ""),
+            "status": c.get("status", ""), "priority": c.get("priority", ""),
+            "created_at": c.get("created_at", ""),
+        } for c in cust_cases],
+    }
+
+
+def customer_context(customer_id: str, days: int):
+    customer_id = str(customer_id or "").strip()
+    if not customer_id.isdigit():
+        return resp(400, {"error": "customer_id debe ser numérico"})
+    if days not in _ALLOWED_DAYS:
+        days = 30
+
+    crm = _customer_crm_dossier(customer_id)
+
+    tx: dict = {"available": False, "reason": "cluster_paused"}
+    if _cluster_available():
+        try:
+            payout = _rs_exec(_customer_cashcall_sql("DR", customer_id, days))
+            payin = _rs_exec(_customer_cashcall_sql("CR", customer_id, days))
+            tx = {"available": True, "days": days,
+                  "payout": _tx_summary(payout), "payin": _tx_summary(payin)}
+        except Exception as e:
+            tx = {"available": False, "reason": "error", "error": str(e)}
+
+    return resp(200, {"customer_id": customer_id, "days": days, "crm": crm, "transactions": tx})
+
+
+# ---------------------------------------------------------------------------
 # CASE EXCEL EXPORT
 # ---------------------------------------------------------------------------
 
@@ -1442,6 +1553,15 @@ def handler(event, context):  # noqa: ARG001
 
         if method == "POST" and parts == ["ai", "generate"]:
             return ai_generate(body)
+
+        # GET /customer/context?customer_id=X&days=N  — dossier CRM + transacciones para la IA
+        if method == "GET" and parts == ["customer", "context"]:
+            qs = event.get("queryStringParameters") or {}
+            try:
+                days = int(qs.get("days", 30) or 30)
+            except (ValueError, TypeError):
+                days = 30
+            return customer_context(qs.get("customer_id", ""), days)
 
         # GET /cases/{id}/export
         if method == "GET" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "export":
