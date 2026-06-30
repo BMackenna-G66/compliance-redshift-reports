@@ -1112,6 +1112,60 @@ def admin_s3check():
     return resp(200, result)
 
 
+def _str_to_epoch(ts) -> int:
+    if not ts:
+        return 0
+    s = str(ts)[:19]
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return int(dt.datetime.strptime(s, fmt).timestamp())
+        except ValueError:
+            continue
+    return 0
+
+
+def admin_migrate(body: dict):
+    """One-time copy of CRM data from Redshift → S3. Runs inside the Lambda
+    (has both redshift-data + S3 perms). Requires cluster ONLINE. Idempotent."""
+    module = (body.get("module") or "").strip()
+    migrators = {"whitelist": _migrate_whitelist_to_s3}
+    fn = migrators.get(module)
+    if not fn:
+        return resp(400, {"error": f"unknown module '{module}'", "available": list(migrators)})
+    try:
+        return resp(200, {"module": module, "migrated": fn()})
+    except Exception as e:
+        return resp(500, {"module": module, "error": str(e)})
+
+
+def _migrate_whitelist_to_s3() -> int:
+    rows = _rs_exec(
+        "SELECT whitelist_id, entity_field, entity_value, duration_days, reason, scope, "
+        "report_name, created_at::VARCHAR AS created_at, expires_at::VARCHAR AS expires_at "
+        "FROM compliance.whitelist"
+    )
+    n = 0
+    for r in rows:
+        wid = r.get("whitelist_id")
+        if not wid:
+            continue
+        exp_str = str(r.get("expires_at") or "")[:19]
+        _crm_put("whitelist", str(wid), {
+            "whitelist_id": str(wid),
+            "entity_field": r.get("entity_field") or "",
+            "entity_value": r.get("entity_value") or "",
+            "duration_days": int(r.get("duration_days") or 0),
+            "reason": r.get("reason") or "",
+            "scope": r.get("scope") or "global",
+            "report_name": r.get("report_name") or "",
+            "created_at": str(r.get("created_at") or "")[:19],
+            "expires_at": _str_to_epoch(exp_str),
+            "expires_at_str": exp_str,
+        })
+        n += 1
+    return n
+
+
 # ---------------------------------------------------------------------------
 def handler(event, context):  # noqa: ARG001
     method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
@@ -1203,6 +1257,10 @@ def handler(event, context):  # noqa: ARG001
         # POST /admin/s3check — verifica si la Lambda puede escribir/leer/borrar en S3
         if method == "POST" and parts == ["admin", "s3check"]:
             return admin_s3check()
+
+        # POST /admin/migrate — copia one-time de datos Redshift→S3 (cluster online)
+        if method == "POST" and parts == ["admin", "migrate"]:
+            return admin_migrate(body)
 
         # GET /whitelist
         if method == "GET" and parts == ["whitelist"]:
@@ -1562,18 +1620,84 @@ def delete_query(report_name: str):
     return resp(200, {"message": f"Query '{report_name}' eliminada"})
 
 
-def get_whitelist():
+# ---------------------------------------------------------------------------
+# S3 JSON store — datos operativos del CRM (always-on, sin depender de Redshift)
+# Un objeto por registro: s3://<bucket>/crm/<kind>/<id>.json
+# Reutilizable por whitelist, alertados, casos, usuarios, audit.
+# ---------------------------------------------------------------------------
+CRM_PREFIX = "crm"
+
+
+def _crm_key(kind: str, item_id: str) -> str:
+    return f"{CRM_PREFIX}/{kind}/{item_id}.json"
+
+
+def _crm_put(kind: str, item_id: str, item: dict) -> None:
+    s3.put_object(
+        Bucket=S3_BUCKET, Key=_crm_key(kind, item_id),
+        Body=json.dumps(item, default=str).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
+def _crm_get(kind: str, item_id: str) -> dict | None:
     try:
-        today = dt.datetime.utcnow().strftime("%Y-%m-%d")
-        sql = (
-            "SELECT whitelist_id, entity_field, entity_value, duration_days, reason, scope, "
-            "report_name, created_at::VARCHAR AS created_at, expires_at::VARCHAR AS expires_at "
-            "FROM compliance.whitelist "
-            f"WHERE expires_at > '{today}' "
-            "ORDER BY created_at DESC"
-        )
-        items = _rs_exec(sql)
-        return resp(200, {"whitelist": items})
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=_crm_key(kind, item_id))
+        return json.loads(obj["Body"].read())
+    except s3.exceptions.NoSuchKey:
+        return None
+
+
+def _crm_delete(kind: str, item_id: str) -> None:
+    s3.delete_object(Bucket=S3_BUCKET, Key=_crm_key(kind, item_id))
+
+
+def _crm_list(kind: str) -> list[dict]:
+    """List all records of a kind. Lists keys then fetches each object in
+    parallel (fine for the operational volumes here)."""
+    prefix = f"{CRM_PREFIX}/{kind}/"
+    keys: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            if o["Key"].endswith(".json"):
+                keys.append(o["Key"])
+    if not keys:
+        return []
+
+    def _fetch(k):
+        try:
+            return json.loads(s3.get_object(Bucket=S3_BUCKET, Key=k)["Body"].read())
+        except Exception:
+            return None
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        return [i for i in ex.map(_fetch, keys) if i is not None]
+
+
+def get_whitelist():
+    # S3-backed: works with the Redshift cluster paused.
+    try:
+        now = int(time.time())
+        out = []
+        for i in _crm_list("whitelist"):
+            exp = int(i.get("expires_at", 0))
+            if exp and exp <= now:
+                continue  # vencida
+            out.append({
+                "whitelist_id": i.get("whitelist_id", ""),
+                "entity_field": i.get("entity_field", ""),
+                "entity_value": i.get("entity_value", ""),
+                "duration_days": int(i.get("duration_days", 0)),
+                "reason": i.get("reason", ""),
+                "scope": i.get("scope", "global"),
+                "report_name": i.get("report_name", ""),
+                "created_at": i.get("created_at", ""),
+                "expires_at": i.get("expires_at_str", ""),
+            })
+        out.sort(key=lambda x: x["created_at"], reverse=True)
+        return resp(200, {"whitelist": out})
     except Exception as e:
         return resp(200, {"whitelist": [], "warning": str(e)})
 
@@ -1592,28 +1716,25 @@ def add_to_whitelist(body: dict):
         return resp(400, {"error": "duration_days must be 30, 60, or 90"})
 
     wid = str(uuid.uuid4())
-    ef = _esc(entity_field)
-    ev = _esc(entity_value)
-    reason_esc = _esc(reason)
-    scope_esc = _esc(scope)
-    rn = _esc(report_name if scope == "report" else "")
-
-    # Compute expiry in Python to avoid Redshift DATEADD timezone issues
-    expires_at = (dt.datetime.utcnow() + dt.timedelta(days=duration_days)).strftime("%Y-%m-%d %H:%M:%S")
-
-    sql = (
-        f"INSERT INTO compliance.whitelist "
-        f"(whitelist_id, entity_field, entity_value, duration_days, reason, scope, report_name, expires_at) "
-        f"VALUES ('{wid}', '{ef}', '{ev}', {duration_days}, '{reason_esc}', '{scope_esc}', '{rn}', "
-        f"'{expires_at}')"
-    )
-    _rs_exec(sql)
+    now = dt.datetime.utcnow()
+    expires = now + dt.timedelta(days=duration_days)
+    _crm_put("whitelist", wid, {
+        "whitelist_id": wid,
+        "entity_field": entity_field,
+        "entity_value": entity_value,
+        "duration_days": duration_days,
+        "reason": reason,
+        "scope": scope,
+        "report_name": report_name if scope == "report" else "",
+        "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "expires_at": int(expires.timestamp()),
+        "expires_at_str": expires.strftime("%Y-%m-%d %H:%M:%S"),
+    })
     return resp(201, {"whitelist_id": wid})
 
 
 def remove_from_whitelist(whitelist_id: str):
-    sql = f"DELETE FROM compliance.whitelist WHERE whitelist_id = '{_esc(whitelist_id)}'"
-    _rs_exec(sql)
+    _crm_delete("whitelist", whitelist_id)
     return resp(200, {"message": f"Whitelist entry '{whitelist_id}' removed"})
 
 
