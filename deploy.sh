@@ -42,6 +42,14 @@ aws lambda update-function-code --function-name "$RUNNER_FN" \
   --profile "$PROFILE" --region "$REGION" >/dev/null
 echo "   ✓ Report Runner actualizado"
 
+# Esperar a que el código nuevo quede ACTIVO antes de devolver el control
+# (update-function-code es asíncrono: sin esto, una invocación inmediata puede
+#  pegarle todavía a la versión vieja).
+echo "→ Esperando a que las Lambdas terminen de actualizar..."
+aws lambda wait function-updated --function-name "$API_FN" --profile "$PROFILE" --region "$REGION"
+aws lambda wait function-updated --function-name "$RUNNER_FN" --profile "$PROFILE" --region "$REGION"
+echo "   ✓ código nuevo activo"
+
 echo ""
 echo "✅ Despliegue completo."
 echo ""
