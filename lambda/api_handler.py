@@ -136,6 +136,20 @@ def _epoch_to_str(epoch) -> str:
     except Exception:
         return ""
 
+
+def _str_to_epoch(ts) -> int:
+    """Parse a Redshift timestamp string ('YYYY-MM-DD HH:MM:SS' / ISO / date)
+    into a Unix epoch (UTC). Returns 0 if it can't be parsed."""
+    if not ts:
+        return 0
+    s = str(ts)[:19]
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return int(dt.datetime.strptime(s, fmt).timestamp())
+        except ValueError:
+            continue
+    return 0
+
 # ---------------------------------------------------------------------------
 # Built-in report definitions (mirrors REPORT_CONFIGS in handler.py)
 # ---------------------------------------------------------------------------
@@ -1196,6 +1210,10 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["cluster", "pause"]:
             return pause_cluster_api()
 
+        # POST /admin/migrate  — one-time Redshift→DynamoDB data migration (cluster must be online)
+        if method == "POST" and parts == ["admin", "migrate"]:
+            return admin_migrate(body)
+
         # GET /whitelist
         if method == "GET" and parts == ["whitelist"]:
             return get_whitelist()
@@ -1616,6 +1634,54 @@ def add_to_whitelist(body: dict):
 def remove_from_whitelist(whitelist_id: str):
     whitelist_table.delete_item(Key={"whitelist_id": whitelist_id})
     return resp(200, {"message": f"Whitelist entry '{whitelist_id}' removed"})
+
+
+# ---------------------------------------------------------------------------
+# ADMIN — one-time data migration Redshift → DynamoDB
+# Runs inside the Lambda (which has both redshift-data + dynamodb permissions),
+# so it does NOT depend on the caller's personal IAM. Requires cluster ONLINE.
+# Idempotent: re-running overwrites the same rows by id, never duplicates.
+# ---------------------------------------------------------------------------
+
+def admin_migrate(body: dict):
+    module = (body.get("module") or "").strip()
+    migrators = {
+        "whitelist": _migrate_whitelist_rs_to_ddb,
+    }
+    fn = migrators.get(module)
+    if not fn:
+        return resp(400, {"error": f"unknown module '{module}'", "available": list(migrators)})
+    try:
+        n = fn()
+        return resp(200, {"module": module, "migrated": n})
+    except Exception as e:
+        return resp(500, {"module": module, "error": str(e)})
+
+
+def _migrate_whitelist_rs_to_ddb() -> int:
+    rows = _rs_exec(
+        "SELECT whitelist_id, entity_field, entity_value, duration_days, reason, scope, "
+        "report_name, created_at::VARCHAR AS created_at, expires_at::VARCHAR AS expires_at "
+        "FROM compliance.whitelist"
+    )
+    n = 0
+    for r in rows:
+        wid = r.get("whitelist_id")
+        if not wid:
+            continue
+        whitelist_table.put_item(Item={
+            "whitelist_id": str(wid),
+            "entity_field": r.get("entity_field") or "",
+            "entity_value": r.get("entity_value") or "",
+            "duration_days": int(r.get("duration_days") or 0),
+            "reason": r.get("reason") or "",
+            "scope": r.get("scope") or "global",
+            "report_name": r.get("report_name") or "",
+            "created_at": (str(r.get("created_at") or ""))[:19],
+            "expires_at": _str_to_epoch(r.get("expires_at")),
+        })
+        n += 1
+    return n
 
 
 # ---------------------------------------------------------------------------
