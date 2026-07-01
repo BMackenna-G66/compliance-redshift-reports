@@ -1064,8 +1064,6 @@ def handler(event, context):  # noqa: ARG001
             # Build customer_ids SQL list
             ids_sql = ", ".join(str(int(i)) for i in customer_ids)
 
-            # Load and render SQL templates — 2 fuentes OUT (remesas + cash calls DR)
-            # y 2 fuentes IN (CCA wallet deposit + cash calls CR)
             def _render(filename: str, date_column: str) -> str:
                 sql = (QUERIES_DIR / filename).read_text(encoding="utf-8")
                 return (
@@ -1074,15 +1072,22 @@ def handler(event, context):  # noqa: ARG001
                     .replace("{days_filter}", _days_filter(date_column))
                 )
 
-            sql_out_remesa   = _render("individual_aml_out.sql", "t.start_date")
-            sql_out_cashcall = _render("individual_cashcall_out.sql", "cc.created_at")
-            sql_in_ccapayin  = _render("individual_aml_in.sql", "w.deposit_date")
-            sql_in_cashcall  = _render("individual_cashcall_in.sql", "cc.created_at")
+            # Motor de scoring/flags: EXACTAMENTE las 2 fuentes originales
+            # (remesas OUT + CCA pay-in vía wallet_deposit IN). No se mezclan con
+            # cash_call — son sistemas distintos, con campos distintos, que no
+            # deben alimentar el mismo cálculo de flags.
+            sql_out = _render("individual_aml_out.sql", "t.start_date")
+            sql_in  = _render("individual_aml_in.sql", "w.deposit_date")
+            rows_out = execute_query(sql_out)
+            rows_in  = execute_query(sql_in)
 
-            rows_out = execute_query(sql_out_remesa) + execute_query(sql_out_cashcall)
-            rows_in  = execute_query(sql_in_ccapayin) + execute_query(sql_in_cashcall)
+            # Fuente adicional, SEPARADA: CCA Cash Call Pay-In (treasury.cash_call,
+            # type='CR'). Se muestra en su propia hoja del Excel, sin entrar al
+            # motor de scoring/flags de remesas+CCA.
+            sql_cashcall_in = _render("individual_cashcall_in.sql", "cc.created_at")
+            rows_cashcall_in = execute_query(sql_cashcall_in)
 
-            xlsx_bytes = build_aml_excel(rows_out, rows_in, customer_ids)
+            xlsx_bytes = build_aml_excel(rows_out, rows_in, customer_ids, rows_cashcall_in=rows_cashcall_in)
 
             run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             period_tag = f"{days}d" if days else "historico"
@@ -1092,7 +1097,7 @@ def handler(event, context):  # noqa: ARG001
                 xlsx_bytes, key,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-            total_rows = len(rows_out) + len(rows_in)
+            total_rows = len(rows_out) + len(rows_in) + len(rows_cashcall_in)
             _update_run(
                 run_id,
                 status="DONE",
