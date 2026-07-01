@@ -2421,6 +2421,15 @@ def run_individual_analysis(body: dict):
         except (ValueError, TypeError):
             return resp(400, {"error": f"Invalid customer_id: {cid!r}"})
 
+    # Período configurable: 5/15/30/60/90 días, o None/omitido = histórico (sin límite)
+    days = body.get("days")
+    try:
+        days = int(days)
+        if days not in (5, 15, 30, 60, 90):
+            days = None
+    except (TypeError, ValueError):
+        days = None
+
     run_id = str(uuid.uuid4())
     now = dt.datetime.utcnow().isoformat()
     user_email = str(body.get("user_email", "")).strip()[:200]
@@ -2428,7 +2437,7 @@ def run_individual_analysis(body: dict):
         "run_id": run_id,
         "report_name": "individual_aml_analysis",
         "status": "RUNNING",
-        "params": json.dumps({"customer_ids": clean_ids, "n_customers": len(clean_ids)}),
+        "params": json.dumps({"customer_ids": clean_ids, "n_customers": len(clean_ids), "days": days}),
         "started_at": now,
         "user_email": user_email,
         "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
@@ -2440,11 +2449,12 @@ def run_individual_analysis(body: dict):
         Payload=json.dumps({
             "report_name": "individual_aml_analysis",
             "customer_ids": clean_ids,
+            "days": days,
             "run_id": run_id,
             "keep_session": False,
         }),
     )
-    return resp(202, {"run_id": run_id, "status": "RUNNING", "n_customers": len(clean_ids)})
+    return resp(202, {"run_id": run_id, "status": "RUNNING", "n_customers": len(clean_ids), "days": days})
 
 
 def get_dashboard_stats_result(q0: str, q1: str, q2: str):

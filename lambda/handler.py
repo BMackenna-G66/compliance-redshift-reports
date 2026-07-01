@@ -1043,6 +1043,20 @@ def handler(event, context):  # noqa: ARG001
             _update_run(run_id, status="ERROR", error_message=err,
                         completed_at=dt.datetime.utcnow().isoformat())
             raise ValueError(err)
+        # Período configurable: 5/15/30/60/90 días, o None/"historico" = sin límite
+        days = event.get("days")
+        try:
+            days = int(days)
+            if days not in (5, 15, 30, 60, 90):
+                days = None
+        except (TypeError, ValueError):
+            days = None
+
+        def _days_filter(column: str) -> str:
+            if not days:
+                return ""
+            return f"AND {column} >= DATEADD(day, -{days}, CURRENT_DATE)"
+
         try:
             _update_run(run_id, status="RESUMING")
             ensure_cluster_available()
@@ -1050,19 +1064,29 @@ def handler(event, context):  # noqa: ARG001
             # Build customer_ids SQL list
             ids_sql = ", ".join(str(int(i)) for i in customer_ids)
 
-            # Load and render SQL templates
-            sql_out = (QUERIES_DIR / "individual_aml_out.sql").read_text(encoding="utf-8")
-            sql_in  = (QUERIES_DIR / "individual_aml_in.sql").read_text(encoding="utf-8")
-            sql_out = sql_out.strip().rstrip(";").replace("{customer_ids}", ids_sql)
-            sql_in  = sql_in.strip().rstrip(";").replace("{customer_ids}", ids_sql)
+            # Load and render SQL templates — 2 fuentes OUT (remesas + cash calls DR)
+            # y 2 fuentes IN (CCA wallet deposit + cash calls CR)
+            def _render(filename: str, date_column: str) -> str:
+                sql = (QUERIES_DIR / filename).read_text(encoding="utf-8")
+                return (
+                    sql.strip().rstrip(";")
+                    .replace("{customer_ids}", ids_sql)
+                    .replace("{days_filter}", _days_filter(date_column))
+                )
 
-            rows_out = execute_query(sql_out)
-            rows_in  = execute_query(sql_in)
+            sql_out_remesa   = _render("individual_aml_out.sql", "t.start_date")
+            sql_out_cashcall = _render("individual_cashcall_out.sql", "cc.created_at")
+            sql_in_ccapayin  = _render("individual_aml_in.sql", "w.deposit_date")
+            sql_in_cashcall  = _render("individual_cashcall_in.sql", "cc.created_at")
+
+            rows_out = execute_query(sql_out_remesa) + execute_query(sql_out_cashcall)
+            rows_in  = execute_query(sql_in_ccapayin) + execute_query(sql_in_cashcall)
 
             xlsx_bytes = build_aml_excel(rows_out, rows_in, customer_ids)
 
             run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-            key = f"individual_aml_analysis/{run_ts}_customers-{len(customer_ids)}.xlsx"
+            period_tag = f"{days}d" if days else "historico"
+            key = f"individual_aml_analysis/{run_ts}_customers-{len(customer_ids)}_{period_tag}.xlsx"
 
             s3_url = upload_to_s3(
                 xlsx_bytes, key,

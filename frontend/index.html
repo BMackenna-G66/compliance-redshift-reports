@@ -1848,6 +1848,22 @@
               <p class="text-xs text-slate-500 mt-1">Máximo 1000 clientes por análisis</p>
             </div>
 
+            <!-- Selector de período — aplica a las 4 fuentes (remesas, CCA pay-in, cash calls IN/OUT) -->
+            <div x-show="amlCustomerIds.trim()">
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Período a analizar</label>
+              <div class="flex flex-wrap gap-1.5">
+                <template x-for="p in [{d:5,l:'5 días'},{d:15,l:'15 días'},{d:30,l:'30 días'},{d:60,l:'60 días'},{d:90,l:'90 días'},{d:null,l:'Histórico'}]" :key="p.l">
+                  <button @click="amlDays=p.d"
+                    :class="amlDays===p.d ? 'bg-orange-500 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700 border border-slate-700'"
+                    class="text-xs px-3 py-1.5 rounded-full transition font-medium" x-text="p.l"></button>
+                </template>
+              </div>
+              <p class="text-xs text-slate-500 mt-1.5">
+                <span x-show="amlDays">Se analizarán transacciones de los últimos <span x-text="amlDays" class="text-orange-400 font-semibold"></span> días.</span>
+                <span x-show="!amlDays">Se analizará todo el histórico disponible (sin límite de fecha).</span>
+              </p>
+            </div>
+
             <div class="flex items-center gap-3">
               <button @click="runAmlIndividual()"
                 :disabled="amlRunning || !amlCustomerIds.trim()"
@@ -4116,6 +4132,7 @@
 
       // Análisis Individual AML — Paso 3: Scoring AML
       amlCustomerIds: '',
+      amlDays: null, // null = histórico (sin límite); o 5/15/30/60/90
       amlRunning: false,
       amlRunId: null,
       amlResult: null,
@@ -5086,14 +5103,14 @@
         if (ids.length === 0) { this.amlError = 'No se encontraron IDs válidos. Ingresa números separados por coma.'; return; }
         if (ids.length > 1000) { this.amlError = 'Máximo 1000 customer_ids por análisis.'; return; }
 
-        _logEvent(this.currentUserEmail, 'analysis_individual', { n_customers: ids.length, customer_ids: ids.slice(0,10) });
+        _logEvent(this.currentUserEmail, 'analysis_individual', { n_customers: ids.length, customer_ids: ids.slice(0,10), days: this.amlDays });
         this.amlRunning = true;
         this.amlError = null;
         this.amlResult = null;
         this.amlRunId = null;
         this.amlStatusMsg = 'Enviando análisis a la nube...';
 
-        const d = await this.api('POST', '/analyze/individual', { customer_ids: ids, user_email: this.currentUserEmail });
+        const d = await this.api('POST', '/analyze/individual', { customer_ids: ids, days: this.amlDays, user_email: this.currentUserEmail });
         if (!d) { this.amlRunning = false; this.amlError = 'Error al iniciar el análisis.'; return; }
 
         this.amlRunId = d.run_id;
