@@ -1043,7 +1043,8 @@ def handler(event, context):  # noqa: ARG001
             _update_run(run_id, status="ERROR", error_message=err,
                         completed_at=dt.datetime.utcnow().isoformat())
             raise ValueError(err)
-        # Período configurable: 5/15/30/60/90 días, o None/"historico" = sin límite
+        # Período configurable — aplica SOLO a la fuente nueva (cash call pay-in).
+        # Las 2 queries originales (remesas + CCA wallet_deposit) NO se tocan.
         days = event.get("days")
         try:
             days = int(days)
@@ -1051,11 +1052,9 @@ def handler(event, context):  # noqa: ARG001
                 days = None
         except (TypeError, ValueError):
             days = None
-
-        def _days_filter(column: str) -> str:
-            if not days:
-                return ""
-            return f"AND {column} >= DATEADD(day, -{days}, CURRENT_DATE)"
+        days_filter_cashcall = (
+            f"AND cc.creation_date >= DATEADD(day, -{days}, CURRENT_DATE)" if days else ""
+        )
 
         try:
             _update_run(run_id, status="RESUMING")
@@ -1064,34 +1063,31 @@ def handler(event, context):  # noqa: ARG001
             # Build customer_ids SQL list
             ids_sql = ", ".join(str(int(i)) for i in customer_ids)
 
-            def _render(filename: str, date_column: str) -> str:
-                sql = (QUERIES_DIR / filename).read_text(encoding="utf-8")
-                return (
-                    sql.strip().rstrip(";")
-                    .replace("{customer_ids}", ids_sql)
-                    .replace("{days_filter}", _days_filter(date_column))
-                )
+            # Load and render SQL templates — EXACTAMENTE como estaban originalmente,
+            # sin tocar. Motor de scoring/flags opera solo sobre estas 2 fuentes.
+            sql_out = (QUERIES_DIR / "individual_aml_out.sql").read_text(encoding="utf-8")
+            sql_in  = (QUERIES_DIR / "individual_aml_in.sql").read_text(encoding="utf-8")
+            sql_out = sql_out.strip().rstrip(";").replace("{customer_ids}", ids_sql)
+            sql_in  = sql_in.strip().rstrip(";").replace("{customer_ids}", ids_sql)
 
-            # Motor de scoring/flags: EXACTAMENTE las 2 fuentes originales
-            # (remesas OUT + CCA pay-in vía wallet_deposit IN). No se mezclan con
-            # cash_call — son sistemas distintos, con campos distintos, que no
-            # deben alimentar el mismo cálculo de flags.
-            sql_out = _render("individual_aml_out.sql", "t.start_date")
-            sql_in  = _render("individual_aml_in.sql", "w.deposit_date")
             rows_out = execute_query(sql_out)
             rows_in  = execute_query(sql_in)
 
             # Fuente adicional, SEPARADA: CCA Cash Call Pay-In (treasury.cash_call,
-            # type='CR'). Se muestra en su propia hoja del Excel, sin entrar al
-            # motor de scoring/flags de remesas+CCA.
-            sql_cashcall_in = _render("individual_cashcall_in.sql", "cc.creation_date")
+            # type='CR'). Va en su propia hoja del Excel — no se junta ni modifica
+            # el resultado de las 2 queries de arriba.
+            sql_cashcall_in = (QUERIES_DIR / "individual_cashcall_in.sql").read_text(encoding="utf-8")
+            sql_cashcall_in = (
+                sql_cashcall_in.strip().rstrip(";")
+                .replace("{customer_ids}", ids_sql)
+                .replace("{days_filter}", days_filter_cashcall)
+            )
             rows_cashcall_in = execute_query(sql_cashcall_in)
 
             xlsx_bytes = build_aml_excel(rows_out, rows_in, customer_ids, rows_cashcall_in=rows_cashcall_in)
 
             run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-            period_tag = f"{days}d" if days else "historico"
-            key = f"individual_aml_analysis/{run_ts}_customers-{len(customer_ids)}_{period_tag}.xlsx"
+            key = f"individual_aml_analysis/{run_ts}_customers-{len(customer_ids)}.xlsx"
 
             s3_url = upload_to_s3(
                 xlsx_bytes, key,

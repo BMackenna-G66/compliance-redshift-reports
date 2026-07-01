@@ -76,6 +76,4 @@ FROM "db_prod"."transaction"."transaction" AS t
 INNER JOIN target_customers AS tc ON t.customer_id = tc.customer_id
 LEFT JOIN beneficiary_base AS bb ON t.beneficiary_id = bb.beneficiary_id
 LEFT JOIN latest_kyc_document kd ON t.customer_id = kd.customer_id AND kd.rn = 1
-WHERE 1=1
-  {days_filter}
 ORDER BY tc.email, t.start_date DESC

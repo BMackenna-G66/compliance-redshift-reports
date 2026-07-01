@@ -82,5 +82,5 @@ INNER JOIN "db_prod"."cca"."transaction_operation_status" os ON os.transaction_i
 INNER JOIN "db_prod"."cca"."transaction_operation_detail" od ON os.transaction_operation_detail_id = od.id
 WHERE ti.transaction_type = 'PAY_IN'
   AND os.status_code = '0210'
-  {days_filter}
+  AND w.deposit_date >= DATEADD(year, -5, CURRENT_DATE)
 ORDER BY tc.email, w.deposit_date DESC
