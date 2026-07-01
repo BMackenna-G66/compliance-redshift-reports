@@ -1056,6 +1056,12 @@ def handler(event, context):  # noqa: ARG001
             f"AND cc.creation_date >= DATEADD(day, -{days}, CURRENT_DATE)" if days else ""
         )
 
+        # Tipo de entidad: 'b2c' (default, customer_v2) o 'b2b' (company.company).
+        # Son 3 archivos .sql DUPLICADOS por tipo — nunca se mezclan ni se
+        # parametriza una sola query para ambos casos.
+        entity_type = "b2b" if str(event.get("entity_type", "b2c")).lower() == "b2b" else "b2c"
+        suffix = "_b2b" if entity_type == "b2b" else ""
+
         try:
             _update_run(run_id, status="RESUMING")
             ensure_cluster_available()
@@ -1063,10 +1069,10 @@ def handler(event, context):  # noqa: ARG001
             # Build customer_ids SQL list
             ids_sql = ", ".join(str(int(i)) for i in customer_ids)
 
-            # Load and render SQL templates — EXACTAMENTE como estaban originalmente,
-            # sin tocar. Motor de scoring/flags opera solo sobre estas 2 fuentes.
-            sql_out = (QUERIES_DIR / "individual_aml_out.sql").read_text(encoding="utf-8")
-            sql_in  = (QUERIES_DIR / "individual_aml_in.sql").read_text(encoding="utf-8")
+            # Load and render SQL templates — EXACTAMENTE como estaban originalmente
+            # para B2C, sin tocar. Motor de scoring/flags opera solo sobre estas 2 fuentes.
+            sql_out = (QUERIES_DIR / f"individual_aml_out{suffix}.sql").read_text(encoding="utf-8")
+            sql_in  = (QUERIES_DIR / f"individual_aml_in{suffix}.sql").read_text(encoding="utf-8")
             sql_out = sql_out.strip().rstrip(";").replace("{customer_ids}", ids_sql)
             sql_in  = sql_in.strip().rstrip(";").replace("{customer_ids}", ids_sql)
 
@@ -1076,7 +1082,7 @@ def handler(event, context):  # noqa: ARG001
             # Fuente adicional, SEPARADA: CCA Cash Call Pay-In (treasury.cash_call,
             # type='CR'). Va en su propia hoja del Excel — no se junta ni modifica
             # el resultado de las 2 queries de arriba.
-            sql_cashcall_in = (QUERIES_DIR / "individual_cashcall_in.sql").read_text(encoding="utf-8")
+            sql_cashcall_in = (QUERIES_DIR / f"individual_cashcall_in{suffix}.sql").read_text(encoding="utf-8")
             sql_cashcall_in = (
                 sql_cashcall_in.strip().rstrip(";")
                 .replace("{customer_ids}", ids_sql)

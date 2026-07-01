@@ -2428,6 +2428,9 @@ def run_individual_analysis(body: dict):
     except (TypeError, ValueError):
         days = None
 
+    # Tipo de entidad: 'b2c' (default, customer_v2) o 'b2b' (company.company).
+    entity_type = "b2b" if str(body.get("entity_type", "b2c")).lower() == "b2b" else "b2c"
+
     run_id = str(uuid.uuid4())
     now = dt.datetime.utcnow().isoformat()
     user_email = str(body.get("user_email", "")).strip()[:200]
@@ -2435,7 +2438,7 @@ def run_individual_analysis(body: dict):
         "run_id": run_id,
         "report_name": "individual_aml_analysis",
         "status": "RUNNING",
-        "params": json.dumps({"customer_ids": clean_ids, "n_customers": len(clean_ids), "days": days}),
+        "params": json.dumps({"customer_ids": clean_ids, "n_customers": len(clean_ids), "days": days, "entity_type": entity_type}),
         "started_at": now,
         "user_email": user_email,
         "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
@@ -2448,11 +2451,12 @@ def run_individual_analysis(body: dict):
             "report_name": "individual_aml_analysis",
             "customer_ids": clean_ids,
             "days": days,
+            "entity_type": entity_type,
             "run_id": run_id,
             "keep_session": False,
         }),
     )
-    return resp(202, {"run_id": run_id, "status": "RUNNING", "n_customers": len(clean_ids), "days": days})
+    return resp(202, {"run_id": run_id, "status": "RUNNING", "n_customers": len(clean_ids), "days": days, "entity_type": entity_type})
 
 
 def get_dashboard_stats_result(q0: str, q1: str, q2: str):

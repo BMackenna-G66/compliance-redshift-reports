@@ -1836,19 +1836,33 @@
             </div>
           </div>
           <div class="space-y-4">
+            <!-- Tipo de entidad: determina qué 3 queries se usan (customer_v2 vs company) -->
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Tipo de entidad</label>
+              <div class="flex gap-1.5">
+                <button @click="amlEntityType='b2c'"
+                  :class="amlEntityType==='b2c' ? 'bg-orange-500 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700 border border-slate-700'"
+                  class="text-xs px-4 py-1.5 rounded-lg transition font-medium">👤 B2C (Clientes)</button>
+                <button @click="amlEntityType='b2b'"
+                  :class="amlEntityType==='b2b' ? 'bg-orange-500 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700 border border-slate-700'"
+                  class="text-xs px-4 py-1.5 rounded-lg transition font-medium">🏢 B2B (Empresas)</button>
+              </div>
+            </div>
+
             <div>
               <label class="block text-xs font-medium text-slate-400 mb-1.5">
-                Customer IDs <span class="text-slate-500">(separados por comas o saltos de línea)</span>
+                <span x-text="amlEntityType==='b2b' ? 'Company IDs' : 'Customer IDs'"></span>
+                <span class="text-slate-500">(separados por comas o saltos de línea)</span>
                 <span x-show="amlCustomerIds.trim()" class="ml-2 text-orange-400"
                   x-text="`— ${amlCustomerIds.trim().split(/[\\s,;]+/).filter(s=>/^\\d+$/.test(s.trim())).length} IDs`"></span>
               </label>
               <textarea x-model="amlCustomerIds" rows="4"
-                placeholder="Ej: 3696886, 2387473, 3162602&#10;o uno por línea"
+                :placeholder="amlEntityType==='b2b' ? 'Ej: 12345, 67890&#10;o uno por línea' : 'Ej: 3696886, 2387473, 3162602&#10;o uno por línea'"
                 class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"></textarea>
-              <p class="text-xs text-slate-500 mt-1">Máximo 1000 clientes por análisis</p>
+              <p class="text-xs text-slate-500 mt-1">Máximo 1000 <span x-text="amlEntityType==='b2b' ? 'empresas' : 'clientes'"></span> por análisis</p>
             </div>
 
-            <!-- Selector de período — aplica a las 4 fuentes (remesas, CCA pay-in, cash calls IN/OUT) -->
+            <!-- Selector de período — aplica SOLO a la fuente de cash call pay-in -->
             <div x-show="amlCustomerIds.trim()">
               <label class="block text-xs font-medium text-slate-400 mb-1.5">Período a analizar</label>
               <div class="flex flex-wrap gap-1.5">
@@ -4132,6 +4146,7 @@
 
       // Análisis Individual AML — Paso 3: Scoring AML
       amlCustomerIds: '',
+      amlEntityType: 'b2c', // 'b2c' (customer_v2) o 'b2b' (company.company)
       amlDays: null, // null = histórico (sin límite); o 5/15/30/60/90
       amlRunning: false,
       amlRunId: null,
@@ -5103,18 +5118,19 @@
         if (ids.length === 0) { this.amlError = 'No se encontraron IDs válidos. Ingresa números separados por coma.'; return; }
         if (ids.length > 1000) { this.amlError = 'Máximo 1000 customer_ids por análisis.'; return; }
 
-        _logEvent(this.currentUserEmail, 'analysis_individual', { n_customers: ids.length, customer_ids: ids.slice(0,10), days: this.amlDays });
+        _logEvent(this.currentUserEmail, 'analysis_individual', { n_customers: ids.length, customer_ids: ids.slice(0,10), days: this.amlDays, entity_type: this.amlEntityType });
         this.amlRunning = true;
         this.amlError = null;
         this.amlResult = null;
         this.amlRunId = null;
         this.amlStatusMsg = 'Enviando análisis a la nube...';
 
-        const d = await this.api('POST', '/analyze/individual', { customer_ids: ids, days: this.amlDays, user_email: this.currentUserEmail });
+        const d = await this.api('POST', '/analyze/individual', { customer_ids: ids, days: this.amlDays, entity_type: this.amlEntityType, user_email: this.currentUserEmail });
         if (!d) { this.amlRunning = false; this.amlError = 'Error al iniciar el análisis.'; return; }
 
         this.amlRunId = d.run_id;
-        this.amlStatusMsg = `Análisis iniciado para ${d.n_customers} cliente(s). Ejecutando queries en Redshift...`;
+        const entLabel = this.amlEntityType === 'b2b' ? 'empresa(s)' : 'cliente(s)';
+        this.amlStatusMsg = `Análisis iniciado para ${d.n_customers} ${entLabel}. Ejecutando queries en Redshift...`;
         this._pollAmlRun();
       },
 
