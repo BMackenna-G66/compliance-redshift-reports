@@ -628,6 +628,50 @@ def _unwrap_value(cell: dict):
 
 
 # ---------------------------------------------------------------------------
+# AI summary — aggregates over the FULL result set (not just the preview), so
+# the in-browser "Analizar con IA" reasons over all rows, not the first 10.
+# ---------------------------------------------------------------------------
+def _build_ai_summary(rows: list, top_n: int = 30) -> dict:
+    if not rows:
+        return {"total_rows": 0, "columns": [], "numeric_stats": {}, "top_rows": []}
+    columns = list(rows[0].keys())
+    numeric_stats: dict = {}
+    for col in columns:
+        vals = []
+        for r in rows:
+            try:
+                vals.append(float(r.get(col)))
+            except (TypeError, ValueError):
+                pass
+        if vals and len(vals) >= len(rows) / 2:   # columna mayormente numérica
+            numeric_stats[col] = {
+                "sum": round(sum(vals), 2),
+                "avg": round(sum(vals) / len(vals), 2),
+                "min": round(min(vals), 2),
+                "max": round(max(vals), 2),
+            }
+    key_col = None
+    if numeric_stats:
+        key_col = max(numeric_stats, key=lambda c: numeric_stats[c]["max"])
+
+        def _salience(r):
+            try:
+                return float(r.get(key_col))
+            except (TypeError, ValueError):
+                return float("-inf")
+        top_rows = sorted(rows, key=_salience, reverse=True)[:top_n]
+    else:
+        top_rows = rows[:top_n]
+    return {
+        "total_rows": len(rows),
+        "columns": columns,
+        "numeric_stats": numeric_stats,
+        "top_rows_metric": key_col,
+        "top_rows": top_rows,
+    }
+
+
+# ---------------------------------------------------------------------------
 # DynamoDB run tracking  (no-ops when RUNS_TABLE_NAME is empty)
 # ---------------------------------------------------------------------------
 def _update_run(run_id: str | None, **attrs) -> None:
@@ -1187,6 +1231,8 @@ ORDER BY start_date DESC
             s3_key=key,
             row_count=total_rows,
             result_preview=json.dumps(result_preview, default=str),
+            # Agregados sobre TODAS las filas + las más extremas → la IA analiza el dataset completo
+            ai_summary=json.dumps(_build_ai_summary(rows), default=str),
         )
 
         # Phase 10 — apply auto-case rules (non-blocking)

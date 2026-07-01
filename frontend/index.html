@@ -4596,6 +4596,7 @@
             display_name: d.display_name || d.report_name?.replace(/_/g, ' '),
             rows: preview, columns: cols,
             row_count: d.row_count,
+            ai_summary: d.ai_summary || null,
             download_url: d.download_url,
             started_at: d.started_at,
             completed_at: d.completed_at,
@@ -4751,6 +4752,7 @@
           rows: preview, columns: cols,
           download_url: this.currentRun?.download_url,
           row_count: this.currentRun?.row_count,
+          ai_summary: this.currentRun?.ai_summary || null,
         };
         this.tableFilters = {}; this.sortCol = null; this.currentPage = 1;
         this.aiAnalysis = { loading: false, text: '', error: '' };
@@ -5549,26 +5551,44 @@
       // -----------------------------------------------
       // AI ANALYSIS
       // -----------------------------------------------
-      _buildAMLPrompt(displayName, totalRows, cols, rows) {
-        const sample = rows.slice(0, 50);
-        const numCols = cols.filter(c => {
-          const vals = sample.map(r => parseFloat(r[c])).filter(v => !isNaN(v));
-          return vals.length > sample.length * 0.5;
-        });
-        const stats = numCols.map(c => {
-          const vals = sample.map(r => parseFloat(r[c])).filter(v => !isNaN(v));
-          if (!vals.length) return null;
-          const sum = vals.reduce((a,b)=>a+b,0);
-          return `${c}: sum=${sum.toFixed(2)}, avg=${(sum/vals.length).toFixed(2)}, max=${Math.max(...vals).toFixed(2)}`;
-        }).filter(Boolean);
+      _buildAMLPrompt(view) {
+        const displayName = view.display_name;
+        const totalRows = view.row_count ?? (view.rows?.length || 0);
+        const cols = view.columns || [];
+        const s = view.ai_summary;
 
-        return `Eres un analista AML experto. Analiza los siguientes datos del reporte "${displayName}" con ${totalRows} filas totales.
+        // Preferir el resumen del DATASET COMPLETO (calculado en el backend sobre TODAS las filas)
+        let statsBlock, sampleBlock, scopeNote;
+        if (s && s.numeric_stats && Object.keys(s.numeric_stats).length) {
+          statsBlock = Object.entries(s.numeric_stats)
+            .map(([c, v]) => `${c}: sum=${v.sum}, avg=${v.avg}, min=${v.min}, max=${v.max}`).join('\n');
+          const top = s.top_rows || [];
+          sampleBlock = `LAS ${top.length} FILAS MÁS EXTREMAS (ordenadas por ${s.top_rows_metric || 'métrica clave'}, del total de ${s.total_rows}):\n${JSON.stringify(top, null, 1)}`;
+          scopeNote = `${s.total_rows} filas TOTALES — estadísticas calculadas sobre el dataset COMPLETO, no una muestra`;
+        } else {
+          // Fallback: muestra del preview (runs viejos sin ai_summary)
+          const rows = view.rows || [];
+          const sample = rows.slice(0, 50);
+          const numCols = cols.filter(c => {
+            const vals = sample.map(r => parseFloat(r[c])).filter(v => !isNaN(v));
+            return vals.length > sample.length * 0.5;
+          });
+          statsBlock = numCols.map(c => {
+            const vals = sample.map(r => parseFloat(r[c])).filter(v => !isNaN(v));
+            if (!vals.length) return null;
+            const sum = vals.reduce((a, b) => a + b, 0);
+            return `${c}: sum=${sum.toFixed(2)}, avg=${(sum/vals.length).toFixed(2)}, max=${Math.max(...vals).toFixed(2)}`;
+          }).filter(Boolean).join('\n');
+          sampleBlock = `MUESTRA (${sample.length} de ${totalRows} filas):\n${JSON.stringify(sample, null, 1)}`;
+          scopeNote = `${totalRows} filas totales (analizando una muestra de ${sample.length})`;
+        }
+
+        return `Eres un analista AML experto. Analiza el reporte "${displayName}" — ${scopeNote}.
 
 COLUMNAS: ${cols.join(', ')}
-MÉTRICAS NUMÉRICAS (muestra de ${sample.length} filas):
-${stats.join('\n') || 'N/A'}
-MUESTRA (${sample.length} filas):
-${JSON.stringify(sample, null, 1)}
+MÉTRICAS NUMÉRICAS:
+${statsBlock || 'N/A'}
+${sampleBlock}
 
 Entrega un análisis AML estructurado con estas secciones:
 
@@ -5604,19 +5624,13 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
       },
 
       async analyzeWithAI() {
-        if (!this.resultsView?.rows?.length) return;
-        await this._callGemini(
-          this._buildAMLPrompt(this.resultsView.display_name, this.resultsView.row_count, this.resultsView.columns, this.resultsView.rows),
-          'aiAnalysis'
-        );
+        if (!this.resultsView?.rows?.length && !this.resultsView?.ai_summary) return;
+        await this._callGemini(this._buildAMLPrompt(this.resultsView), 'aiAnalysis');
       },
 
       async analyzeHistoryWithAI() {
-        if (!this.historyView?.rows?.length) return;
-        await this._callGemini(
-          this._buildAMLPrompt(this.historyView.display_name, this.historyView.row_count, this.historyView.columns, this.historyView.rows),
-          'historyAI'
-        );
+        if (!this.historyView?.rows?.length && !this.historyView?.ai_summary) return;
+        await this._callGemini(this._buildAMLPrompt(this.historyView), 'historyAI');
       },
 
       // -----------------------------------------------
@@ -5624,7 +5638,16 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
       // -----------------------------------------------
       async analyzeRow(row, reportName) {
         this.rowAI = { open: true, loading: true, text: '', error: '', row, reportName: reportName || '' };
-        const prompt = this._buildRowPrompt(row, reportName || '');
+        // Enriquecer con el expediente del cliente (CRM + transacciones) si la fila tiene customer_id
+        let dossier = null;
+        const cid = row?.customer_id ?? row?.entity_value;
+        if (cid != null && String(cid).trim() && /^\d+$/.test(String(cid).trim())) {
+          try {
+            dossier = await this.api('GET', `/customer/context?customer_id=${encodeURIComponent(String(cid).trim())}&days=30`);
+            if (dossier?.error) dossier = null;
+          } catch(_) { dossier = null; }
+        }
+        const prompt = this._buildRowPrompt(row, reportName || '', dossier);
         const data = await this.api('POST', '/ai/generate', { prompt, temperature: 0.3, max_tokens: 1500 });
         if (!data) {
           this.rowAI = { ...this.rowAI, loading: false, error: 'Error al contactar el servidor de IA.' };
@@ -5637,17 +5660,31 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
         this.rowAI = { ...this.rowAI, loading: false, text: data.text || '' };
       },
 
-      _buildRowPrompt(row, reportName) {
+      _buildRowPrompt(row, reportName, dossier) {
         const fields = Object.entries(row || {})
           .filter(([, v]) => v != null && v !== '' && v !== '—')
           .map(([k, v]) => `  ${k}: ${v}`)
           .join('\n');
+
+        let context = '';
+        if (dossier) {
+          const crm = dossier.crm || {};
+          const tx = dossier.transactions || {};
+          context = `\n\nEXPEDIENTE DEL CLIENTE ${dossier.customer_id} (contexto del CRM):\n`
+            + `- Alertas previas: ${crm.alert_count||0}${crm.recurrent ? ' (RECURRENTE)' : ''}${crm.combines_alerts ? ', COMBINA tipologías: '+(crm.distinct_reports||[]).join(', ') : ''}\n`
+            + `- Casos de investigación: ${crm.case_count||0}\n`
+            + (tx.available
+                ? `- Transacciones 30d: ${(tx.payin?.count||0)} pay-in (USD ${tx.payin?.total_destiny_usd||0}) / ${(tx.payout?.count||0)} pay-out (USD ${tx.payout?.total_destiny_usd||0})\n`
+                : `- Transacciones: no disponibles (cluster apagado)\n`)
+            + `Considerá este historial al evaluar el riesgo (un cliente recurrente o que combina tipologías es más riesgoso).`;
+        }
+
         return `Eres un analista AML senior de Global66. Analiza el siguiente registro de cumplimiento y entrega una evaluación de riesgo concisa.
 
 Reporte: ${(reportName || 'screening').replace(/_/g, ' ')}
 
 DATOS DEL REGISTRO:
-${fields}
+${fields}${context}
 
 Responde EXACTAMENTE con este formato:
 1. **NIVEL DE RIESGO**: Bajo / Medio / Alto / Crítico — justificación en una línea

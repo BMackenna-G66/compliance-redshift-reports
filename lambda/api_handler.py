@@ -1742,13 +1742,14 @@ def get_run(run_id: str):
         except Exception:
             pass
 
-    # Parse result_preview if stored as JSON string
-    preview = item.get("result_preview")
-    if isinstance(preview, str):
-        try:
-            item["result_preview"] = json.loads(preview)
-        except Exception:
-            item["result_preview"] = []
+    # Parse result_preview / ai_summary if stored as JSON strings
+    for fld, fallback in (("result_preview", []), ("ai_summary", None)):
+        val = item.get(fld)
+        if isinstance(val, str):
+            try:
+                item[fld] = json.loads(val)
+            except Exception:
+                item[fld] = fallback
 
     return resp(200, item)
 
