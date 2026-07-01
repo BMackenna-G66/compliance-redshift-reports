@@ -33,15 +33,13 @@ SELECT
     kd.document_number AS customer_identification,
     kd.document_type AS customer_identification_type,
     cc.cash_call_id,
-    cc.transaction_id,
     cc.external_reference_number,
-    cc.created_at AS start_date,
+    cc.creation_date AS start_date,
     cc.paid_date,
     cc.status AS tx_status,
     NULL::VARCHAR AS payment_status,
     'CCA_CASHCALL' AS payment_method,
     NULL::VARCHAR AS remitter_account_type,
-    cc.origin_country,
     cc.currency_code AS origin_currency,
     cc.amount::DECIMAL(18,2) AS origin_amount,
     cc.origin_amount_usd::DECIMAL(18,2) AS origin_amount_usd,
@@ -69,10 +67,6 @@ SELECT
     cc.remitter_lastname,
     cc.remitter_dni,
     cc.remitter_email,
-    cc.beneficiary_name AS cashcall_beneficiary_name,
-    cc.beneficiary_lastname AS cashcall_beneficiary_lastname,
-    cc.beneficiary_dni AS cashcall_beneficiary_dni,
-    cc.beneficiary_email AS cashcall_beneficiary_email,
     cc.business_bank_id,
     bb.bank_code
 FROM "db_prod"."treasury"."cash_call" AS cc
@@ -82,4 +76,4 @@ LEFT JOIN "db_prod"."treasury"."business_bank" AS bb ON cc.business_bank_id = bb
 WHERE cc.type = 'CR'
   AND cc.status = 'PAID'
   {days_filter}
-ORDER BY tc.email, cc.created_at DESC
+ORDER BY tc.email, cc.creation_date DESC

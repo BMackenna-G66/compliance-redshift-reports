@@ -1,8 +1,7 @@
 -- CCA Cash Call — PAY OUT (type = 'DR')
--- Fuente: db_prod.treasury.cash_call. Complementa individual_aml_out.sql (REMESA_TRANSACTION)
--- con la otra vía de salida de fondos — cash calls salientes (retiros/pagos).
--- beneficiary_id se rellena con el DNI del beneficiario (no existe un id propio en esta
--- tabla) para que Fan-Out (F3) y Concentración (F8) puedan contarlo igual que en OUT.
+-- Fuente: db_prod.treasury.cash_call. NO USADA por handler.py actualmente
+-- (solo se usa individual_cashcall_in.sql, en hoja separada). Se deja lista
+-- por si más adelante se agrega también el pay-out en su propia hoja.
 WITH target_customers AS (
     SELECT
         c.customer_id,
@@ -35,30 +34,28 @@ SELECT
     kd.document_number AS customer_identification,
     kd.document_type AS customer_identification_type,
     cc.cash_call_id,
-    cc.transaction_id,
     cc.external_reference_number,
-    cc.created_at AS start_date,
+    cc.creation_date AS start_date,
     cc.paid_date,
     cc.status AS tx_status,
     NULL::VARCHAR AS payment_status,
     'CCA_CASHCALL' AS payment_method,
     NULL::VARCHAR AS remitter_account_type,
-    cc.origin_country,
     cc.currency_code AS origin_currency,
     cc.amount::DECIMAL(18,2) AS origin_amount,
     cc.origin_amount_usd::DECIMAL(18,2) AS origin_amount_usd,
-    cc.destiny_country,
+    NULL::VARCHAR AS destiny_country,
     cc.currency_code AS destiny_currency,
     NULL::DECIMAL(18,2) AS destiny_amount,
     cc.destiny_amount_usd::DECIMAL(18,2) AS destiny_amount_usd,
-    cc.beneficiary_dni AS beneficiary_id,
-    cc.beneficiary_name,
-    cc.beneficiary_lastname AS beneficiary_last_name,
-    cc.beneficiary_dni AS beneficiary_identification,
+    NULL::VARCHAR AS beneficiary_id,
+    NULL::VARCHAR AS beneficiary_name,
+    NULL::VARCHAR AS beneficiary_last_name,
+    NULL::VARCHAR AS beneficiary_identification,
     NULL::VARCHAR AS beneficiary_identification_type,
-    cc.destiny_country AS beneficiary_country_code,
+    NULL::VARCHAR AS beneficiary_country_code,
     NULL::VARCHAR AS beneficiary_country_name,
-    cc.beneficiary_email,
+    NULL::VARCHAR AS beneficiary_email,
     NULL::VARCHAR AS beneficiary_phone_number,
     NULL::VARCHAR AS beneficiary_type,
     NULL::VARCHAR AS beneficiary_account_bank_name,
@@ -80,4 +77,4 @@ LEFT JOIN "db_prod"."treasury"."business_bank" AS bb ON cc.business_bank_id = bb
 WHERE cc.type = 'DR'
   AND cc.status = 'PAID'
   {days_filter}
-ORDER BY tc.email, cc.created_at DESC
+ORDER BY tc.email, cc.creation_date DESC

@@ -874,13 +874,11 @@ def _customer_cashcall_sql(direction: str, customer_id: str, days: int) -> str:
     """Cash calls de un cliente. direction: 'DR' (pay out) | 'CR' (pay in).
     customer_id ya validado como dígitos; days dentro de _ALLOWED_DAYS."""
     return f"""
-SELECT cc.cash_call_id, cc.external_reference_number, cc.transaction_id,
+SELECT cc.cash_call_id, cc.external_reference_number,
     cc.customer_id, c.email, c.name, c.last_name,
-    cc.created_at, cc.paid_date, cc.type, cc.status, cc.currency_code,
+    cc.creation_date, cc.paid_date, cc.type, cc.status, cc.currency_code,
     cc.amount, cc.origin_amount_usd, cc.destiny_amount_usd,
     cc.remitter_name, cc.remitter_lastname, cc.remitter_dni, cc.remitter_email,
-    cc.beneficiary_name, cc.beneficiary_lastname, cc.beneficiary_dni, cc.beneficiary_email,
-    cc.origin_country, cc.destiny_country,
     cc.business_bank_id, bb.bank_code, bb.bank_name
 FROM "db_prod"."treasury"."cash_call" AS cc
 LEFT JOIN "db_prod"."customer"."customer_v2" AS c
@@ -889,9 +887,9 @@ LEFT JOIN "db_prod"."treasury"."business_bank" AS bb
     ON cc.business_bank_id = bb.business_bank_id
 WHERE cc.type = '{direction}'
   AND cc.customer_id::VARCHAR = '{customer_id}'
-  AND cc.created_at >= DATEADD(day, -{days}, CURRENT_TIMESTAMP)
+  AND cc.creation_date >= DATEADD(day, -{days}, CURRENT_DATE)
   AND cc.status = 'PAID'
-ORDER BY cc.created_at DESC
+ORDER BY cc.creation_date DESC
 """
 
 

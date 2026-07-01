@@ -1084,7 +1084,7 @@ def handler(event, context):  # noqa: ARG001
             # Fuente adicional, SEPARADA: CCA Cash Call Pay-In (treasury.cash_call,
             # type='CR'). Se muestra en su propia hoja del Excel, sin entrar al
             # motor de scoring/flags de remesas+CCA.
-            sql_cashcall_in = _render("individual_cashcall_in.sql", "cc.created_at")
+            sql_cashcall_in = _render("individual_cashcall_in.sql", "cc.creation_date")
             rows_cashcall_in = execute_query(sql_cashcall_in)
 
             xlsx_bytes = build_aml_excel(rows_out, rows_in, customer_ids, rows_cashcall_in=rows_cashcall_in)
