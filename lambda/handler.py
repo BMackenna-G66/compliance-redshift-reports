@@ -340,56 +340,48 @@ def pause_cluster() -> None:
 # Whitelist support
 # ---------------------------------------------------------------------------
 def fetch_active_whitelist(report_name: str = "") -> list[dict]:
-    """Fetch non-expired whitelist entries from Redshift. Returns global + report-specific."""
-    report_name_escaped = report_name.replace("'", "''")
-    sql = (
-        "SELECT entity_field, entity_value, scope, report_name "
-        "FROM compliance.whitelist "
-        "WHERE expires_at > CURRENT_TIMESTAMP "
-        f"AND (scope = 'global' OR report_name = '{report_name_escaped}')"
-    )
+    """Fetch non-expired whitelist entries from the S3 JSON store (not Redshift),
+    so it stays in sync with the CRM and never depends on cluster state.
+    Returns global + report-specific entries."""
     try:
-        stmt = redshift_data.execute_statement(
-            ClusterIdentifier=CLUSTER_ID,
-            Database=DATABASE,
-            DbUser=DB_USER,
-            Sql=sql,
-        )
-        statement_id = stmt["Id"]
+        import json as _json
+        from concurrent.futures import ThreadPoolExecutor
 
-        for _ in range(20):
-            desc = redshift_data.describe_statement(Id=statement_id)
-            status = desc["Status"]
-            if status == "FINISHED":
-                if not desc.get("HasResultSet"):
-                    return []
-                result = redshift_data.get_statement_result(Id=statement_id)
-                columns = [c["name"] for c in result["ColumnMetadata"]]
-                rows: list[dict] = []
-                for record in result["Records"]:
-                    row = {}
-                    for i, cell in enumerate(record):
-                        if cell.get("isNull"):
-                            row[columns[i]] = None
-                        elif "stringValue" in cell:
-                            row[columns[i]] = cell["stringValue"]
-                        elif "longValue" in cell:
-                            row[columns[i]] = cell["longValue"]
-                        elif "doubleValue" in cell:
-                            row[columns[i]] = cell["doubleValue"]
-                        elif "booleanValue" in cell:
-                            row[columns[i]] = cell["booleanValue"]
-                        else:
-                            row[columns[i]] = None
-                    rows.append(row)
-                return rows
-            if status in ("FAILED", "ABORTED"):
-                logger.warning("fetch_active_whitelist query %s: %s", status, desc.get("Error"))
-                return []
-            time.sleep(0.5)
+        now = int(time.time())
+        prefix = "crm/whitelist/"
+        keys: list[str] = []
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+            for o in page.get("Contents", []):
+                if o["Key"].endswith(".json"):
+                    keys.append(o["Key"])
+        if not keys:
+            return []
 
-        logger.warning("fetch_active_whitelist timed out after 10s")
-        return []
+        def _fetch(k):
+            try:
+                return _json.loads(s3.get_object(Bucket=S3_BUCKET, Key=k)["Body"].read())
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            items = [i for i in ex.map(_fetch, keys) if i is not None]
+
+        rows: list[dict] = []
+        for i in items:
+            exp = int(i.get("expires_at", 0))
+            if exp and exp <= now:
+                continue  # vencida
+            scope = i.get("scope", "global")
+            rn = i.get("report_name", "")
+            if scope == "global" or rn == report_name:
+                rows.append({
+                    "entity_field": i.get("entity_field"),
+                    "entity_value": i.get("entity_value"),
+                    "scope": scope,
+                    "report_name": rn,
+                })
+        return rows
 
     except Exception as e:  # noqa: BLE001
         logger.warning("fetch_active_whitelist failed (non-blocking): %s", e)
@@ -633,6 +625,50 @@ def _unwrap_value(cell: dict):
         if key in cell:
             return cell[key]
     return None
+
+
+# ---------------------------------------------------------------------------
+# AI summary — aggregates over the FULL result set (not just the preview), so
+# the in-browser "Analizar con IA" reasons over all rows, not the first 10.
+# ---------------------------------------------------------------------------
+def _build_ai_summary(rows: list, top_n: int = 30) -> dict:
+    if not rows:
+        return {"total_rows": 0, "columns": [], "numeric_stats": {}, "top_rows": []}
+    columns = list(rows[0].keys())
+    numeric_stats: dict = {}
+    for col in columns:
+        vals = []
+        for r in rows:
+            try:
+                vals.append(float(r.get(col)))
+            except (TypeError, ValueError):
+                pass
+        if vals and len(vals) >= len(rows) / 2:   # columna mayormente numérica
+            numeric_stats[col] = {
+                "sum": round(sum(vals), 2),
+                "avg": round(sum(vals) / len(vals), 2),
+                "min": round(min(vals), 2),
+                "max": round(max(vals), 2),
+            }
+    key_col = None
+    if numeric_stats:
+        key_col = max(numeric_stats, key=lambda c: numeric_stats[c]["max"])
+
+        def _salience(r):
+            try:
+                return float(r.get(key_col))
+            except (TypeError, ValueError):
+                return float("-inf")
+        top_rows = sorted(rows, key=_salience, reverse=True)[:top_n]
+    else:
+        top_rows = rows[:top_n]
+    return {
+        "total_rows": len(rows),
+        "columns": columns,
+        "numeric_stats": numeric_stats,
+        "top_rows_metric": key_col,
+        "top_rows": top_rows,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1007,6 +1043,20 @@ def handler(event, context):  # noqa: ARG001
             _update_run(run_id, status="ERROR", error_message=err,
                         completed_at=dt.datetime.utcnow().isoformat())
             raise ValueError(err)
+        # Período configurable: 5/15/30/60/90 días, o None/"historico" = sin límite
+        days = event.get("days")
+        try:
+            days = int(days)
+            if days not in (5, 15, 30, 60, 90):
+                days = None
+        except (TypeError, ValueError):
+            days = None
+
+        def _days_filter(column: str) -> str:
+            if not days:
+                return ""
+            return f"AND {column} >= DATEADD(day, -{days}, CURRENT_DATE)"
+
         try:
             _update_run(run_id, status="RESUMING")
             ensure_cluster_available()
@@ -1014,19 +1064,29 @@ def handler(event, context):  # noqa: ARG001
             # Build customer_ids SQL list
             ids_sql = ", ".join(str(int(i)) for i in customer_ids)
 
-            # Load and render SQL templates
-            sql_out = (QUERIES_DIR / "individual_aml_out.sql").read_text(encoding="utf-8")
-            sql_in  = (QUERIES_DIR / "individual_aml_in.sql").read_text(encoding="utf-8")
-            sql_out = sql_out.strip().rstrip(";").replace("{customer_ids}", ids_sql)
-            sql_in  = sql_in.strip().rstrip(";").replace("{customer_ids}", ids_sql)
+            # Load and render SQL templates — 2 fuentes OUT (remesas + cash calls DR)
+            # y 2 fuentes IN (CCA wallet deposit + cash calls CR)
+            def _render(filename: str, date_column: str) -> str:
+                sql = (QUERIES_DIR / filename).read_text(encoding="utf-8")
+                return (
+                    sql.strip().rstrip(";")
+                    .replace("{customer_ids}", ids_sql)
+                    .replace("{days_filter}", _days_filter(date_column))
+                )
 
-            rows_out = execute_query(sql_out)
-            rows_in  = execute_query(sql_in)
+            sql_out_remesa   = _render("individual_aml_out.sql", "t.start_date")
+            sql_out_cashcall = _render("individual_cashcall_out.sql", "cc.created_at")
+            sql_in_ccapayin  = _render("individual_aml_in.sql", "w.deposit_date")
+            sql_in_cashcall  = _render("individual_cashcall_in.sql", "cc.created_at")
+
+            rows_out = execute_query(sql_out_remesa) + execute_query(sql_out_cashcall)
+            rows_in  = execute_query(sql_in_ccapayin) + execute_query(sql_in_cashcall)
 
             xlsx_bytes = build_aml_excel(rows_out, rows_in, customer_ids)
 
             run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-            key = f"individual_aml_analysis/{run_ts}_customers-{len(customer_ids)}.xlsx"
+            period_tag = f"{days}d" if days else "historico"
+            key = f"individual_aml_analysis/{run_ts}_customers-{len(customer_ids)}_{period_tag}.xlsx"
 
             s3_url = upload_to_s3(
                 xlsx_bytes, key,
@@ -1195,6 +1255,8 @@ ORDER BY start_date DESC
             s3_key=key,
             row_count=total_rows,
             result_preview=json.dumps(result_preview, default=str),
+            # Agregados sobre TODAS las filas + las más extremas → la IA analiza el dataset completo
+            ai_summary=json.dumps(_build_ai_summary(rows), default=str),
         )
 
         # Phase 10 — apply auto-case rules (non-blocking)

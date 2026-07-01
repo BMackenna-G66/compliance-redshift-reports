@@ -1848,6 +1848,22 @@
               <p class="text-xs text-slate-500 mt-1">Máximo 1000 clientes por análisis</p>
             </div>
 
+            <!-- Selector de período — aplica a las 4 fuentes (remesas, CCA pay-in, cash calls IN/OUT) -->
+            <div x-show="amlCustomerIds.trim()">
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Período a analizar</label>
+              <div class="flex flex-wrap gap-1.5">
+                <template x-for="p in [{d:5,l:'5 días'},{d:15,l:'15 días'},{d:30,l:'30 días'},{d:60,l:'60 días'},{d:90,l:'90 días'},{d:null,l:'Histórico'}]" :key="p.l">
+                  <button @click="amlDays=p.d"
+                    :class="amlDays===p.d ? 'bg-orange-500 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700 border border-slate-700'"
+                    class="text-xs px-3 py-1.5 rounded-full transition font-medium" x-text="p.l"></button>
+                </template>
+              </div>
+              <p class="text-xs text-slate-500 mt-1.5">
+                <span x-show="amlDays">Se analizarán transacciones de los últimos <span x-text="amlDays" class="text-orange-400 font-semibold"></span> días.</span>
+                <span x-show="!amlDays">Se analizará todo el histórico disponible (sin límite de fecha).</span>
+              </p>
+            </div>
+
             <div class="flex items-center gap-3">
               <button @click="runAmlIndividual()"
                 :disabled="amlRunning || !amlCustomerIds.trim()"
@@ -4011,7 +4027,8 @@
       historyPage: 1,
       historyPageSize: 50,
       historyAI: { loading: false, text: '', error: '' },
-      chat: { open: false, messages: [], input: '', loading: false },
+      chat: { open: false, messages: [], input: '', loading: false,
+              customerId: '', days: 30, dossier: null, ctxLoading: false },
 
       // Whitelist
       whitelist: [],
@@ -4115,6 +4132,7 @@
 
       // Análisis Individual AML — Paso 3: Scoring AML
       amlCustomerIds: '',
+      amlDays: null, // null = histórico (sin límite); o 5/15/30/60/90
       amlRunning: false,
       amlRunId: null,
       amlResult: null,
@@ -4595,6 +4613,7 @@
             display_name: d.display_name || d.report_name?.replace(/_/g, ' '),
             rows: preview, columns: cols,
             row_count: d.row_count,
+            ai_summary: d.ai_summary || null,
             download_url: d.download_url,
             started_at: d.started_at,
             completed_at: d.completed_at,
@@ -4750,6 +4769,7 @@
           rows: preview, columns: cols,
           download_url: this.currentRun?.download_url,
           row_count: this.currentRun?.row_count,
+          ai_summary: this.currentRun?.ai_summary || null,
         };
         this.tableFilters = {}; this.sortCol = null; this.currentPage = 1;
         this.aiAnalysis = { loading: false, text: '', error: '' };
@@ -5083,14 +5103,14 @@
         if (ids.length === 0) { this.amlError = 'No se encontraron IDs válidos. Ingresa números separados por coma.'; return; }
         if (ids.length > 1000) { this.amlError = 'Máximo 1000 customer_ids por análisis.'; return; }
 
-        _logEvent(this.currentUserEmail, 'analysis_individual', { n_customers: ids.length, customer_ids: ids.slice(0,10) });
+        _logEvent(this.currentUserEmail, 'analysis_individual', { n_customers: ids.length, customer_ids: ids.slice(0,10), days: this.amlDays });
         this.amlRunning = true;
         this.amlError = null;
         this.amlResult = null;
         this.amlRunId = null;
         this.amlStatusMsg = 'Enviando análisis a la nube...';
 
-        const d = await this.api('POST', '/analyze/individual', { customer_ids: ids, user_email: this.currentUserEmail });
+        const d = await this.api('POST', '/analyze/individual', { customer_ids: ids, days: this.amlDays, user_email: this.currentUserEmail });
         if (!d) { this.amlRunning = false; this.amlError = 'Error al iniciar el análisis.'; return; }
 
         this.amlRunId = d.run_id;
@@ -5548,26 +5568,44 @@
       // -----------------------------------------------
       // AI ANALYSIS
       // -----------------------------------------------
-      _buildAMLPrompt(displayName, totalRows, cols, rows) {
-        const sample = rows.slice(0, 50);
-        const numCols = cols.filter(c => {
-          const vals = sample.map(r => parseFloat(r[c])).filter(v => !isNaN(v));
-          return vals.length > sample.length * 0.5;
-        });
-        const stats = numCols.map(c => {
-          const vals = sample.map(r => parseFloat(r[c])).filter(v => !isNaN(v));
-          if (!vals.length) return null;
-          const sum = vals.reduce((a,b)=>a+b,0);
-          return `${c}: sum=${sum.toFixed(2)}, avg=${(sum/vals.length).toFixed(2)}, max=${Math.max(...vals).toFixed(2)}`;
-        }).filter(Boolean);
+      _buildAMLPrompt(view) {
+        const displayName = view.display_name;
+        const totalRows = view.row_count ?? (view.rows?.length || 0);
+        const cols = view.columns || [];
+        const s = view.ai_summary;
 
-        return `Eres un analista AML experto. Analiza los siguientes datos del reporte "${displayName}" con ${totalRows} filas totales.
+        // Preferir el resumen del DATASET COMPLETO (calculado en el backend sobre TODAS las filas)
+        let statsBlock, sampleBlock, scopeNote;
+        if (s && s.numeric_stats && Object.keys(s.numeric_stats).length) {
+          statsBlock = Object.entries(s.numeric_stats)
+            .map(([c, v]) => `${c}: sum=${v.sum}, avg=${v.avg}, min=${v.min}, max=${v.max}`).join('\n');
+          const top = s.top_rows || [];
+          sampleBlock = `LAS ${top.length} FILAS MÁS EXTREMAS (ordenadas por ${s.top_rows_metric || 'métrica clave'}, del total de ${s.total_rows}):\n${JSON.stringify(top, null, 1)}`;
+          scopeNote = `${s.total_rows} filas TOTALES — estadísticas calculadas sobre el dataset COMPLETO, no una muestra`;
+        } else {
+          // Fallback: muestra del preview (runs viejos sin ai_summary)
+          const rows = view.rows || [];
+          const sample = rows.slice(0, 50);
+          const numCols = cols.filter(c => {
+            const vals = sample.map(r => parseFloat(r[c])).filter(v => !isNaN(v));
+            return vals.length > sample.length * 0.5;
+          });
+          statsBlock = numCols.map(c => {
+            const vals = sample.map(r => parseFloat(r[c])).filter(v => !isNaN(v));
+            if (!vals.length) return null;
+            const sum = vals.reduce((a, b) => a + b, 0);
+            return `${c}: sum=${sum.toFixed(2)}, avg=${(sum/vals.length).toFixed(2)}, max=${Math.max(...vals).toFixed(2)}`;
+          }).filter(Boolean).join('\n');
+          sampleBlock = `MUESTRA (${sample.length} de ${totalRows} filas):\n${JSON.stringify(sample, null, 1)}`;
+          scopeNote = `${totalRows} filas totales (analizando una muestra de ${sample.length})`;
+        }
+
+        return `Eres un analista AML experto. Analiza el reporte "${displayName}" — ${scopeNote}.
 
 COLUMNAS: ${cols.join(', ')}
-MÉTRICAS NUMÉRICAS (muestra de ${sample.length} filas):
-${stats.join('\n') || 'N/A'}
-MUESTRA (${sample.length} filas):
-${JSON.stringify(sample, null, 1)}
+MÉTRICAS NUMÉRICAS:
+${statsBlock || 'N/A'}
+${sampleBlock}
 
 Entrega un análisis AML estructurado con estas secciones:
 
@@ -5603,19 +5641,13 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
       },
 
       async analyzeWithAI() {
-        if (!this.resultsView?.rows?.length) return;
-        await this._callGemini(
-          this._buildAMLPrompt(this.resultsView.display_name, this.resultsView.row_count, this.resultsView.columns, this.resultsView.rows),
-          'aiAnalysis'
-        );
+        if (!this.resultsView?.rows?.length && !this.resultsView?.ai_summary) return;
+        await this._callGemini(this._buildAMLPrompt(this.resultsView), 'aiAnalysis');
       },
 
       async analyzeHistoryWithAI() {
-        if (!this.historyView?.rows?.length) return;
-        await this._callGemini(
-          this._buildAMLPrompt(this.historyView.display_name, this.historyView.row_count, this.historyView.columns, this.historyView.rows),
-          'historyAI'
-        );
+        if (!this.historyView?.rows?.length && !this.historyView?.ai_summary) return;
+        await this._callGemini(this._buildAMLPrompt(this.historyView), 'historyAI');
       },
 
       // -----------------------------------------------
@@ -5623,7 +5655,16 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
       // -----------------------------------------------
       async analyzeRow(row, reportName) {
         this.rowAI = { open: true, loading: true, text: '', error: '', row, reportName: reportName || '' };
-        const prompt = this._buildRowPrompt(row, reportName || '');
+        // Enriquecer con el expediente del cliente (CRM + transacciones) si la fila tiene customer_id
+        let dossier = null;
+        const cid = row?.customer_id ?? row?.entity_value;
+        if (cid != null && String(cid).trim() && /^\d+$/.test(String(cid).trim())) {
+          try {
+            dossier = await this.api('GET', `/customer/context?customer_id=${encodeURIComponent(String(cid).trim())}&days=30`);
+            if (dossier?.error) dossier = null;
+          } catch(_) { dossier = null; }
+        }
+        const prompt = this._buildRowPrompt(row, reportName || '', dossier);
         const data = await this.api('POST', '/ai/generate', { prompt, temperature: 0.3, max_tokens: 1500 });
         if (!data) {
           this.rowAI = { ...this.rowAI, loading: false, error: 'Error al contactar el servidor de IA.' };
@@ -5636,17 +5677,31 @@ Qué escalar, qué monitorear, si amerita SAR, sugerencias de umbral.`;
         this.rowAI = { ...this.rowAI, loading: false, text: data.text || '' };
       },
 
-      _buildRowPrompt(row, reportName) {
+      _buildRowPrompt(row, reportName, dossier) {
         const fields = Object.entries(row || {})
           .filter(([, v]) => v != null && v !== '' && v !== '—')
           .map(([k, v]) => `  ${k}: ${v}`)
           .join('\n');
+
+        let context = '';
+        if (dossier) {
+          const crm = dossier.crm || {};
+          const tx = dossier.transactions || {};
+          context = `\n\nEXPEDIENTE DEL CLIENTE ${dossier.customer_id} (contexto del CRM):\n`
+            + `- Alertas previas: ${crm.alert_count||0}${crm.recurrent ? ' (RECURRENTE)' : ''}${crm.combines_alerts ? ', COMBINA tipologías: '+(crm.distinct_reports||[]).join(', ') : ''}\n`
+            + `- Casos de investigación: ${crm.case_count||0}\n`
+            + (tx.available
+                ? `- Transacciones 30d: ${(tx.payin?.count||0)} pay-in (USD ${tx.payin?.total_destiny_usd||0}) / ${(tx.payout?.count||0)} pay-out (USD ${tx.payout?.total_destiny_usd||0})\n`
+                : `- Transacciones: no disponibles (cluster apagado)\n`)
+            + `Considerá este historial al evaluar el riesgo (un cliente recurrente o que combina tipologías es más riesgoso).`;
+        }
+
         return `Eres un analista AML senior de Global66. Analiza el siguiente registro de cumplimiento y entrega una evaluación de riesgo concisa.
 
 Reporte: ${(reportName || 'screening').replace(/_/g, ' ')}
 
 DATOS DEL REGISTRO:
-${fields}
+${fields}${context}
 
 Responde EXACTAMENTE con este formato:
 1. **NIVEL DE RIESGO**: Bajo / Medio / Alto / Crítico — justificación en una línea
@@ -5654,6 +5709,44 @@ Responde EXACTAMENTE con este formato:
 3. **RECOMENDACIÓN**: acción específica sugerida (monitoreo continuo, escalamiento a supervisor, emitir SAR, etc.)
 
 Responde en español, directo y estructurado. Sin texto adicional.`;
+      },
+
+      // -----------------------------------------------
+      // CHATBOT — customer context (memoria del CRM + transacciones)
+      // -----------------------------------------------
+      async loadCustomerContext() {
+        const cid = (this.chat.customerId || '').trim();
+        if (!cid || this.chat.ctxLoading) return;
+        this.chat.ctxLoading = true;
+        try {
+          const d = await this.api('GET', `/customer/context?customer_id=${encodeURIComponent(cid)}&days=${this.chat.days}`);
+          if (!d || d.error) {
+            this.chat.messages = [...this.chat.messages, { role: 'assistant',
+              text: '⚠️ No pude cargar el contexto del cliente: ' + (d?.error || 'error de servidor') }];
+            return;
+          }
+          this.chat.dossier = d;
+          const crm = d.crm || {};
+          const tx = d.transactions || {};
+          const txLine = tx.available
+            ? `${(tx.payin?.count||0)} pay-in / ${(tx.payout?.count||0)} pay-out (últimos ${d.days}d)`
+            : 'transacciones no cargadas (cluster apagado)';
+          this.chat.messages = [...this.chat.messages, { role: 'assistant',
+            text: `📋 Contexto cargado para el cliente **${d.customer_id}**:\n`
+              + `• ${crm.alert_count||0} alerta(s)${crm.recurrent ? ' (recurrente)' : ''}${crm.combines_alerts ? ', combina tipologías' : ''}\n`
+              + `• ${crm.case_count||0} caso(s) de investigación\n`
+              + `• ${txLine}\n\nPreguntame lo que quieras sobre este cliente.` }];
+          this.$nextTick(() => { const el = document.getElementById('chat-messages'); if (el) el.scrollTop = el.scrollHeight; });
+        } catch (e) {
+          this.chat.messages = [...this.chat.messages, { role: 'assistant', text: '⚠️ Error al cargar contexto: ' + (e?.message || e) }];
+        } finally {
+          this.chat.ctxLoading = false;
+        }
+      },
+
+      clearCustomerContext() {
+        this.chat.dossier = null;
+        this.chat.customerId = '';
       },
 
       // -----------------------------------------------
@@ -5700,6 +5793,29 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           parts.push(`El usuario también tiene abierto el análisis de un registro: ${summary}.`);
         }
         parts.push('Responde preguntas sobre AML, tipologías de lavado, normativa, análisis de transacciones, KYC/KYB, o los datos cargados.');
+
+        // Dossier del cliente bajo evaluación (memoria del CRM + transacciones)
+        const dos = this.chat.dossier;
+        if (dos) {
+          const crm = dos.crm || {};
+          const tx = dos.transactions || {};
+          let block = `\n\n=== EXPEDIENTE DEL CLIENTE ${dos.customer_id} (evaluación a ${dos.days} días) ===\n`;
+          block += `HISTORIAL CRM:\n`;
+          block += `- Alertas: ${crm.alert_count||0}${crm.recurrent ? ' (RECURRENTE — alertado más de una vez)' : ''}${crm.combines_alerts ? ' — COMBINA tipologías de varios reportes: '+(crm.distinct_reports||[]).join(', ') : ''}\n`;
+          (crm.alerts||[]).forEach(a => { block += `   • [${a.created_at}] ${a.report_name} — ${a.reason} (estado: ${a.status}, prioridad: ${a.priority})\n`; });
+          block += `- Casos de investigación: ${crm.case_count||0}\n`;
+          (crm.cases||[]).forEach(c => { block += `   • ${c.title} (estado: ${c.status}, prioridad: ${c.priority}, ${c.created_at})\n`; });
+          if (tx.available) {
+            block += `TRANSACCIONES (cash calls PAID, últimos ${dos.days}d):\n`;
+            block += `- PAY IN (CR): ${tx.payin?.count||0} operaciones, total destino USD ${tx.payin?.total_destiny_usd||0}\n`;
+            block += `- PAY OUT (DR): ${tx.payout?.count||0} operaciones, total destino USD ${tx.payout?.total_destiny_usd||0}\n`;
+            block += `Detalle (muestra):\n${JSON.stringify({ pay_in: tx.payin?.rows||[], pay_out: tx.payout?.rows||[] }, null, 1)}\n`;
+          } else {
+            block += `TRANSACCIONES: no disponibles (cluster Redshift apagado). Razoná solo con el historial CRM y aclará que faltan las transacciones.\n`;
+          }
+          block += `=== FIN EXPEDIENTE ===\nUsá este expediente como contexto principal para responder sobre este cliente.`;
+          parts.push(block);
+        }
         return parts.join(' ');
       },
 
@@ -6815,6 +6931,36 @@ Responde en español, de forma estructurada y concisa.`;
       <div class="flex items-center gap-2">
         <button @click="chat.messages=[]" class="text-slate-500 hover:text-slate-300 text-xs transition" title="Limpiar chat">🗑</button>
         <button @click="chat.open=false" class="text-slate-400 hover:text-white text-xl leading-none">×</button>
+      </div>
+    </div>
+    <!-- Customer context bar -->
+    <div class="px-3 py-2.5 bg-slate-950/60 border-b border-slate-800 flex-shrink-0 space-y-2">
+      <div class="flex items-center gap-2">
+        <input x-model="chat.customerId" @keydown.enter.prevent="loadCustomerContext()"
+          placeholder="Customer ID a evaluar"
+          class="flex-1 bg-slate-800 text-white text-xs rounded-lg px-2.5 py-1.5 outline-none border border-slate-700 focus:border-purple-500 placeholder-slate-500 font-mono" />
+        <button @click="loadCustomerContext()" :disabled="!chat.customerId.trim() || chat.ctxLoading"
+          class="text-xs px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white rounded-lg whitespace-nowrap transition">
+          <span x-show="!chat.ctxLoading">Cargar</span><span x-show="chat.ctxLoading">…</span>
+        </button>
+        <button x-show="chat.dossier" @click="clearCustomerContext()" title="Quitar contexto"
+          class="text-xs px-2 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg transition">✕</button>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <span class="text-[11px] text-slate-500">Período:</span>
+        <template x-for="d in [5,15,30,60]" :key="d">
+          <button @click="chat.days=d; if(chat.customerId.trim()) loadCustomerContext()"
+            :class="chat.days===d ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'"
+            class="text-[11px] px-2.5 py-1 rounded-full transition" x-text="d+'d'"></button>
+        </template>
+      </div>
+      <div x-show="chat.dossier" class="text-[11px] text-slate-300 bg-slate-800/70 rounded-lg px-2.5 py-1.5 leading-relaxed">
+        <span class="text-purple-300 font-semibold">Cliente <span x-text="chat.dossier?.customer_id"></span></span>
+        · <span x-text="(chat.dossier?.crm?.alert_count||0)+' alertas'"></span>
+        <span x-show="chat.dossier?.crm?.combines_alerts" class="text-amber-400" title="Combina tipologías">⚠ combina</span>
+        · <span x-text="(chat.dossier?.crm?.case_count||0)+' casos'"></span>
+        · <template x-if="chat.dossier?.transactions?.available"><span x-text="((chat.dossier.transactions.payin?.count||0)+(chat.dossier.transactions.payout?.count||0))+' tx ('+chat.dossier.days+'d)'"></span></template>
+        <template x-if="chat.dossier && !chat.dossier.transactions?.available"><span class="text-amber-400">cluster apagado — transacciones no cargadas</span></template>
       </div>
     </div>
     <!-- Messages -->

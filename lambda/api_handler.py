@@ -857,6 +857,117 @@ def ai_generate(body: dict):
 
 
 # ---------------------------------------------------------------------------
+# CUSTOMER CONTEXT — dossier para la IA (CRM siempre + transacciones si cluster on)
+# ---------------------------------------------------------------------------
+_ALLOWED_DAYS = (5, 15, 30, 60)
+
+
+def _cluster_available() -> bool:
+    try:
+        r = redshift.describe_clusters(ClusterIdentifier=CLUSTER_ID)
+        return r["Clusters"][0]["ClusterStatus"] == "available"
+    except Exception:
+        return False
+
+
+def _customer_cashcall_sql(direction: str, customer_id: str, days: int) -> str:
+    """Cash calls de un cliente. direction: 'DR' (pay out) | 'CR' (pay in).
+    customer_id ya validado como dígitos; days dentro de _ALLOWED_DAYS."""
+    return f"""
+SELECT cc.cash_call_id, cc.external_reference_number, cc.transaction_id,
+    cc.customer_id, c.email, c.name, c.last_name,
+    cc.created_at, cc.paid_date, cc.type, cc.status, cc.currency_code,
+    cc.amount, cc.origin_amount_usd, cc.destiny_amount_usd,
+    cc.remitter_name, cc.remitter_lastname, cc.remitter_dni, cc.remitter_email,
+    cc.beneficiary_name, cc.beneficiary_lastname, cc.beneficiary_dni, cc.beneficiary_email,
+    cc.origin_country, cc.destiny_country,
+    cc.business_bank_id, bb.bank_code, bb.bank_name
+FROM "db_prod"."treasury"."cash_call" AS cc
+LEFT JOIN "db_prod"."customer"."customer_v2" AS c
+    ON cc.customer_id::VARCHAR = c.customer_id::VARCHAR
+LEFT JOIN "db_prod"."treasury"."business_bank" AS bb
+    ON cc.business_bank_id = bb.business_bank_id
+WHERE cc.type = '{direction}'
+  AND cc.customer_id::VARCHAR = '{customer_id}'
+  AND cc.created_at >= DATEADD(day, -{days}, CURRENT_TIMESTAMP)
+  AND cc.status = 'PAID'
+ORDER BY cc.created_at DESC
+"""
+
+
+def _tx_summary(rows: list, sample: int = 40) -> dict:
+    """Resumen + muestra acotada (para no inflar el prompt de la IA)."""
+    def _fnum(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+    total_origin = sum(_fnum(r.get("origin_amount_usd")) for r in rows)
+    total_destiny = sum(_fnum(r.get("destiny_amount_usd")) for r in rows)
+    return {
+        "count": len(rows),
+        "total_origin_usd": round(total_origin, 2),
+        "total_destiny_usd": round(total_destiny, 2),
+        "rows": rows[:sample],
+        "truncated": len(rows) > sample,
+    }
+
+
+def _customer_crm_dossier(customer_id: str) -> dict:
+    """Historial CRM del cliente desde S3 (siempre disponible)."""
+    alerts = _crm_list("alerts")
+    cust_alerts = [a for a in alerts
+                   if str(a.get("entity_value", "")) == customer_id
+                   and (a.get("entity_field") in ("customer_id", "", None) or True)]
+    reports = sorted({a.get("report_name", "") for a in cust_alerts if a.get("report_name")})
+
+    cases = _crm_list("cases")
+    linked_ids = {a.get("case_id") for a in cust_alerts if a.get("case_id")}
+    cust_cases = [c for c in cases
+                  if str(c.get("entity_id", "")) == customer_id or c.get("case_id") in linked_ids]
+
+    return {
+        "alert_count": len(cust_alerts),
+        "recurrent": len(cust_alerts) > 1,
+        "combines_alerts": len(reports) > 1,
+        "distinct_reports": reports,
+        "alerts": [{
+            "report_name": a.get("report_name", ""), "reason": a.get("reason", ""),
+            "status": a.get("status", ""), "priority": a.get("priority", "medium"),
+            "created_at": a.get("created_at", ""), "entity_field": a.get("entity_field", ""),
+        } for a in sorted(cust_alerts, key=lambda x: x.get("created_at", ""), reverse=True)],
+        "case_count": len(cust_cases),
+        "cases": [{
+            "case_id": c.get("case_id", ""), "title": c.get("title", ""),
+            "status": c.get("status", ""), "priority": c.get("priority", ""),
+            "created_at": c.get("created_at", ""),
+        } for c in cust_cases],
+    }
+
+
+def customer_context(customer_id: str, days: int):
+    customer_id = str(customer_id or "").strip()
+    if not customer_id.isdigit():
+        return resp(400, {"error": "customer_id debe ser numérico"})
+    if days not in _ALLOWED_DAYS:
+        days = 30
+
+    crm = _customer_crm_dossier(customer_id)
+
+    tx: dict = {"available": False, "reason": "cluster_paused"}
+    if _cluster_available():
+        try:
+            payout = _rs_exec(_customer_cashcall_sql("DR", customer_id, days))
+            payin = _rs_exec(_customer_cashcall_sql("CR", customer_id, days))
+            tx = {"available": True, "days": days,
+                  "payout": _tx_summary(payout), "payin": _tx_summary(payin)}
+        except Exception as e:
+            tx = {"available": False, "reason": "error", "error": str(e)}
+
+    return resp(200, {"customer_id": customer_id, "days": days, "crm": crm, "transactions": tx})
+
+
+# ---------------------------------------------------------------------------
 # CASE EXCEL EXPORT
 # ---------------------------------------------------------------------------
 
@@ -869,24 +980,12 @@ def export_case(case_id: str):
     except ImportError:
         return resp(500, {"error": "openpyxl not available"})
 
-    case_rows = _rs_exec(
-        "SELECT case_id, title, description, status, priority, entity_type, entity_id, "
-        "report_name, COALESCE(assigned_to,'') AS assigned_to, created_by, "
-        "created_at::VARCHAR AS created_at, updated_at::VARCHAR AS updated_at, "
-        f"COALESCE(closed_at::VARCHAR,'') AS closed_at FROM crm.cases WHERE case_id='{_esc(case_id)}'"
-    )
-    if not case_rows:
+    case = _crm_get("cases", case_id)
+    if case is None:
         return resp(404, {"error": "Case not found"})
-    case = case_rows[0]
 
-    notes = _rs_exec(
-        "SELECT note_id, COALESCE(author_email,'') AS author_email, content, "
-        f"created_at::VARCHAR AS created_at FROM crm.case_notes WHERE case_id='{_esc(case_id)}' ORDER BY created_at ASC"
-    )
-    alerts = _rs_exec(
-        "SELECT alert_id, entity_field, entity_value, reason, report_name, "
-        f"created_at::VARCHAR AS created_at, status FROM compliance.alerts WHERE case_id='{_esc(case_id)}'"
-    )
+    notes = sorted(case.get("notes", []), key=lambda n: n.get("created_at", ""))
+    alerts = [a for a in _crm_list("alerts") if a.get("case_id") == case_id]
 
     wb = openpyxl.Workbook()
     HEADER_FILL = PatternFill("solid", fgColor="1E293B")
@@ -969,27 +1068,27 @@ def search_entity_timeline(query: str, limit: int = 100):
     """Search alerts + cases for an entity value. Returns unified timeline sorted by date."""
     if not query or len(query) < 3:
         return resp(400, {"error": "query must be at least 3 characters"})
-    q = _esc(query.strip())
+    q = query.strip().lower()
     try:
-        alerts_sql = (
-            "SELECT 'alert' AS source_type, alert_id AS source_id, "
-            "entity_value AS entity_value, reason AS detail, "
-            "report_name, created_at::VARCHAR AS event_date, status "
-            f"FROM compliance.alerts WHERE LOWER(entity_value) LIKE LOWER('%{q}%') "
-            f"OR LOWER(reason) LIKE LOWER('%{q}%') "
-            f"ORDER BY created_at DESC LIMIT {int(limit)}"
-        )
-        cases_sql = (
-            "SELECT 'case' AS source_type, case_id AS source_id, "
-            "COALESCE(entity_id, '') AS entity_value, title AS detail, "
-            "report_name, created_at::VARCHAR AS event_date, status "
-            f"FROM crm.cases WHERE LOWER(title) LIKE LOWER('%{q}%') "
-            f"OR LOWER(COALESCE(entity_id,'')) LIKE LOWER('%{q}%') "
-            f"OR LOWER(COALESCE(description,'')) LIKE LOWER('%{q}%') "
-            f"ORDER BY created_at DESC LIMIT {int(limit)}"
-        )
-        alert_rows = _rs_exec(alerts_sql)
-        case_rows  = _rs_exec(cases_sql)
+        alert_rows = []
+        for a in _crm_list("alerts"):
+            if q in (a.get("entity_value", "") or "").lower() or q in (a.get("reason", "") or "").lower():
+                alert_rows.append({
+                    "source_type": "alert", "source_id": a.get("alert_id", ""),
+                    "entity_value": a.get("entity_value", ""), "detail": a.get("reason", ""),
+                    "report_name": a.get("report_name", ""), "event_date": a.get("created_at", ""),
+                    "status": a.get("status", ""),
+                })
+        case_rows = []
+        for c in _crm_list("cases"):
+            hay = (c.get("title", ""), c.get("entity_id", ""), c.get("description", ""))
+            if any(q in (h or "").lower() for h in hay):
+                case_rows.append({
+                    "source_type": "case", "source_id": c.get("case_id", ""),
+                    "entity_value": c.get("entity_id", ""), "detail": c.get("title", ""),
+                    "report_name": c.get("report_name", ""), "event_date": c.get("created_at", ""),
+                    "status": c.get("status", ""),
+                })
         combined = sorted(alert_rows + case_rows,
                           key=lambda x: x.get("event_date", ""), reverse=True)
         return resp(200, {"results": combined[:int(limit)], "query": query,
@@ -1004,23 +1103,26 @@ def search_entity_timeline(query: str, limit: int = 100):
 
 def get_audit_log(limit: int = 200, entity_type: str | None = None,
                   user_email: str | None = None, action: str | None = None):
-    """Query crm.audit_log with optional filters. Most recent first."""
+    """Read the audit log from S3 with optional filters. Most recent first."""
     try:
-        conditions = ["1=1"]
-        if entity_type:
-            conditions.append(f"entity_type = '{_esc(entity_type)}'")
-        if user_email:
-            conditions.append(f"user_email = '{_esc(user_email)}'")
-        if action:
-            conditions.append(f"action LIKE '%{_esc(action)}%'")
-        sql = (
-            "SELECT log_id, user_email, action, entity_type, entity_id, "
-            "created_at::VARCHAR AS created_at "
-            f"FROM crm.audit_log WHERE {' AND '.join(conditions)} "
-            f"ORDER BY created_at DESC LIMIT {int(limit)}"
-        )
-        rows = _rs_exec(sql)
-        return resp(200, {"entries": rows})
+        rows = []
+        for e in _crm_list("audit"):
+            if entity_type and e.get("entity_type") != entity_type:
+                continue
+            if user_email and e.get("user_email") != user_email:
+                continue
+            if action and action.lower() not in (e.get("action", "") or "").lower():
+                continue
+            rows.append({
+                "log_id": e.get("log_id", ""),
+                "user_email": e.get("user_email", ""),
+                "action": e.get("action", ""),
+                "entity_type": e.get("entity_type", ""),
+                "entity_id": e.get("entity_id", ""),
+                "created_at": e.get("created_at", ""),
+            })
+        rows.sort(key=lambda x: x["created_at"], reverse=True)
+        return resp(200, {"entries": rows[:int(limit)]})
     except Exception as e:
         return resp(200, {"entries": [], "warning": str(e)})
 
@@ -1083,6 +1185,207 @@ def update_schedule_expression(name: str, body: dict):
 
 # ---------------------------------------------------------------------------
 # Router
+# ---------------------------------------------------------------------------
+# Admin — verifica capacidad de escritura en S3 (diagnóstico de permisos)
+# ---------------------------------------------------------------------------
+def admin_s3check():
+    key = "crm/_s3check.json"
+    result = {"bucket": S3_BUCKET}
+    try:
+        s3.put_object(Bucket=S3_BUCKET, Key=key, Body=b'{"ok":true}',
+                      ContentType="application/json")
+        result["write"] = True
+    except Exception as e:
+        result["write"] = False
+        result["error"] = str(e)
+        return resp(200, result)
+    try:
+        s3.get_object(Bucket=S3_BUCKET, Key=key)
+        result["read"] = True
+    except Exception as e:
+        result["read"] = False
+        result["read_error"] = str(e)
+    try:
+        s3.delete_object(Bucket=S3_BUCKET, Key=key)
+        result["delete"] = True
+    except Exception as e:
+        result["delete"] = False
+        result["delete_error"] = str(e)
+    return resp(200, result)
+
+
+def _str_to_epoch(ts) -> int:
+    if not ts:
+        return 0
+    s = str(ts)[:19]
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return int(dt.datetime.strptime(s, fmt).timestamp())
+        except ValueError:
+            continue
+    return 0
+
+
+def admin_migrate(body: dict):
+    """One-time copy of CRM data from Redshift → S3. Runs inside the Lambda
+    (has both redshift-data + S3 perms). Requires cluster ONLINE. Idempotent."""
+    module = (body.get("module") or "").strip()
+    migrators = {
+        "whitelist": _migrate_whitelist_to_s3,
+        "alerts": _migrate_alerts_to_s3,
+        "cases": _migrate_cases_to_s3,
+        "users": _migrate_users_to_s3,
+    }
+    if module == "all":
+        out = {}
+        for name, fn in migrators.items():
+            try:
+                out[name] = fn()
+            except Exception as e:
+                out[name] = f"error: {e}"
+        return resp(200, {"migrated": out})
+    fn = migrators.get(module)
+    if not fn:
+        return resp(400, {"error": f"unknown module '{module}'",
+                          "available": list(migrators) + ["all"]})
+    try:
+        return resp(200, {"module": module, "migrated": fn()})
+    except Exception as e:
+        return resp(500, {"module": module, "error": str(e)})
+
+
+def _migrate_whitelist_to_s3() -> int:
+    rows = _rs_exec(
+        "SELECT whitelist_id, entity_field, entity_value, duration_days, reason, scope, "
+        "report_name, created_at::VARCHAR AS created_at, expires_at::VARCHAR AS expires_at "
+        "FROM compliance.whitelist"
+    )
+    n = 0
+    for r in rows:
+        wid = r.get("whitelist_id")
+        if not wid:
+            continue
+        exp_str = str(r.get("expires_at") or "")[:19]
+        _crm_put("whitelist", str(wid), {
+            "whitelist_id": str(wid),
+            "entity_field": r.get("entity_field") or "",
+            "entity_value": r.get("entity_value") or "",
+            "duration_days": int(r.get("duration_days") or 0),
+            "reason": r.get("reason") or "",
+            "scope": r.get("scope") or "global",
+            "report_name": r.get("report_name") or "",
+            "created_at": str(r.get("created_at") or "")[:19],
+            "expires_at": _str_to_epoch(exp_str),
+            "expires_at_str": exp_str,
+        })
+        n += 1
+    return n
+
+
+def _migrate_alerts_to_s3() -> int:
+    rows = _rs_exec(
+        "SELECT alert_id, entity_field, entity_value, reason, report_name, row_data, "
+        "created_at::VARCHAR AS created_at, status, "
+        "COALESCE(reviewed_at::VARCHAR, '') AS reviewed_at, "
+        "COALESCE(priority, 'medium') AS priority, "
+        "COALESCE(assigned_to, '') AS assigned_to, "
+        "COALESCE(reviewed_by, '') AS reviewed_by, "
+        "COALESCE(notes, '') AS notes "
+        "FROM compliance.alerts"
+    )
+    n = 0
+    for r in rows:
+        aid = r.get("alert_id")
+        if not aid:
+            continue
+        _crm_put("alerts", str(aid), {
+            "alert_id": str(aid),
+            "entity_field": r.get("entity_field") or "",
+            "entity_value": r.get("entity_value") or "",
+            "reason": r.get("reason") or "",
+            "report_name": r.get("report_name") or "",
+            "row_data": r.get("row_data") or "",
+            "created_at": str(r.get("created_at") or "")[:19],
+            "status": r.get("status") or "active",
+            "reviewed_at": str(r.get("reviewed_at") or "")[:19],
+            "priority": r.get("priority") or "medium",
+            "assigned_to": r.get("assigned_to") or "",
+            "reviewed_by": r.get("reviewed_by") or "",
+            "notes": r.get("notes") or "",
+        })
+        n += 1
+    return n
+
+
+def _migrate_cases_to_s3() -> int:
+    cases = _rs_exec(
+        "SELECT case_id, title, description, status, priority, entity_type, entity_id, "
+        "report_name, COALESCE(assigned_to,'') AS assigned_to, created_by, "
+        "created_at::VARCHAR AS created_at, updated_at::VARCHAR AS updated_at, "
+        "COALESCE(closed_at::VARCHAR,'') AS closed_at FROM crm.cases"
+    )
+    notes = _rs_exec(
+        "SELECT note_id, case_id, COALESCE(author_email,'') AS author_email, content, "
+        "created_at::VARCHAR AS created_at FROM crm.case_notes"
+    )
+    notes_by_case: dict[str, list] = {}
+    for nt in notes:
+        notes_by_case.setdefault(str(nt.get("case_id")), []).append({
+            "note_id": str(nt.get("note_id") or ""),
+            "case_id": str(nt.get("case_id") or ""),
+            "author_email": nt.get("author_email") or "",
+            "content": nt.get("content") or "",
+            "created_at": str(nt.get("created_at") or "")[:19],
+        })
+    n = 0
+    for c in cases:
+        cid = c.get("case_id")
+        if not cid:
+            continue
+        cnotes = sorted(notes_by_case.get(str(cid), []), key=lambda x: x["created_at"])
+        _crm_put("cases", str(cid), {
+            "case_id": str(cid),
+            "title": c.get("title") or "",
+            "description": c.get("description") or "",
+            "status": c.get("status") or "open",
+            "priority": c.get("priority") or "medium",
+            "entity_type": c.get("entity_type") or "",
+            "entity_id": c.get("entity_id") or "",
+            "report_name": c.get("report_name") or "",
+            "assigned_to": c.get("assigned_to") or "",
+            "created_by": c.get("created_by") or "",
+            "created_at": str(c.get("created_at") or "")[:19],
+            "updated_at": str(c.get("updated_at") or "")[:19],
+            "closed_at": str(c.get("closed_at") or "")[:19],
+            "notes": cnotes,
+        })
+        n += 1
+    return n
+
+
+def _migrate_users_to_s3() -> int:
+    rows = _rs_exec(
+        "SELECT u.email, COALESCE(u.full_name,'') AS full_name, u.is_active, "
+        "COALESCE(r.name,'analyst') AS role_name, "
+        "COALESCE(u.last_login_at::VARCHAR,'') AS last_login_at "
+        "FROM crm.users u LEFT JOIN crm.roles r ON u.role_id = r.id"
+    )
+    n = 0
+    for r in rows:
+        email = (r.get("email") or "").strip()
+        if not email:
+            continue
+        _crm_put("users", email, {
+            "email": email,
+            "full_name": r.get("full_name") or email,
+            "is_active": bool(r.get("is_active", True)),
+            "role_name": r.get("role_name") or "analyst",
+            "last_login_at": str(r.get("last_login_at") or "")[:19],
+        })
+        n += 1
+    return n
+
+
 # ---------------------------------------------------------------------------
 def handler(event, context):  # noqa: ARG001
     method = event.get("requestContext", {}).get("http", {}).get("method", "GET")
@@ -1171,6 +1474,14 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["cluster", "pause"]:
             return pause_cluster_api()
 
+        # POST /admin/s3check — verifica si la Lambda puede escribir/leer/borrar en S3
+        if method == "POST" and parts == ["admin", "s3check"]:
+            return admin_s3check()
+
+        # POST /admin/migrate — copia one-time de datos Redshift→S3 (cluster online)
+        if method == "POST" and parts == ["admin", "migrate"]:
+            return admin_migrate(body)
+
         # GET /whitelist
         if method == "GET" and parts == ["whitelist"]:
             return get_whitelist()
@@ -1242,6 +1553,15 @@ def handler(event, context):  # noqa: ARG001
 
         if method == "POST" and parts == ["ai", "generate"]:
             return ai_generate(body)
+
+        # GET /customer/context?customer_id=X&days=N  — dossier CRM + transacciones para la IA
+        if method == "GET" and parts == ["customer", "context"]:
+            qs = event.get("queryStringParameters") or {}
+            try:
+                days = int(qs.get("days", 30) or 30)
+            except (ValueError, TypeError):
+                days = 30
+            return customer_context(qs.get("customer_id", ""), days)
 
         # GET /cases/{id}/export
         if method == "GET" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "export":
@@ -1422,13 +1742,14 @@ def get_run(run_id: str):
         except Exception:
             pass
 
-    # Parse result_preview if stored as JSON string
-    preview = item.get("result_preview")
-    if isinstance(preview, str):
-        try:
-            item["result_preview"] = json.loads(preview)
-        except Exception:
-            item["result_preview"] = []
+    # Parse result_preview / ai_summary if stored as JSON strings
+    for fld, fallback in (("result_preview", []), ("ai_summary", None)):
+        val = item.get(fld)
+        if isinstance(val, str):
+            try:
+                item[fld] = json.loads(val)
+            except Exception:
+                item[fld] = fallback
 
     return resp(200, item)
 
@@ -1529,18 +1850,114 @@ def delete_query(report_name: str):
     return resp(200, {"message": f"Query '{report_name}' eliminada"})
 
 
-def get_whitelist():
+# ---------------------------------------------------------------------------
+# S3 JSON store — datos operativos del CRM (always-on, sin depender de Redshift)
+# Un objeto por registro: s3://<bucket>/crm/<kind>/<id>.json
+# Reutilizable por whitelist, alertados, casos, usuarios, audit.
+# ---------------------------------------------------------------------------
+CRM_PREFIX = "crm"
+
+
+def _crm_key(kind: str, item_id: str) -> str:
+    return f"{CRM_PREFIX}/{kind}/{item_id}.json"
+
+
+def _crm_put(kind: str, item_id: str, item: dict) -> None:
+    s3.put_object(
+        Bucket=S3_BUCKET, Key=_crm_key(kind, item_id),
+        Body=json.dumps(item, default=str).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
+def _crm_get(kind: str, item_id: str) -> dict | None:
     try:
-        today = dt.datetime.utcnow().strftime("%Y-%m-%d")
-        sql = (
-            "SELECT whitelist_id, entity_field, entity_value, duration_days, reason, scope, "
-            "report_name, created_at::VARCHAR AS created_at, expires_at::VARCHAR AS expires_at "
-            "FROM compliance.whitelist "
-            f"WHERE expires_at > '{today}' "
-            "ORDER BY created_at DESC"
-        )
-        items = _rs_exec(sql)
-        return resp(200, {"whitelist": items})
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=_crm_key(kind, item_id))
+        return json.loads(obj["Body"].read())
+    except s3.exceptions.NoSuchKey:
+        return None
+
+
+def _crm_delete(kind: str, item_id: str) -> None:
+    s3.delete_object(Bucket=S3_BUCKET, Key=_crm_key(kind, item_id))
+
+
+def _crm_update(kind: str, item_id: str, changes: dict) -> dict | None:
+    """Read-modify-write a single record. Returns the updated item, or None if
+    it doesn't exist."""
+    item = _crm_get(kind, item_id)
+    if item is None:
+        return None
+    item.update(changes)
+    _crm_put(kind, item_id, item)
+    return item
+
+
+def _safe_audit(*, user_email="unknown", action="", entity_type="",
+                entity_id="", new_value=None, **_extra) -> None:
+    """Best-effort audit write to the S3 store (always-on). Never breaks the
+    calling operation if it fails."""
+    try:
+        aid = str(uuid.uuid4())
+        _crm_put("audit", aid, {
+            "log_id": aid,
+            "user_email": user_email or "unknown",
+            "action": action,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "new_value": new_value,
+            "created_at": _now_str(),
+        })
+    except Exception:
+        pass
+
+
+def _crm_list(kind: str) -> list[dict]:
+    """List all records of a kind. Lists keys then fetches each object in
+    parallel (fine for the operational volumes here)."""
+    prefix = f"{CRM_PREFIX}/{kind}/"
+    keys: list[str] = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        for o in page.get("Contents", []):
+            if o["Key"].endswith(".json"):
+                keys.append(o["Key"])
+    if not keys:
+        return []
+
+    def _fetch(k):
+        try:
+            return json.loads(s3.get_object(Bucket=S3_BUCKET, Key=k)["Body"].read())
+        except Exception:
+            return None
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        return [i for i in ex.map(_fetch, keys) if i is not None]
+
+
+def get_whitelist():
+    # S3-backed: works with the Redshift cluster paused.
+    try:
+        now = int(time.time())
+        out = []
+        for i in _crm_list("whitelist"):
+            exp = int(i.get("expires_at", 0))
+            if exp and exp <= now:
+                continue  # vencida
+            out.append({
+                "whitelist_id": i.get("whitelist_id", ""),
+                "entity_field": i.get("entity_field", ""),
+                "entity_value": i.get("entity_value", ""),
+                "duration_days": int(i.get("duration_days", 0)),
+                "reason": i.get("reason", ""),
+                "scope": i.get("scope", "global"),
+                "report_name": i.get("report_name", ""),
+                "created_at": i.get("created_at", ""),
+                "expires_at": i.get("expires_at_str", ""),
+            })
+        out.sort(key=lambda x: x["created_at"], reverse=True)
+        return resp(200, {"whitelist": out})
     except Exception as e:
         return resp(200, {"whitelist": [], "warning": str(e)})
 
@@ -1559,28 +1976,25 @@ def add_to_whitelist(body: dict):
         return resp(400, {"error": "duration_days must be 30, 60, or 90"})
 
     wid = str(uuid.uuid4())
-    ef = _esc(entity_field)
-    ev = _esc(entity_value)
-    reason_esc = _esc(reason)
-    scope_esc = _esc(scope)
-    rn = _esc(report_name if scope == "report" else "")
-
-    # Compute expiry in Python to avoid Redshift DATEADD timezone issues
-    expires_at = (dt.datetime.utcnow() + dt.timedelta(days=duration_days)).strftime("%Y-%m-%d %H:%M:%S")
-
-    sql = (
-        f"INSERT INTO compliance.whitelist "
-        f"(whitelist_id, entity_field, entity_value, duration_days, reason, scope, report_name, expires_at) "
-        f"VALUES ('{wid}', '{ef}', '{ev}', {duration_days}, '{reason_esc}', '{scope_esc}', '{rn}', "
-        f"'{expires_at}')"
-    )
-    _rs_exec(sql)
+    now = dt.datetime.utcnow()
+    expires = now + dt.timedelta(days=duration_days)
+    _crm_put("whitelist", wid, {
+        "whitelist_id": wid,
+        "entity_field": entity_field,
+        "entity_value": entity_value,
+        "duration_days": duration_days,
+        "reason": reason,
+        "scope": scope,
+        "report_name": report_name if scope == "report" else "",
+        "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "expires_at": int(expires.timestamp()),
+        "expires_at_str": expires.strftime("%Y-%m-%d %H:%M:%S"),
+    })
     return resp(201, {"whitelist_id": wid})
 
 
 def remove_from_whitelist(whitelist_id: str):
-    sql = f"DELETE FROM compliance.whitelist WHERE whitelist_id = '{_esc(whitelist_id)}'"
-    _rs_exec(sql)
+    _crm_delete("whitelist", whitelist_id)
     return resp(200, {"message": f"Whitelist entry '{whitelist_id}' removed"})
 
 
@@ -1588,24 +2002,36 @@ def remove_from_whitelist(whitelist_id: str):
 # ALERTS (Alertados / Ya Revisados)
 # ---------------------------------------------------------------------------
 
+_PRIORITY_RANK = {"high": 1, "medium": 2, "low": 3}
+
+
 def get_alerts(status: str = "active"):
+    # S3-backed: works with the Redshift cluster paused.
     try:
-        sql = (
-            "SELECT alert_id, entity_field, entity_value, reason, report_name, row_data, "
-            "created_at::VARCHAR AS created_at, status, "
-            "COALESCE(reviewed_at::VARCHAR, '') AS reviewed_at, "
-            "COALESCE(priority, 'medium') AS priority, "
-            "COALESCE(assigned_to, '') AS assigned_to, "
-            "COALESCE(reviewed_by, '') AS reviewed_by, "
-            "COALESCE(notes, '') AS notes "
-            "FROM compliance.alerts "
-            f"WHERE status = '{_esc(status)}' "
-            "ORDER BY "
-            "  CASE COALESCE(priority,'medium') WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC, "
-            "  created_at DESC"
-        )
-        items = _rs_exec(sql)
-        return resp(200, {"alerts": items})
+        out = []
+        for i in _crm_list("alerts"):
+            if i.get("status", "active") != status:
+                continue
+            out.append({
+                "alert_id": i.get("alert_id", ""),
+                "entity_field": i.get("entity_field", ""),
+                "entity_value": i.get("entity_value", ""),
+                "reason": i.get("reason", ""),
+                "report_name": i.get("report_name", ""),
+                "row_data": i.get("row_data", ""),
+                "created_at": i.get("created_at", ""),
+                "status": i.get("status", "active"),
+                "reviewed_at": i.get("reviewed_at", ""),
+                "priority": i.get("priority", "medium"),
+                "assigned_to": i.get("assigned_to", ""),
+                "reviewed_by": i.get("reviewed_by", ""),
+                "notes": i.get("notes", ""),
+            })
+        # Stable sort: first by created_at DESC, then by priority → within a
+        # priority, newest first (matches the old SQL ORDER BY).
+        out.sort(key=lambda a: a["created_at"], reverse=True)
+        out.sort(key=lambda a: _PRIORITY_RANK.get(a["priority"], 2))
+        return resp(200, {"alerts": out})
     except Exception as e:
         return resp(200, {"alerts": [], "warning": str(e)})
 
@@ -1624,48 +2050,45 @@ def add_alert(body: dict):
         return resp(400, {"error": "entity_field and entity_value are required"})
 
     aid = str(uuid.uuid4())
-    ef = _esc(entity_field)
-    ev = _esc(entity_value)
-    reason_esc = _esc(reason)
-    rn = _esc(report_name)
-    row_data_escaped = _esc(json.dumps(row_data, default=str))
-
-    sql = (
-        f"INSERT INTO compliance.alerts "
-        f"(alert_id, entity_field, entity_value, reason, report_name, row_data, status, priority) "
-        f"VALUES ('{aid}', '{ef}', '{ev}', '{reason_esc}', '{rn}', '{row_data_escaped}', 'active', '{priority}')"
-    )
-    _rs_exec(sql)
+    _crm_put("alerts", aid, {
+        "alert_id": aid,
+        "entity_field": entity_field,
+        "entity_value": entity_value,
+        "reason": reason,
+        "report_name": report_name,
+        "row_data": json.dumps(row_data, default=str) if not isinstance(row_data, str) else row_data,
+        "status": "active",
+        "priority": priority,
+        "assigned_to": "",
+        "reviewed_by": "",
+        "reviewed_at": "",
+        "notes": "",
+        "created_at": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+    })
     return resp(201, {"alert_id": aid})
 
 
 def review_alert(alert_id: str, body: dict | None = None):
     """Move an alert from 'active' to 'reviewed' (ya revisados)."""
-    if body is None:
-        body = {}
-    reviewed_by = _esc(body.get("reviewed_by", "").strip())
-    notes = _esc(body.get("notes", "").strip())
-
-    set_clauses = ["status = 'reviewed'", "reviewed_at = SYSDATE"]
-    if reviewed_by:
-        set_clauses.append(f"reviewed_by = '{reviewed_by}'")
-    if notes:
-        set_clauses.append(f"notes = '{notes}'")
-
-    sql = (
-        f"UPDATE compliance.alerts SET {', '.join(set_clauses)} "
-        f"WHERE alert_id = '{_esc(alert_id)}'"
-    )
-    _rs_exec(sql)
-    _write_audit(user_email=reviewed_by or "unknown", action="alert.review",
-                 entity_type="alert", entity_id=alert_id)
+    body = body or {}
+    changes = {
+        "status": "reviewed",
+        "reviewed_at": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if body.get("reviewed_by", "").strip():
+        changes["reviewed_by"] = body["reviewed_by"].strip()
+    if body.get("notes", "").strip():
+        changes["notes"] = body["notes"].strip()
+    if _crm_update("alerts", alert_id, changes) is None:
+        return resp(404, {"error": f"Alert '{alert_id}' not found"})
+    _safe_audit(user_email=changes.get("reviewed_by", "unknown"), action="alert.review",
+                entity_type="alert", entity_id=alert_id)
     return resp(200, {"message": f"Alert '{alert_id}' marked as reviewed"})
 
 
 def delete_alert(alert_id: str):
     """Permanently remove an alert entry."""
-    sql = f"DELETE FROM compliance.alerts WHERE alert_id = '{_esc(alert_id)}'"
-    _rs_exec(sql)
+    _crm_delete("alerts", alert_id)
     return resp(200, {"message": f"Alert '{alert_id}' permanently deleted"})
 
 
@@ -1674,36 +2097,28 @@ def assign_alert(alert_id: str, body: dict):
     assigned_to = body.get("assigned_to", "").strip()
     if not assigned_to:
         return resp(400, {"error": "assigned_to is required"})
-    sql = (
-        f"UPDATE compliance.alerts SET assigned_to = '{_esc(assigned_to)}' "
-        f"WHERE alert_id = '{_esc(alert_id)}'"
-    )
-    _rs_exec(sql)
-    actor = body.get("actor_email", "unknown")
-    _write_audit(user_email=actor, action="alert.assign", entity_type="alert",
-                 entity_id=alert_id, new_value={"assigned_to": assigned_to})
+    if _crm_update("alerts", alert_id, {"assigned_to": assigned_to}) is None:
+        return resp(404, {"error": f"Alert '{alert_id}' not found"})
+    _safe_audit(user_email=body.get("actor_email", "unknown"), action="alert.assign",
+                entity_type="alert", entity_id=alert_id, new_value={"assigned_to": assigned_to})
     return resp(200, {"message": f"Alert '{alert_id}' assigned to {assigned_to}"})
 
 
 def update_alert_notes(alert_id: str, body: dict):
     """Update the analyst notes on an alert."""
-    notes = body.get("notes", "").strip()
-    sql = (
-        f"UPDATE compliance.alerts SET notes = '{_esc(notes)}' "
-        f"WHERE alert_id = '{_esc(alert_id)}'"
-    )
-    _rs_exec(sql)
+    if _crm_update("alerts", alert_id, {"notes": body.get("notes", "").strip()}) is None:
+        return resp(404, {"error": f"Alert '{alert_id}' not found"})
     return resp(200, {"message": "Notes updated"})
 
 
 def get_crm_users():
-    """Return active CRM users for the assignee dropdown."""
+    """Return active CRM users for the assignee dropdown (S3-backed)."""
     try:
-        sql = (
-            "SELECT email, COALESCE(full_name, email) AS full_name "
-            "FROM crm.users WHERE is_active = TRUE ORDER BY full_name"
-        )
-        users = _rs_exec(sql)
+        users = [
+            {"email": u.get("email", ""), "full_name": u.get("full_name") or u.get("email", "")}
+            for u in _crm_list("users") if u.get("is_active", True)
+        ]
+        users.sort(key=lambda u: u["full_name"])
         return resp(200, {"users": users})
     except Exception as e:
         return resp(200, {"users": [], "warning": str(e)})
@@ -1713,39 +2128,45 @@ def get_crm_users():
 # CASES CRM
 # ---------------------------------------------------------------------------
 
-def get_cases(status_filter=None, priority_filter=None, assigned_filter=None):
-    """List cases with optional filters. Ordered by status urgency + priority."""
-    try:
-        conditions = ["1=1"]
-        if status_filter and status_filter != "all":
-            conditions.append(f"c.status = '{_esc(status_filter)}'")
-        if priority_filter:
-            conditions.append(f"c.priority = '{_esc(priority_filter)}'")
-        if assigned_filter:
-            conditions.append(f"c.assigned_to = '{_esc(assigned_filter)}'")
+_CASE_STATUS_RANK = {"open": 1, "in_progress": 2, "under_review": 3, "closed": 4, "archived": 5}
 
-        sql = (
-            "SELECT c.case_id, c.title, c.description, c.status, c.priority, "
-            "c.entity_type, c.entity_id, c.report_name, "
-            "COALESCE(c.assigned_to, '') AS assigned_to, c.created_by, "
-            "c.created_at::VARCHAR AS created_at, "
-            "c.updated_at::VARCHAR AS updated_at, "
-            "COALESCE(c.closed_at::VARCHAR, '') AS closed_at, "
-            "COUNT(n.note_id) AS note_count "
-            "FROM crm.cases c "
-            "LEFT JOIN crm.case_notes n ON n.case_id = c.case_id "
-            f"WHERE {' AND '.join(conditions)} "
-            "GROUP BY c.case_id, c.title, c.description, c.status, c.priority, "
-            "c.entity_type, c.entity_id, c.report_name, c.assigned_to, c.created_by, "
-            "c.created_at, c.updated_at, c.closed_at "
-            "ORDER BY "
-            "  CASE c.status WHEN 'open' THEN 1 WHEN 'in_progress' THEN 2 "
-            "    WHEN 'under_review' THEN 3 WHEN 'closed' THEN 4 ELSE 5 END, "
-            "  CASE c.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, "
-            "  c.updated_at DESC"
-        )
-        cases = _rs_exec(sql)
-        return resp(200, {"cases": cases})
+
+def _now_str() -> str:
+    return dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_cases(status_filter=None, priority_filter=None, assigned_filter=None):
+    """List cases with optional filters (S3-backed). Ordered by status urgency,
+    priority, then updated_at DESC."""
+    try:
+        out = []
+        for c in _crm_list("cases"):
+            if status_filter and status_filter != "all" and c.get("status") != status_filter:
+                continue
+            if priority_filter and c.get("priority") != priority_filter:
+                continue
+            if assigned_filter and c.get("assigned_to") != assigned_filter:
+                continue
+            out.append({
+                "case_id": c.get("case_id", ""),
+                "title": c.get("title", ""),
+                "description": c.get("description", ""),
+                "status": c.get("status", "open"),
+                "priority": c.get("priority", "medium"),
+                "entity_type": c.get("entity_type", ""),
+                "entity_id": c.get("entity_id", ""),
+                "report_name": c.get("report_name", ""),
+                "assigned_to": c.get("assigned_to", ""),
+                "created_by": c.get("created_by", ""),
+                "created_at": c.get("created_at", ""),
+                "updated_at": c.get("updated_at", ""),
+                "closed_at": c.get("closed_at", ""),
+                "note_count": len(c.get("notes", [])),
+            })
+        out.sort(key=lambda x: x["updated_at"], reverse=True)
+        out.sort(key=lambda x: (_CASE_STATUS_RANK.get(x["status"], 5),
+                                _PRIORITY_RANK.get(x["priority"], 2)))
+        return resp(200, {"cases": out})
     except Exception as e:
         return resp(200, {"cases": [], "warning": str(e)})
 
@@ -1755,29 +2176,32 @@ def create_case(body: dict):
     if not title:
         return resp(400, {"error": "title is required"})
 
-    description = body.get("description", "").strip()
     priority = body.get("priority", "medium").strip()
     if priority not in ("high", "medium", "low"):
         priority = "medium"
-    entity_type = body.get("entity_type", "").strip()
-    entity_id = body.get("entity_id", "").strip()
-    report_name = body.get("report_name", "").strip()
     assigned_to = body.get("assigned_to", "").strip()
     created_by = body.get("created_by", "unknown").strip()
 
     cid = str(uuid.uuid4())
-    sql = (
-        f"INSERT INTO crm.cases "
-        f"(case_id, title, description, priority, entity_type, entity_id, "
-        f"report_name, assigned_to, created_by, status) "
-        f"VALUES ("
-        f"'{cid}', '{_esc(title)}', '{_esc(description)}', '{priority}', "
-        f"'{_esc(entity_type)}', '{_esc(entity_id)}', '{_esc(report_name)}', "
-        f"'{_esc(assigned_to)}', '{_esc(created_by)}', 'open')"
-    )
-    _rs_exec(sql)
-    _write_audit(user_email=created_by, action="case.create", entity_type="case",
-                 entity_id=cid, new_value={"title": title, "priority": priority})
+    now = _now_str()
+    _crm_put("cases", cid, {
+        "case_id": cid,
+        "title": title,
+        "description": body.get("description", "").strip(),
+        "status": "open",
+        "priority": priority,
+        "entity_type": body.get("entity_type", "").strip(),
+        "entity_id": body.get("entity_id", "").strip(),
+        "report_name": body.get("report_name", "").strip(),
+        "assigned_to": assigned_to,
+        "created_by": created_by,
+        "created_at": now,
+        "updated_at": now,
+        "closed_at": "",
+        "notes": [],
+    })
+    _safe_audit(user_email=created_by, action="case.create", entity_type="case",
+                entity_id=cid, new_value={"title": title, "priority": priority})
     _post_slack(
         f"📁 *Nuevo caso creado* — {title}\n"
         f"Prioridad: {priority} | Asignado a: {assigned_to or 'Sin asignar'}\n"
@@ -1789,50 +2213,46 @@ def create_case(body: dict):
 
 
 def get_case_detail(case_id: str):
-    """Return full case data including notes and linked alerts."""
+    """Return full case data including notes and linked alerts (S3-backed)."""
     try:
-        case_sql = (
-            "SELECT case_id, title, description, status, priority, entity_type, entity_id, "
-            "report_name, COALESCE(assigned_to, '') AS assigned_to, created_by, "
-            "created_at::VARCHAR AS created_at, updated_at::VARCHAR AS updated_at, "
-            "COALESCE(closed_at::VARCHAR, '') AS closed_at "
-            f"FROM crm.cases WHERE case_id = '{_esc(case_id)}'"
-        )
-        notes_sql = (
-            "SELECT note_id, case_id, COALESCE(author_email, '') AS author_email, "
-            "content, created_at::VARCHAR AS created_at "
-            f"FROM crm.case_notes WHERE case_id = '{_esc(case_id)}' ORDER BY created_at ASC"
-        )
-        alerts_sql = (
-            "SELECT alert_id, entity_field, entity_value, reason, report_name, "
-            "created_at::VARCHAR AS created_at, status, "
-            "COALESCE(priority, 'medium') AS priority "
-            f"FROM compliance.alerts WHERE case_id = '{_esc(case_id)}'"
-        )
-        case_rows = _rs_exec(case_sql)
-        if not case_rows:
+        c = _crm_get("cases", case_id)
+        if c is None:
             return resp(404, {"error": f"Case '{case_id}' not found"})
-        notes = _rs_exec(notes_sql)
-        alerts = _rs_exec(alerts_sql)
-        return resp(200, {"case": case_rows[0], "notes": notes, "alerts": alerts})
+        notes = sorted(c.get("notes", []), key=lambda n: n.get("created_at", ""))
+        # Linked alerts = alerts whose case_id points here
+        alerts = []
+        for a in _crm_list("alerts"):
+            if a.get("case_id") == case_id:
+                alerts.append({
+                    "alert_id": a.get("alert_id", ""),
+                    "entity_field": a.get("entity_field", ""),
+                    "entity_value": a.get("entity_value", ""),
+                    "reason": a.get("reason", ""),
+                    "report_name": a.get("report_name", ""),
+                    "created_at": a.get("created_at", ""),
+                    "status": a.get("status", "active"),
+                    "priority": a.get("priority", "medium"),
+                })
+        case_out = {k: v for k, v in c.items() if k != "notes"}
+        return resp(200, {"case": case_out, "notes": notes, "alerts": alerts})
     except Exception as e:
         return resp(500, {"error": str(e)})
 
 
 def update_case(case_id: str, body: dict):
     """Update title, description, or priority."""
-    set_parts = []
+    changes = {}
     if "title" in body:
-        set_parts.append(f"title = '{_esc(str(body['title']))}'")
+        changes["title"] = str(body["title"]).strip()
     if "description" in body:
-        set_parts.append(f"description = '{_esc(str(body['description']))}'")
+        changes["description"] = str(body["description"]).strip()
     if "priority" in body and body["priority"] in ("high", "medium", "low"):
-        set_parts.append(f"priority = '{body['priority']}'")
-    if not set_parts:
+        changes["priority"] = body["priority"]
+    if not changes:
         return resp(400, {"error": "No valid fields to update"})
-    set_parts.append("updated_at = SYSDATE")
-    sql = f"UPDATE crm.cases SET {', '.join(set_parts)} WHERE case_id = '{_esc(case_id)}'"
-    _rs_exec(sql)
+    changes["updated_at"] = _now_str()
+    if _crm_update("cases", case_id, changes) is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
     return resp(200, {"message": "Case updated"})
 
 
@@ -1843,17 +2263,17 @@ def update_case_status(case_id: str, body: dict):
     if status not in valid:
         return resp(400, {"error": f"status must be one of {valid}"})
 
-    set_parts = [f"status = '{status}'", "updated_at = SYSDATE"]
+    changes = {"status": status, "updated_at": _now_str()}
     if status == "closed":
-        set_parts.append("closed_at = SYSDATE")
+        changes["closed_at"] = _now_str()
     elif status != "archived":
-        set_parts.append("closed_at = NULL")
+        changes["closed_at"] = ""
 
-    sql = f"UPDATE crm.cases SET {', '.join(set_parts)} WHERE case_id = '{_esc(case_id)}'"
-    _rs_exec(sql)
+    if _crm_update("cases", case_id, changes) is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
     actor = body.get("actor_email", "unknown")
-    _write_audit(user_email=actor, action="case.status_change", entity_type="case",
-                 entity_id=case_id, new_value={"status": status})
+    _safe_audit(user_email=actor, action="case.status_change", entity_type="case",
+                entity_id=case_id, new_value={"status": status})
     _STATUS_LABEL = {"under_review": "⚠️ Bajo Revisión", "closed": "✅ Cerrado", "open": "🔵 Abierto", "in_progress": "🔄 En Investigación"}
     if status in ("under_review", "closed"):
         _post_slack(
@@ -1867,17 +2287,14 @@ def update_case_status(case_id: str, body: dict):
 def update_case_assign(case_id: str, body: dict):
     assigned_to = body.get("assigned_to", "").strip()
     actor = body.get("actor_email", "unknown")
-    sql = (
-        f"UPDATE crm.cases SET assigned_to = '{_esc(assigned_to)}', updated_at = SYSDATE "
-        f"WHERE case_id = '{_esc(case_id)}'"
-    )
-    _rs_exec(sql)
-    _write_audit(user_email=actor, action="case.assign", entity_type="case",
-                 entity_id=case_id, new_value={"assigned_to": assigned_to})
+    updated = _crm_update("cases", case_id, {"assigned_to": assigned_to, "updated_at": _now_str()})
+    if updated is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+    _safe_audit(user_email=actor, action="case.assign", entity_type="case",
+                entity_id=case_id, new_value={"assigned_to": assigned_to})
     if assigned_to and "@" in assigned_to:
-        case_rows = _rs_exec(f"SELECT title, priority FROM crm.cases WHERE case_id = '{_esc(case_id)}'")
-        if case_rows:
-            _case_assignment_email(assigned_to, case_id, case_rows[0]["title"], case_rows[0].get("priority","medium"), actor)
+        _case_assignment_email(assigned_to, case_id, updated.get("title", ""),
+                               updated.get("priority", "medium"), actor)
     return resp(200, {"message": f"Case assigned to {assigned_to}"})
 
 
@@ -1886,28 +2303,32 @@ def add_case_note(case_id: str, body: dict):
     if not content:
         return resp(400, {"error": "content is required"})
     author_email = body.get("author_email", "").strip()
-    sql = (
-        f"INSERT INTO crm.case_notes (case_id, author_email, content) "
-        f"VALUES ('{_esc(case_id)}', '{_esc(author_email)}', '{_esc(content)}')"
-    )
-    _rs_exec(sql)
-    _rs_exec(f"UPDATE crm.cases SET updated_at = SYSDATE WHERE case_id = '{_esc(case_id)}'")
-    _write_audit(user_email=author_email or "unknown", action="case.note_add",
-                 entity_type="case", entity_id=case_id)
+    case = _crm_get("cases", case_id)
+    if case is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+    note = {
+        "note_id": str(uuid.uuid4()),
+        "case_id": case_id,
+        "author_email": author_email,
+        "content": content,
+        "created_at": _now_str(),
+    }
+    case.setdefault("notes", []).append(note)
+    case["updated_at"] = _now_str()
+    _crm_put("cases", case_id, case)
+    _safe_audit(user_email=author_email or "unknown", action="case.note_add",
+                entity_type="case", entity_id=case_id)
     return resp(201, {"message": "Note added"})
 
 
 def link_alert_to_case(alert_id: str, body: dict):
-    """Link a compliance.alerts row to a crm.cases row."""
+    """Link an alert to a case (sets case_id on the alert)."""
     case_id = body.get("case_id", "").strip()
     if not case_id:
         return resp(400, {"error": "case_id is required"})
-    sql = (
-        f"UPDATE compliance.alerts SET case_id = '{_esc(case_id)}' "
-        f"WHERE alert_id = '{_esc(alert_id)}'"
-    )
-    _rs_exec(sql)
-    _rs_exec(f"UPDATE crm.cases SET updated_at = SYSDATE WHERE case_id = '{_esc(case_id)}'")
+    if _crm_update("alerts", alert_id, {"case_id": case_id}) is None:
+        return resp(404, {"error": f"Alert '{alert_id}' not found"})
+    _crm_update("cases", case_id, {"updated_at": _now_str()})
     return resp(200, {"message": f"Alert '{alert_id}' linked to case '{case_id}'"})
 
 
@@ -2000,6 +2421,15 @@ def run_individual_analysis(body: dict):
         except (ValueError, TypeError):
             return resp(400, {"error": f"Invalid customer_id: {cid!r}"})
 
+    # Período configurable: 5/15/30/60/90 días, o None/omitido = histórico (sin límite)
+    days = body.get("days")
+    try:
+        days = int(days)
+        if days not in (5, 15, 30, 60, 90):
+            days = None
+    except (TypeError, ValueError):
+        days = None
+
     run_id = str(uuid.uuid4())
     now = dt.datetime.utcnow().isoformat()
     user_email = str(body.get("user_email", "")).strip()[:200]
@@ -2007,7 +2437,7 @@ def run_individual_analysis(body: dict):
         "run_id": run_id,
         "report_name": "individual_aml_analysis",
         "status": "RUNNING",
-        "params": json.dumps({"customer_ids": clean_ids, "n_customers": len(clean_ids)}),
+        "params": json.dumps({"customer_ids": clean_ids, "n_customers": len(clean_ids), "days": days}),
         "started_at": now,
         "user_email": user_email,
         "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
@@ -2019,11 +2449,12 @@ def run_individual_analysis(body: dict):
         Payload=json.dumps({
             "report_name": "individual_aml_analysis",
             "customer_ids": clean_ids,
+            "days": days,
             "run_id": run_id,
             "keep_session": False,
         }),
     )
-    return resp(202, {"run_id": run_id, "status": "RUNNING", "n_customers": len(clean_ids)})
+    return resp(202, {"run_id": run_id, "status": "RUNNING", "n_customers": len(clean_ids), "days": days})
 
 
 def get_dashboard_stats_result(q0: str, q1: str, q2: str):
@@ -2107,61 +2538,87 @@ LIMIT 5
 """
 
 
-def get_analytics_summary():
-    """Submit 5 CRM analytics queries; return stmt_ids immediately (async pattern)."""
-    try:
-        stmt_ids: list[str] = []
-        for sql in [
-            _SQL_CASES_BY_STATUS,
-            _SQL_CASES_BY_WEEK,
-            _SQL_ALERTS_BY_REPORT,
-            _SQL_ALERTS_DAILY_30D,
-            _SQL_TOP_ENTITIES,
-        ]:
-            r = redshift_data.execute_statement(
-                ClusterIdentifier=CLUSTER_ID,
-                Database=DATABASE_NAME,
-                DbUser=DB_USER,
-                Sql=sql.strip(),
-            )
-            stmt_ids.append(r["Id"])
-        return resp(200, {"stmt_ids": stmt_ids})
-    except Exception as e:
-        msg = str(e)
-        if "paused" in msg.lower() or "unavailable" in msg.lower() or "not available" in msg.lower():
-            return resp(200, {
-                "error": "cluster_paused",
-                "message": "El cluster está pausado. Las analíticas se cargarán cuando esté activo.",
-            })
-        return resp(200, {"error": str(e), "message": "Error al enviar consultas analytics."})
-
-
-def get_analytics_result(q0: str, q1: str, q2: str, q3: str, q4: str):
-    """Poll results for 5 analytics stmt_ids."""
-    stmt_ids = [q0, q1, q2, q3, q4]
-    keys = ["cases_by_status", "cases_by_week", "alerts_by_report", "alerts_daily_30d", "top_entities"]
-    result: dict = {}
-    all_done = True
-
-    for stmt_id, key in zip(stmt_ids, keys):
-        if not stmt_id:
-            result[key] = []
-            continue
+def _parse_dt(s):
+    """Parse a stored 'YYYY-MM-DD HH:MM:SS' (or ISO) string to datetime, or None."""
+    if not s:
+        return None
+    txt = str(s)[:19]
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
         try:
-            desc = redshift_data.describe_statement(Id=stmt_id)
-            status = desc["Status"]
-            if status == "FINISHED":
-                result[key] = _rs_get_rows(stmt_id) if desc.get("HasResultSet") else []
-            elif status in ("FAILED", "ABORTED"):
-                result[key] = []
-            else:
-                all_done = False
-                result[key] = None
-        except Exception:
-            result[key] = []
+            return dt.datetime.strptime(txt, fmt)
+        except ValueError:
+            continue
+    return None
 
-    result["all_done"] = all_done
-    return resp(200, result)
+
+def get_analytics_summary():
+    """S3-backed analytics → no Redshift needed. Returns placeholder ids so the
+    frontend's 2-phase flow keeps working; real data comes from /analytics/result."""
+    return resp(200, {"stmt_ids": ["s3", "s3", "s3", "s3", "s3"]})
+
+
+def get_analytics_result(q0: str = "", q1: str = "", q2: str = "", q3: str = "", q4: str = ""):
+    """Compute the 5 CRM analytics datasets from the S3 store."""
+    from collections import Counter
+    try:
+        now = dt.datetime.utcnow()
+        cases = _crm_list("cases")
+        alerts = _crm_list("alerts")
+
+        # cases_by_status
+        st = Counter(c.get("status", "open") for c in cases)
+        cases_by_status = sorted([{"status": k, "n": v} for k, v in st.items()],
+                                 key=lambda x: x["n"], reverse=True)
+
+        # cases_by_week (last 8 weeks, Monday-anchored)
+        wk = Counter()
+        cutoff_8w = now - dt.timedelta(weeks=8)
+        for c in cases:
+            d = _parse_dt(c.get("created_at"))
+            if d and d >= cutoff_8w:
+                wstart = (d - dt.timedelta(days=d.weekday())).strftime("%Y-%m-%d")
+                wk[wstart] += 1
+        cases_by_week = [{"week_start": k, "n": wk[k]} for k in sorted(wk)]
+
+        # alerts_by_report (last 90d, top 10)
+        cutoff_90 = now - dt.timedelta(days=90)
+        rep = Counter()
+        for a in alerts:
+            d = _parse_dt(a.get("created_at"))
+            if d and d >= cutoff_90:
+                rep[a.get("report_name", "") or "—"] += 1
+        alerts_by_report = [{"report_name": k, "n": v} for k, v in rep.most_common(10)]
+
+        # alerts_daily_30d
+        cutoff_30 = now - dt.timedelta(days=30)
+        day = Counter()
+        for a in alerts:
+            d = _parse_dt(a.get("created_at"))
+            if d and d >= cutoff_30:
+                day[d.strftime("%Y-%m-%d")] += 1
+        alerts_daily_30d = [{"day": k, "n": day[k]} for k in sorted(day)]
+
+        # top_entities (top 5)
+        ent = Counter()
+        for a in alerts:
+            ev = (a.get("entity_value", "") or "").strip()
+            if ev:
+                ent[(ev, a.get("entity_type", "") or a.get("entity_field", ""))] += 1
+        top_entities = [{"entity_value": k[0], "entity_type": k[1], "n": v}
+                        for k, v in ent.most_common(5)]
+
+        return resp(200, {
+            "cases_by_status": cases_by_status,
+            "cases_by_week": cases_by_week,
+            "alerts_by_report": alerts_by_report,
+            "alerts_daily_30d": alerts_daily_30d,
+            "top_entities": top_entities,
+            "all_done": True,
+        })
+    except Exception as e:
+        return resp(200, {"cases_by_status": [], "cases_by_week": [], "alerts_by_report": [],
+                          "alerts_daily_30d": [], "top_entities": [], "all_done": True,
+                          "warning": str(e)})
 
 
 # ---------------------------------------------------------------------------
@@ -2244,75 +2701,96 @@ ORDER BY
 
 
 def get_analytics_sla():
-    """Submit 3 SLA analytics queries async."""
+    """S3-backed → placeholder ids, real data from /analytics/sla/result."""
+    return resp(200, {"stmt_ids": ["s3", "s3", "s3"]})
+
+
+def get_analytics_sla_result(q0: str = "", q1: str = "", q2: str = ""):
+    """Compute the 3 SLA datasets from the S3 cases store."""
+    from collections import Counter
     try:
-        stmt_ids: list[str] = []
-        for sql in [_SQL_SLA_AVG_RESOLUTION, _SQL_SLA_OVERDUE, _SQL_SLA_BY_PRIORITY]:
-            r = redshift_data.execute_statement(
-                ClusterIdentifier=CLUSTER_ID,
-                Database=DATABASE_NAME,
-                DbUser=DB_USER,
-                Sql=sql.strip(),
-            )
-            stmt_ids.append(r["Id"])
-        return resp(200, {"stmt_ids": stmt_ids})
+        now = dt.datetime.utcnow()
+        cases = _crm_list("cases")
+
+        # avg_resolution: por prioridad, horas promedio entre creación y cierre
+        closed_by_pri: dict[str, list] = {}
+        for c in cases:
+            if c.get("status") == "closed" and c.get("closed_at"):
+                cd, dd = _parse_dt(c.get("created_at")), _parse_dt(c.get("closed_at"))
+                if cd and dd:
+                    closed_by_pri.setdefault(c.get("priority", "medium"), []).append(
+                        (dd - cd).total_seconds() / 3600.0)
+        avg_resolution = []
+        for pri in sorted(closed_by_pri):
+            hrs = closed_by_pri[pri]
+            avg_resolution.append({"priority": pri, "total_closed": len(hrs),
+                                   "avg_hours": round(sum(hrs) / len(hrs), 1)})
+
+        # overdue: casos abiertos que pasaron su SLA por prioridad
+        sla_days = {"critical": 1, "high": 3, "medium": 7, "low": 30}
+        overdue = {"critical_overdue": 0, "high_overdue": 0, "medium_overdue": 0,
+                   "low_overdue": 0, "total_open": 0}
+        for c in cases:
+            if c.get("status") == "closed":
+                continue
+            overdue["total_open"] += 1
+            pri = c.get("priority", "medium")
+            d = _parse_dt(c.get("created_at"))
+            if d and pri in sla_days and d < now - dt.timedelta(days=sla_days[pri]):
+                overdue[f"{pri}_overdue"] += 1
+
+        # by_priority: conteo por (prioridad, estado)
+        bp = Counter((c.get("priority", "medium"), c.get("status", "open")) for c in cases)
+        pri_rank = {"critical": 1, "high": 2, "medium": 3, "low": 4}
+        by_priority = sorted(
+            [{"priority": k[0], "status": k[1], "n": v} for k, v in bp.items()],
+            key=lambda x: (pri_rank.get(x["priority"], 5), x["status"]))
+
+        return resp(200, {"avg_resolution": avg_resolution, "overdue": [overdue],
+                          "by_priority": by_priority, "all_done": True})
     except Exception as e:
-        msg = str(e)
-        if "paused" in msg.lower() or "unavailable" in msg.lower() or "not available" in msg.lower():
-            return resp(200, {"error": "cluster_paused", "message": "Cluster pausado."})
-        return resp(200, {"error": str(e)})
-
-
-def get_analytics_sla_result(q0: str, q1: str, q2: str):
-    """Poll results for 3 SLA stmt_ids."""
-    stmt_ids = [q0, q1, q2]
-    keys = ["avg_resolution", "overdue", "by_priority"]
-    result: dict = {}
-    all_done = True
-    for stmt_id, key in zip(stmt_ids, keys):
-        if not stmt_id:
-            result[key] = []
-            continue
-        try:
-            desc = redshift_data.describe_statement(Id=stmt_id)
-            status = desc["Status"]
-            if status == "FINISHED":
-                result[key] = _rs_get_rows(stmt_id) if desc.get("HasResultSet") else []
-            elif status in ("FAILED", "ABORTED"):
-                result[key] = []
-            else:
-                all_done = False
-                result[key] = None
-        except Exception:
-            result[key] = []
-    result["all_done"] = all_done
-    return resp(200, result)
+        return resp(200, {"avg_resolution": [], "overdue": [], "by_priority": [],
+                          "all_done": True, "warning": str(e)})
 
 
 # ---------------------------------------------------------------------------
 # Phase 7 — User Management
 # ---------------------------------------------------------------------------
 
+# Roles are a small fixed set (CRM has no role-editing UI).
+ROLES = [
+    {"id": 1, "name": "analyst", "description": "Analista AML"},
+    {"id": 2, "name": "supervisor", "description": "Supervisor de Compliance"},
+    {"id": 3, "name": "admin", "description": "Administrador"},
+]
+_ROLE_BY_ID = {r["id"]: r["name"] for r in ROLES}
+_ROLE_BY_NAME = {r["name"]: r["id"] for r in ROLES}
+
+
 def get_users():
+    # S3-backed. Uses email as the stable id (route /users/{id}).
     try:
-        rows = _rs_exec("""
-            SELECT u.id, u.email, u.full_name, u.is_active,
-                   u.created_at, u.last_login_at, r.name AS role_name, r.id AS role_id
-            FROM crm.users u
-            JOIN crm.roles r ON r.id = u.role_id
-            ORDER BY u.created_at DESC
-        """)
-        return resp(200, {"users": rows})
-    except RuntimeError as e:
-        return resp(503, {"error": str(e)})
+        users = []
+        for u in _crm_list("users"):
+            role_name = u.get("role_name", "analyst")
+            users.append({
+                "id": u.get("email", ""),
+                "email": u.get("email", ""),
+                "full_name": u.get("full_name") or u.get("email", ""),
+                "is_active": bool(u.get("is_active", True)),
+                "created_at": u.get("created_at", ""),
+                "last_login_at": u.get("last_login_at", ""),
+                "role_name": role_name,
+                "role_id": _ROLE_BY_NAME.get(role_name, 1),
+            })
+        users.sort(key=lambda x: x["created_at"], reverse=True)
+        return resp(200, {"users": users})
+    except Exception as e:
+        return resp(200, {"users": [], "warning": str(e)})
 
 
 def get_roles():
-    try:
-        rows = _rs_exec("SELECT id, name, description FROM crm.roles ORDER BY id")
-        return resp(200, {"roles": rows})
-    except RuntimeError as e:
-        return resp(503, {"error": str(e)})
+    return resp(200, {"roles": ROLES})
 
 
 def create_user(body: dict):
@@ -2321,52 +2799,40 @@ def create_user(body: dict):
     role_id = int(body.get("role_id", 1))
     if not email:
         return resp(400, {"error": "email is required"})
-    safe_name = full_name.replace("'", "''")
-    try:
-        _rs_exec(f"""
-            INSERT INTO crm.users (email, full_name, role_id, is_active)
-            VALUES ('{email}', '{safe_name}', {role_id}, TRUE)
-        """)
-        _write_audit(user_email="admin", action="create_user", entity_type="user", entity_id=email)
-        return resp(201, {"message": "Usuario creado", "email": email})
-    except RuntimeError as e:
-        return resp(503, {"error": str(e)})
+    _crm_put("users", email, {
+        "email": email,
+        "full_name": full_name or email,
+        "is_active": True,
+        "role_name": _ROLE_BY_ID.get(role_id, "analyst"),
+        "created_at": _now_str(),
+        "last_login_at": "",
+    })
+    _safe_audit(user_email="admin", action="create_user", entity_type="user", entity_id=email)
+    return resp(201, {"message": "Usuario creado", "email": email})
 
 
 def update_user(user_id: str, body: dict):
-    try:
-        uid = int(user_id)
-    except (ValueError, TypeError):
-        return resp(400, {"error": "invalid user id"})
-    parts_set = []
+    # user_id is the email (what get_users returns as id).
+    changes = {}
     if "full_name" in body:
-        parts_set.append(f"full_name = '{str(body['full_name']).replace(chr(39), chr(39)*2)}'")
+        changes["full_name"] = str(body["full_name"]).strip()
     if "role_id" in body:
-        parts_set.append(f"role_id = {int(body['role_id'])}")
+        changes["role_name"] = _ROLE_BY_ID.get(int(body["role_id"]), "analyst")
     if "is_active" in body:
-        parts_set.append(f"is_active = {'TRUE' if body['is_active'] else 'FALSE'}")
-    if not parts_set:
+        changes["is_active"] = bool(body["is_active"])
+    if not changes:
         return resp(400, {"error": "nothing to update"})
-    parts_set.append("updated_at = GETDATE()")
-    try:
-        _rs_exec(f"UPDATE crm.users SET {', '.join(parts_set)} WHERE id = {uid}")
-        _write_audit(user_email="admin", action="update_user", entity_type="user", entity_id=str(uid))
-        return resp(200, {"message": "Usuario actualizado"})
-    except RuntimeError as e:
-        return resp(503, {"error": str(e)})
+    if _crm_update("users", user_id, changes) is None:
+        return resp(404, {"error": f"User '{user_id}' not found"})
+    _safe_audit(user_email="admin", action="update_user", entity_type="user", entity_id=user_id)
+    return resp(200, {"message": "Usuario actualizado"})
 
 
 def deactivate_user(user_id: str):
-    try:
-        uid = int(user_id)
-    except (ValueError, TypeError):
-        return resp(400, {"error": "invalid user id"})
-    try:
-        _rs_exec(f"UPDATE crm.users SET is_active = FALSE, updated_at = GETDATE() WHERE id = {uid}")
-        _write_audit(user_email="admin", action="deactivate_user", entity_type="user", entity_id=str(uid))
-        return resp(200, {"message": "Usuario desactivado"})
-    except RuntimeError as e:
-        return resp(503, {"error": str(e)})
+    if _crm_update("users", user_id, {"is_active": False}) is None:
+        return resp(404, {"error": f"User '{user_id}' not found"})
+    _safe_audit(user_email="admin", action="deactivate_user", entity_type="user", entity_id=user_id)
+    return resp(200, {"message": "Usuario desactivado"})
 
 
 # ---------------------------------------------------------------------------
@@ -2448,21 +2914,27 @@ def apply_auto_case_rules(report_name: str, row_count: int, run_id: str) -> None
                 report_name=report_name, row_count=row_count, run_id=run_id
             )
             case_id = str(uuid.uuid4())
-            now = dt.datetime.utcnow().isoformat()
+            now = _now_str()
             assigned = str(rule.get("assigned_to", "")).strip()
-            safe_title = title.replace("'", "''")
-            safe_rule_name = str(rule.get("name", "")).replace("'", "''")
-            safe_assigned = assigned.replace("'", "''")
-            _rs_exec(f"""
-                INSERT INTO crm.cases (case_id, title, description, status, priority,
-                                       entity_type, report_name, assigned_to, created_by, created_at, updated_at)
-                VALUES (
-                    '{case_id}', '{safe_title}',
-                    'Creado automáticamente por regla "{safe_rule_name}" — {report_name} con {row_count} filas (run {run_id}).',
-                    'open', '{rule.get("priority","medium")}', 'report',
-                    '{report_name}', '{safe_assigned}', 'sistema@auto', '{now}', '{now}'
-                )
-            """)
+            rule_name = str(rule.get("name", ""))
+            # Casos viven en S3 (always-on) → escribir ahí, no en Redshift.
+            _crm_put("cases", case_id, {
+                "case_id": case_id,
+                "title": title,
+                "description": (f'Creado automáticamente por regla "{rule_name}" — '
+                                f"{report_name} con {row_count} filas (run {run_id})."),
+                "status": "open",
+                "priority": rule.get("priority", "medium"),
+                "entity_type": "report",
+                "entity_id": "",
+                "report_name": report_name,
+                "assigned_to": assigned,
+                "created_by": "sistema@auto",
+                "created_at": now,
+                "updated_at": now,
+                "closed_at": "",
+                "notes": [],
+            })
             if assigned:
                 _case_assignment_email(assigned, case_id, title, rule.get("priority", "medium"), "sistema automático")
     except Exception:

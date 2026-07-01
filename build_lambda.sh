@@ -35,6 +35,7 @@ pip install \
   --python-version 3.12 \
   --only-binary=:all: \
   --upgrade \
+  --no-warn-conflicts \
   --quiet
 
 # Trim deps to reduce package size (optional)
