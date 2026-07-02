@@ -1928,7 +1928,7 @@
                   x-text="`— ${amlCustomerIds.trim().split(/[\\s,;]+/).filter(s=>/^\\d+$/.test(s.trim())).length} IDs`"></span>
               </label>
               <textarea x-model="amlCustomerIds" rows="4"
-                :placeholder="amlEntityType==='b2b' ? 'Ej: 12345, 67890&#10;o uno por línea' : 'Ej: 3696886, 2387473, 3162602&#10;o uno por línea'"
+                :placeholder="amlEntityType==='b2b' ? 'Ej: 12345, 67890\no uno por línea' : 'Ej: 3696886, 2387473, 3162602\no uno por línea'"
                 class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"></textarea>
               <p class="text-xs text-slate-500 mt-1">Máximo 1000 <span x-text="amlEntityType==='b2b' ? 'empresas' : 'clientes'"></span> por análisis</p>
             </div>
@@ -3284,7 +3284,7 @@
                     <span class="text-xs bg-slate-700 text-slate-300 rounded px-2 py-0.5"
                       x-text="(item.report_name||'').replace(/_/g,' ')"></span>
                   </div>
-                  <div x-show="item.note" class="text-slate-300 text-sm mb-2 italic" x-text="'\"' + item.note + '\"'"></div>
+                  <div x-show="item.note" class="text-slate-300 text-sm mb-2 italic" x-text="`&quot;${item.note}&quot;`"></div>
                   <div class="text-slate-500 text-xs flex items-center gap-3 flex-wrap">
                     <span>Asignado por <strong class="text-slate-400" x-text="item.assigned_by"></strong></span>
                     <span x-show="item.assigned_at?.toDate">
