@@ -60,9 +60,71 @@
       color: #f97316;
     }
     .chart-container { position: relative; }
+
+    /* ===== Light theme override =====
+       El tema oscuro está hardcodeado en cientos de clases bg-slate-*/text-slate-*
+       (no hay dark: variants ni CSS vars). En vez de reescribir cada elemento,
+       se sobre-escribe la paleta cuando <body> tiene .light-theme. Los gráficos
+       Chart.js (canvas) no se ven afectados por esto — quedan con sus colores
+       originales, es una limitación conocida. */
+    .light-theme { background-color: #f8fafc; color-scheme: light; }
+    .light-theme ::-webkit-scrollbar-track { background: #f1f5f9; }
+    .light-theme ::-webkit-scrollbar-thumb { background: #cbd5e1; }
+    .light-theme ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+    .light-theme .bg-slate-950 { background-color: #ffffff !important; }
+    .light-theme .bg-slate-900 { background-color: #f8fafc !important; }
+    .light-theme .bg-slate-800 { background-color: #ffffff !important; }
+    .light-theme .bg-slate-700 { background-color: #e2e8f0 !important; }
+    .light-theme .bg-slate-600 { background-color: #cbd5e1 !important; }
+    .light-theme .bg-slate-500 { background-color: #94a3b8 !important; }
+    .light-theme .bg-slate-400 { background-color: #94a3b8 !important; }
+    .light-theme .bg-slate-100 { background-color: #e2e8f0 !important; }
+
+    .light-theme .bg-slate-950\/60 { background-color: rgba(226,232,240,.6) !important; }
+    .light-theme .bg-slate-900\/50 { background-color: rgba(226,232,240,.5) !important; }
+    .light-theme .bg-slate-900\/60 { background-color: rgba(226,232,240,.6) !important; }
+    .light-theme .bg-slate-900\/80 { background-color: rgba(226,232,240,.8) !important; }
+    .light-theme .bg-slate-800\/40 { background-color: rgba(226,232,240,.4) !important; }
+    .light-theme .bg-slate-800\/50 { background-color: rgba(226,232,240,.5) !important; }
+    .light-theme .bg-slate-800\/60 { background-color: rgba(226,232,240,.6) !important; }
+    .light-theme .bg-slate-800\/70 { background-color: rgba(226,232,240,.7) !important; }
+    .light-theme .bg-slate-700\/20 { background-color: rgba(226,232,240,.5) !important; }
+    .light-theme .bg-slate-700\/30 { background-color: rgba(226,232,240,.6) !important; }
+    .light-theme .bg-slate-700\/50 { background-color: rgba(226,232,240,.7) !important; }
+    .light-theme .bg-slate-600\/40 { background-color: rgba(203,213,225,.6) !important; }
+
+    .light-theme .text-white { color: #0f172a !important; }
+    .light-theme .text-slate-200 { color: #1e293b !important; }
+    .light-theme .text-slate-300 { color: #334155 !important; }
+    .light-theme .text-slate-400 { color: #475569 !important; }
+    .light-theme .text-slate-500 { color: #64748b !important; }
+    .light-theme .text-slate-600 { color: #64748b !important; }
+
+    .light-theme .border-slate-900 { border-color: #e2e8f0 !important; }
+    .light-theme .border-slate-800 { border-color: #e2e8f0 !important; }
+    .light-theme .border-slate-700 { border-color: #cbd5e1 !important; }
+    .light-theme .border-slate-600 { border-color: #cbd5e1 !important; }
+    .light-theme .border-slate-500 { border-color: #94a3b8 !important; }
+    .light-theme .border-slate-400 { border-color: #94a3b8 !important; }
+    .light-theme .border-slate-700\/50 { border-color: rgba(203,213,225,.7) !important; }
+    .light-theme .border-slate-700\/60 { border-color: rgba(203,213,225,.7) !important; }
+
+    .light-theme .divide-slate-700 > :not([hidden]) ~ :not([hidden]) { border-color: #e2e8f0 !important; }
+    .light-theme .divide-slate-800 > :not([hidden]) ~ :not([hidden]) { border-color: #e2e8f0 !important; }
+    .light-theme .placeholder-slate-500::placeholder { color: #94a3b8 !important; }
+
+    .light-theme .hover\:bg-slate-100:hover { background-color: #cbd5e1 !important; }
+    .light-theme .hover\:bg-slate-600:hover { background-color: #94a3b8 !important; }
+    .light-theme .hover\:bg-slate-700:hover { background-color: #cbd5e1 !important; }
+    .light-theme .hover\:bg-slate-800:hover { background-color: #e2e8f0 !important; }
+    .light-theme .hover\:border-slate-400:hover { border-color: #64748b !important; }
+    .light-theme .hover\:text-slate-300:hover { color: #334155 !important; }
+    .light-theme .hover\:text-white:hover { color: #0f172a !important; }
+    .light-theme .focus\:border-slate-500:focus { border-color: #64748b !important; }
   </style>
 </head>
-<body class="bg-slate-950 min-h-screen text-white" x-data="app()" x-init="init()" x-cloak>
+<body class="bg-slate-950 min-h-screen text-white" :class="theme==='light' ? 'light-theme' : ''" x-data="app()" x-init="init()" x-cloak>
 
   <!-- Loading splash -->
   <div x-show="appLoading" class="fixed inset-0 bg-slate-950 flex items-center justify-center z-50">
@@ -242,6 +304,11 @@
               <span x-text="keepSession ? 'Sesión activa' : 'Auto-apagar'"></span>
             </span>
           </label>
+          <!-- Theme toggle -->
+          <button @click="toggleTheme()" :title="theme==='light' ? 'Cambiar a modo oscuro' : 'Cambiar a modo claro'"
+            class="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 hover:text-white transition shrink-0 text-sm">
+            <span x-text="theme==='light' ? '🌙' : '☀️'"></span>
+          </button>
           <!-- Settings -->
           <button @click="settingsOpen=true" title="Configuración"
             class="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 hover:text-white transition shrink-0 text-sm">
@@ -3984,6 +4051,7 @@
       apiBase: '',
       authToken: null,
       globalError: null,
+      theme: localStorage.getItem('wt_theme') || 'dark',
 
       // Reports
       reports: [],
@@ -4376,6 +4444,14 @@
           localStorage.removeItem('wt_gemini_key');
           location.reload();
         }, 300);
+      },
+
+      // -----------------------------------------------
+      // THEME
+      // -----------------------------------------------
+      toggleTheme() {
+        this.theme = this.theme === 'light' ? 'dark' : 'light';
+        localStorage.setItem('wt_theme', this.theme);
       },
 
       // -----------------------------------------------

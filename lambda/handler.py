@@ -287,6 +287,18 @@ def get_cluster_status() -> str:
     return resp["Clusters"][0]["ClusterStatus"]
 
 
+def _try_resume_cluster() -> None:
+    """Issue resume_cluster, swallowing the error if it's already resuming/available
+    (e.g. a concurrent run beat us to it) or busy with another operation."""
+    try:
+        logger.info("Resuming cluster %s", CLUSTER_ID)
+        redshift.resume_cluster(ClusterIdentifier=CLUSTER_ID)
+    except redshift.exceptions.InvalidClusterStateFault as e:
+        logger.info("resume_cluster no-op (cluster already transitioning): %s", e)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("resume_cluster call failed (will keep polling/retrying): %s", e)
+
+
 def ensure_cluster_available() -> None:
     status = get_cluster_status()
     logger.info("Cluster %s status: %s", CLUSTER_ID, status)
@@ -295,15 +307,24 @@ def ensure_cluster_available() -> None:
         return
 
     if status == "paused":
-        logger.info("Resuming cluster %s", CLUSTER_ID)
-        redshift.resume_cluster(ClusterIdentifier=CLUSTER_ID)
+        _try_resume_cluster()
 
+    # Re-issue resume_cluster periodically while stuck on "paused" — a resume call
+    # can silently no-op if it raced with another run's pause_cluster() finishing.
+    # Without a retry, a stuck "paused" status never recovers on its own.
     deadline = time.time() + MAX_WAIT_RESUME_SECONDS
+    last_resume_retry = time.time()
+    RESUME_RETRY_INTERVAL = 30
+
     while time.time() < deadline:
         status = get_cluster_status()
         if status == "available":
             logger.info("Cluster is available")
             return
+        if status == "paused" and time.time() - last_resume_retry >= RESUME_RETRY_INTERVAL:
+            logger.warning("Still paused %ds after resume attempt — retrying", RESUME_RETRY_INTERVAL)
+            _try_resume_cluster()
+            last_resume_retry = time.time()
         logger.info("Waiting for cluster... (current: %s)", status)
         time.sleep(POLL_INTERVAL_SECONDS)
 
