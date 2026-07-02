@@ -67,7 +67,11 @@
        se sobre-escribe la paleta cuando <body> tiene .light-theme. Los gráficos
        Chart.js (canvas) no se ven afectados por esto — quedan con sus colores
        originales, es una limitación conocida. */
-    .light-theme { background-color: #f8fafc; color-scheme: light; }
+    .light-theme { background-color: #f8fafc !important; color-scheme: light; }
+    /* <body> lleva bg-slate-950/text-white Y light-theme al mismo tiempo (no son
+       ancestro/descendiente) — un selector compuesto sin espacio es necesario para
+       que gane sobre las utilities de Tailwind, inyectadas después en el <head>. */
+    body.light-theme { background-color: #f8fafc !important; color: #0f172a !important; }
     .light-theme ::-webkit-scrollbar-track { background: #f1f5f9; }
     .light-theme ::-webkit-scrollbar-thumb { background: #cbd5e1; }
     .light-theme ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
