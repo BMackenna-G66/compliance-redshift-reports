@@ -15,7 +15,7 @@ WITH target_companies AS (
 SELECT
     'OUT' AS movement_type,
     'CCA_CASHCALL_OUT' AS movement_source,
-    cc.customer_id,
+    cc.customer_id::BIGINT AS customer_id,
     NULL::VARCHAR AS customer_email,
     tc.company_name AS customer_name,
     NULL::VARCHAR AS customer_last_name,

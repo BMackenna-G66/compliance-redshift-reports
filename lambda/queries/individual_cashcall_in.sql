@@ -26,7 +26,7 @@ latest_kyc_document AS (
 SELECT
     'IN' AS movement_type,
     'CCA_CASHCALL_IN' AS movement_source,
-    cc.customer_id,
+    cc.customer_id::BIGINT AS customer_id,
     tc.email AS customer_email,
     tc.name AS customer_name,
     tc.last_name AS customer_last_name,
