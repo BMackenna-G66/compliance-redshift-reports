@@ -1076,9 +1076,13 @@ def handler(event, context):  # noqa: ARG001
         days_filter_cashcall = (
             f"AND cc.creation_date >= DATEADD(day, -{days}, CURRENT_DATE)" if days else ""
         )
+        days_filter_qr = (
+            f"AND t.paid_date_millis >= (EXTRACT(EPOCH FROM DATEADD(day, -{days}, CURRENT_DATE))::BIGINT * 1000)"
+            if days else ""
+        )
 
         # Tipo de entidad: 'b2c' (default, customer_v2) o 'b2b' (company.company).
-        # Son 3 archivos .sql DUPLICADOS por tipo — nunca se mezclan ni se
+        # Son archivos .sql DUPLICADOS por tipo — nunca se mezclan ni se
         # parametriza una sola query para ambos casos.
         entity_type = "b2b" if str(event.get("entity_type", "b2c")).lower() == "b2b" else "b2c"
         suffix = "_b2b" if entity_type == "b2b" else ""
@@ -1090,26 +1094,27 @@ def handler(event, context):  # noqa: ARG001
             # Build customer_ids SQL list
             ids_sql = ", ".join(str(int(i)) for i in customer_ids)
 
-            # Load and render SQL templates — EXACTAMENTE como estaban originalmente
-            # para B2C, sin tocar. Motor de scoring/flags opera solo sobre estas 2 fuentes.
-            sql_out = (QUERIES_DIR / f"individual_aml_out{suffix}.sql").read_text(encoding="utf-8")
-            sql_in  = (QUERIES_DIR / f"individual_aml_in{suffix}.sql").read_text(encoding="utf-8")
-            sql_out = sql_out.strip().rstrip(";").replace("{customer_ids}", ids_sql)
-            sql_in  = sql_in.strip().rstrip(";").replace("{customer_ids}", ids_sql)
+            def _render(filename: str, extra: str = "") -> str:
+                sql = (QUERIES_DIR / filename).read_text(encoding="utf-8")
+                sql = sql.strip().rstrip(";").replace("{customer_ids}", ids_sql)
+                if "{days_filter}" in sql:
+                    sql = sql.replace("{days_filter}", extra)
+                return sql
 
-            rows_out = execute_query(sql_out)
-            rows_in  = execute_query(sql_in)
+            # Motor de scoring/flags (rows_out + rows_in): remesas + CCA wallet-deposit
+            # (como siempre) + Cash Call pay-out + QR Payment — todo lo que NO es
+            # "CCA Pay-In" entra al score, por acuerdo explícito. Verificado sin
+            # duplicación: ni Cash Call DR ni QR_PAYMENT se solapan con remesas/wallet.
+            rows_out = execute_query(_render(f"individual_aml_out{suffix}.sql"))
+            rows_out += execute_query(_render(f"individual_cashcall_out{suffix}.sql", days_filter_cashcall))
+            rows_out += execute_query(_render(f"individual_qrpayment{suffix}.sql", days_filter_qr))
+            rows_in = execute_query(_render(f"individual_aml_in{suffix}.sql"))
 
-            # Fuente adicional, SEPARADA: CCA Cash Call Pay-In (treasury.cash_call,
-            # type='CR'). Va en su propia hoja del Excel — no se junta ni modifica
-            # el resultado de las 2 queries de arriba.
-            sql_cashcall_in = (QUERIES_DIR / f"individual_cashcall_in{suffix}.sql").read_text(encoding="utf-8")
-            sql_cashcall_in = (
-                sql_cashcall_in.strip().rstrip(";")
-                .replace("{customer_ids}", ids_sql)
-                .replace("{days_filter}", days_filter_cashcall)
+            # Única fuente que queda SEPARADA (no entra al score): CCA Cash Call
+            # Pay-In (treasury.cash_call, type='CR'). Va en su propia hoja.
+            rows_cashcall_in = execute_query(
+                _render(f"individual_cashcall_in{suffix}.sql", days_filter_cashcall)
             )
-            rows_cashcall_in = execute_query(sql_cashcall_in)
 
             xlsx_bytes = build_aml_excel(rows_out, rows_in, customer_ids, rows_cashcall_in=rows_cashcall_in)
 
