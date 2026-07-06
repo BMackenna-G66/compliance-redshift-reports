@@ -144,7 +144,12 @@ def _prepare_df(rows_out: list[dict], rows_in: list[dict]) -> tuple[list[dict], 
         r = dict(row)
         r['flujo'] = 'OUT'
         status = (r.get('tx_status') or '').upper()
-        if status not in ('TRANSFERENCIA_EXITOSA',):
+        source = r.get('movement_source')
+        if source in ('CCA_CASHCALL_OUT', 'QR_PAYMENT'):
+            ok_statuses = ('PAID',)
+        else:
+            ok_statuses = ('TRANSFERENCIA_EXITOSA',)
+        if status not in ok_statuses:
             continue
         r['origin_amount_usd'] = _to_float(r.get('origin_amount_usd'))
         parsed = _parse_date(r.get('start_date'))
