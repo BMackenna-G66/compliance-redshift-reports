@@ -775,11 +775,22 @@ def build_aml_excel(
         if cid is not None:
             txs_by_customer[cid].append(r)
 
-    # Métricas globales
-    total_txs_all = len(rows_out) + len(rows_in)
-    total_txs_exitosas = len(rows)
-    n_clientes = len(flags_map) if flags_map else len(set(customer_ids))
-    vol_total_usd = sum(f['vol_total_usd'] for f in flags_map.values())
+    # Métricas globales.
+    # IMPORTANTE: cash_call NO entra al motor de scoring/flags (rows/flags_map
+    # siguen siendo solo remesas+CCA wallet, sin tocar). Pero SÍ se suma a los
+    # KPIs generales de arriba — si no, un cliente que solo usa cash_call
+    # aparece con "Total Transacciones: 0" aunque tenga actividad real.
+    cashcall_rows = rows_cashcall_in or []
+    n_cashcall = len(cashcall_rows)
+    vol_cashcall_usd = sum(_to_float(r.get('origin_amount_usd')) for r in cashcall_rows)
+
+    total_txs_all = len(rows_out) + len(rows_in) + n_cashcall
+    total_txs_exitosas = len(rows) + n_cashcall  # cash_call ya viene filtrado a status='PAID'
+    n_clientes = len({
+        *flags_map.keys(),
+        *(r.get('customer_id') for r in cashcall_rows if r.get('customer_id') is not None),
+    }) or len(set(customer_ids))
+    vol_total_usd = sum(f['vol_total_usd'] for f in flags_map.values()) + vol_cashcall_usd
     ticket_prom = vol_total_usd / total_txs_exitosas if total_txs_exitosas > 0 else 0.0
     bene_unicos_total = len({r.get('beneficiary_id') for r in rows if r.get('beneficiary_id')})
     bene_multi = sum(1 for b in fanin_rows if b['bene_ids_distintos'] > 1)
@@ -1055,7 +1066,8 @@ def build_aml_excel(
     ws1.merge_range('A4:E4', 'KPIs GLOBALES', fmt_seccion)
 
     kpis = [
-        ('Total Transacciones (IN+OUT)', total_txs_all),
+        ('Total Transacciones (IN+OUT+CashCall)', total_txs_all),
+        ('  · de las cuales Cash Call Pay-In', n_cashcall),
         ('Txs Exitosas Analizadas', total_txs_exitosas),
         ('Clientes Analizados', n_clientes),
         (f'Volumen Total USD', f'{vol_total_usd:,.2f}'),
@@ -1072,7 +1084,7 @@ def build_aml_excel(
         ws1.write(row, 1, val, fmt_row)
 
     # Distribución por nivel
-    r_sec = 13
+    r_sec = 4 + len(kpis) + 1
     ws1.set_row(r_sec, 22)
     ws1.merge_range(r_sec, 0, r_sec, 4, 'DISTRIBUCIÓN POR NIVEL DE RIESGO', fmt_seccion)
 
