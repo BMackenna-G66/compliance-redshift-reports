@@ -63,5 +63,10 @@ INNER JOIN target_companies tc ON cc.customer_id::VARCHAR = tc.company_id::VARCH
 LEFT JOIN "db_prod"."treasury"."business_bank" AS bb ON cc.business_bank_id = bb.business_bank_id
 WHERE cc.type = 'DR'
   AND cc.status = 'PAID'
+  AND NOT EXISTS (
+      SELECT 1 FROM "db_prod"."transaction"."transaction" AS t2
+      WHERE t2.transaction_id = cc.external_reference_number
+        AND t2.tx_status = 'TRANSFERENCIA_EXITOSA'
+  )
   {days_filter}
 ORDER BY tc.company_name, cc.creation_date DESC

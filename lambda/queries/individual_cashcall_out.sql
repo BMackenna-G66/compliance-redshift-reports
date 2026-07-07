@@ -1,7 +1,12 @@
 -- CCA Cash Call — PAY OUT (type = 'DR')
--- Fuente: db_prod.treasury.cash_call. NO USADA por handler.py actualmente
--- (solo se usa individual_cashcall_in.sql, en hoja separada). Se deja lista
--- por si más adelante se agrega también el pay-out en su propia hoja.
+-- Fuente: db_prod.treasury.cash_call. Entra al motor de scoring (rows_out).
+-- IMPORTANTE: external_reference_number apunta 1:1 al transaction_id de
+-- transaction.transaction — cash_call DR es la liquidación de una remesa
+-- fondeada con wallet. Si esa remesa fue TRANSFERENCIA_EXITOSA, ya la cuenta
+-- individual_aml_out.sql, así que se excluye aquí para no duplicarla. Si la
+-- remesa no llegó a ser exitosa (cotización vencida, envío anulado, etc.),
+-- el cash_call DR sigue siendo el único registro real de ese movimiento y se
+-- mantiene.
 WITH target_customers AS (
     SELECT
         c.customer_id,
@@ -76,5 +81,10 @@ LEFT JOIN latest_kyc_document kd ON cc.customer_id::VARCHAR = kd.customer_id::VA
 LEFT JOIN "db_prod"."treasury"."business_bank" AS bb ON cc.business_bank_id = bb.business_bank_id
 WHERE cc.type = 'DR'
   AND cc.status = 'PAID'
+  AND NOT EXISTS (
+      SELECT 1 FROM "db_prod"."transaction"."transaction" AS t2
+      WHERE t2.transaction_id = cc.external_reference_number
+        AND t2.tx_status = 'TRANSFERENCIA_EXITOSA'
+  )
   {days_filter}
 ORDER BY tc.email, cc.creation_date DESC
