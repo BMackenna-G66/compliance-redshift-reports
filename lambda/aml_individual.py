@@ -1903,33 +1903,78 @@ def build_aml_excel(
         ws12.write(row, 1, desc, rfmt_desc)
 
     # ════════════════════════════════════════════════════════════════════════
-    # Hoja 13: 💰 CCA Cash Call Pay-In — fuente SEPARADA, sin flags/scoring.
-    # Datos crudos de treasury.cash_call (type='CR'), independientes del motor
-    # de arriba (remesas + CCA wallet_deposit).
+    # Hoja 13: 💰 CCA Pay-In — TODO el fondeo vía CCA, sin importar la tabla
+    # de origen. Combina dos fuentes técnicas distintas que para el analista
+    # son "lo mismo" (dinero entrando por CCA):
+    #   - CCA_PAYIN: cca.wallet_deposit — SÍ está en el motor de scoring (rows_in)
+    #   - CCA_CASHCALL_IN: treasury.cash_call type='CR' — fuente aparte, NO
+    #     está en el scoring (columna "En Score" indica cuál es cuál)
+    # Antes esta hoja solo mostraba treasury.cash_call y quedaba vacía para
+    # clientes cuyo fondeo CCA es 100% vía wallet_deposit, aunque esos
+    # clientes sí tuvieran fondeo real (y contado en el score).
     # ════════════════════════════════════════════════════════════════════════
+    wallet_payin_rows = [r for r in (rows_in or []) if r.get('movement_source') == 'CCA_PAYIN']
     cashcall_rows = rows_cashcall_in or []
-    ws13 = wb.add_worksheet('💰 CCA Cash Call Pay-In')
+    ws13 = wb.add_worksheet('💰 CCA Pay-In')
     ws13.set_tab_color('0EA5E9')
     ws13.hide_gridlines(2)
 
     cc_headers = [
-        'Customer ID', 'Nombre', 'Email', 'Fecha Creación', 'Fecha Pago',
-        'Cash Call ID', 'Referencia Externa', 'Monto', 'Monto USD Origen',
-        'Monto USD Destino', 'Moneda', 'País Origen',
-        'Remitente', 'DNI Remitente', 'Email Remitente', 'Banco',
+        'Fuente', 'En Score', 'Customer ID', 'Nombre', 'Email', 'Fecha',
+        'Referencia', 'Monto', 'Monto USD', 'Moneda',
+        'Remitente/Originador', 'Identificación Remitente', 'Email Remitente',
     ]
-    cc_widths = [12, 24, 28, 18, 18, 14, 20, 14, 16, 16, 10, 14, 24, 16, 26, 20]
+    cc_widths = [20, 10, 12, 24, 28, 18, 20, 14, 14, 10, 24, 20, 26]
+
+    combined = []
+    for r in wallet_payin_rows:
+        combined.append({
+            'fuente': 'CCA Wallet Deposit',
+            'en_score': 'Sí',
+            'customer_id': r.get('customer_id'),
+            'customer_name': r.get('customer_name'),
+            'customer_last_name': r.get('customer_last_name'),
+            'customer_email': r.get('customer_email'),
+            'start_date': r.get('start_date'),
+            'referencia': r.get('transaction_id'),
+            'monto': _to_float(r.get('amount')),
+            'monto_usd': _to_float(r.get('origin_amount_usd')),
+            'moneda': r.get('origin_currency'),
+            'remitente': r.get('originator_name'),
+            'remitente_id': r.get('originator_identification'),
+            'remitente_email': None,
+        })
+    for r in cashcall_rows:
+        combined.append({
+            'fuente': 'CCA Cash Call (treasury)',
+            'en_score': 'No',
+            'customer_id': r.get('customer_id'),
+            'customer_name': r.get('customer_name'),
+            'customer_last_name': r.get('customer_last_name'),
+            'customer_email': r.get('customer_email'),
+            'start_date': r.get('start_date'),
+            'referencia': r.get('cash_call_id'),
+            'monto': _to_float(r.get('origin_amount')),
+            'monto_usd': _to_float(r.get('origin_amount_usd')),
+            'moneda': r.get('origin_currency'),
+            'remitente': f"{r.get('remitter_name', '') or ''} {r.get('remitter_lastname', '') or ''}".strip(),
+            'remitente_id': r.get('remitter_dni'),
+            'remitente_email': r.get('remitter_email'),
+        })
+
+    n_clientes_cc = len({r['customer_id'] for r in combined if r['customer_id'] is not None})
+    total_usd_cc = sum(r['monto_usd'] for r in combined)
+    n_wallet = len(wallet_payin_rows)
+    n_cashcall = len(cashcall_rows)
 
     ws13.set_row(0, 30)
-    ws13.merge_range(0, 0, 0, len(cc_headers) - 1, 'CCA CASH CALL — PAY IN (treasury.cash_call, type=CR)', fmt_titulo)
+    ws13.merge_range(0, 0, 0, len(cc_headers) - 1, 'CCA PAY-IN — Todo el fondeo entrante vía CCA', fmt_titulo)
     ws13.set_row(1, 22)
-    n_clientes_cc = len({r.get('customer_id') for r in cashcall_rows if r.get('customer_id') is not None})
-    total_usd_cc = sum(_to_float(r.get('origin_amount_usd')) for r in cashcall_rows)
     ws13.merge_range(
         1, 0, 1, len(cc_headers) - 1,
-        f'Generado: {today_str} | {len(cashcall_rows)} transacciones | '
+        f'Generado: {today_str} | {len(combined)} transacciones ({n_wallet} wallet + {n_cashcall} cash call) | '
         f'{n_clientes_cc} cliente(s) | Total USD {total_usd_cc:,.2f} — '
-        'fuente independiente, no incluida en el scoring de riesgo de arriba',
+        'columna "En Score" indica si esa fila ya está contada en el scoring de arriba',
         fmt_subtitulo,
     )
     ws13.set_row(2, 22)
@@ -1940,38 +1985,33 @@ def build_aml_excel(
     ws13.freeze_panes(3, 2)
     ws13.autofilter(2, 0, 2, len(cc_headers) - 1)
 
-    cashcall_sorted = sorted(
-        cashcall_rows,
+    combined_sorted = sorted(
+        combined,
         key=lambda r: (r.get('customer_email') or '', str(r.get('start_date') or '')),
-        reverse=False,
     )
-    for ri, r in enumerate(cashcall_sorted):
+    for ri, r in enumerate(combined_sorted):
         row = 3 + ri
         fmt_row = fmt_dato if ri % 2 == 0 else fmt_dato_gris
         fmt_row_num = fmt_dato_num if ri % 2 == 0 else fmt_dato_gris_num
         customer_name = f"{r.get('customer_name', '') or ''} {r.get('customer_last_name', '') or ''}".strip()
-        remitente = f"{r.get('remitter_name', '') or ''} {r.get('remitter_lastname', '') or ''}".strip()
-        ws13.write(row, 0, r.get('customer_id', ''), fmt_row)
-        ws13.write(row, 1, customer_name, fmt_row)
-        ws13.write(row, 2, r.get('customer_email', '') or '', fmt_row)
-        ws13.write(row, 3, str(r.get('start_date', '') or ''), fmt_row)
-        ws13.write(row, 4, str(r.get('paid_date', '') or ''), fmt_row)
-        ws13.write(row, 5, r.get('cash_call_id', '') or '', fmt_row)
-        ws13.write(row, 6, r.get('external_reference_number', '') or '', fmt_row)
-        ws13.write(row, 7, _to_float(r.get('origin_amount')), fmt_row_num)
-        ws13.write(row, 8, _to_float(r.get('origin_amount_usd')), fmt_row_num)
-        ws13.write(row, 9, _to_float(r.get('destiny_amount_usd')), fmt_row_num)
-        ws13.write(row, 10, r.get('origin_currency', '') or '', fmt_row)
-        ws13.write(row, 11, r.get('origin_country', '') or '', fmt_row)
-        ws13.write(row, 12, remitente, fmt_row)
-        ws13.write(row, 13, r.get('remitter_dni', '') or '', fmt_row)
-        ws13.write(row, 14, r.get('remitter_email', '') or '', fmt_row)
-        ws13.write(row, 15, r.get('inbound_bank_name', '') or '', fmt_row)
+        ws13.write(row, 0, r['fuente'], fmt_row)
+        ws13.write(row, 1, r['en_score'], fmt_row)
+        ws13.write(row, 2, r.get('customer_id', ''), fmt_row)
+        ws13.write(row, 3, customer_name, fmt_row)
+        ws13.write(row, 4, r.get('customer_email', '') or '', fmt_row)
+        ws13.write(row, 5, str(r.get('start_date', '') or ''), fmt_row)
+        ws13.write(row, 6, r.get('referencia', '') or '', fmt_row)
+        ws13.write(row, 7, r['monto'], fmt_row_num)
+        ws13.write(row, 8, r['monto_usd'], fmt_row_num)
+        ws13.write(row, 9, r.get('moneda', '') or '', fmt_row)
+        ws13.write(row, 10, r.get('remitente', '') or '', fmt_row)
+        ws13.write(row, 11, r.get('remitente_id', '') or '', fmt_row)
+        ws13.write(row, 12, r.get('remitente_email', '') or '', fmt_row)
 
-    if not cashcall_rows:
+    if not combined:
         ws13.set_row(3, 18)
         ws13.merge_range(3, 0, 3, len(cc_headers) - 1,
-                         '(sin transacciones de cash call pay-in en el período seleccionado)', fmt_dato)
+                         '(sin transacciones de fondeo CCA en el período seleccionado)', fmt_dato)
 
     # Cierre y retorno
     wb.close()
