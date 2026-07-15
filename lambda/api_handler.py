@@ -47,6 +47,7 @@ import json
 import os
 import time
 import uuid
+from pathlib import Path
 
 import boto3
 from boto3.dynamodb.conditions import Attr
@@ -107,6 +108,27 @@ GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 
 # Phase 10 — Auto-case rules S3 key
 AUTO_RULES_KEY = "config/auto_case_rules.json"
+
+# Priorización de alertas — mantenedor de documentos a solicitar por alerta
+ALERT_DOCS_CONFIG_KEY = "config/alert_document_config.json"
+PRIORITY_TEST_TABLE = "compliance.alert_priority_test_data"
+_PRIORITY_TO_CASE_PRIORITY = {"P1": "high", "P2": "medium", "P3": "low"}
+_ALL_DOC_CATEGORIES = [
+    "Origen de fondo", "Comprobantes/Soporte", "Relación/Beneficiario",
+    "Domicilio", "Identidad/Datos personales",
+]
+# Remitente "enviar como" — alias configurado en la cuenta de GMAIL_USER, no
+# necesita una app password propia (ver _send_email).
+ALERT_DOCS_FROM_ADDR = "compliance@global66.com"
+_DOCS_EMAIL_TEMPLATE_PATH = Path(__file__).resolve().parent / "solicitud_documentos_email.html"
+
+
+def _render_documentos_email(nombre_completo: str) -> str:
+    try:
+        html = _DOCS_EMAIL_TEMPLATE_PATH.read_text(encoding="utf-8")
+    except Exception:
+        html = "<p>Hola {{nombre_completo}}, necesitamos que nos envíes documentación adicional.</p>"
+    return html.replace("{{nombre_completo}}", nombre_completo or "cliente")
 
 runs_table = dynamodb.Table(RUNS_TABLE_NAME)
 catalog_table = dynamodb.Table(CATALOG_TABLE_NAME)
@@ -1490,6 +1512,25 @@ def handler(event, context):  # noqa: ARG001
         if method == "DELETE" and len(parts) == 2 and parts[0] == "whitelist":
             return remove_from_whitelist(parts[1])
 
+        # ---------------------------------------------------------------------------
+        # PRIORIZACIÓN DE ALERTAS — mantenedor de documentos + corrida de prueba
+        # ---------------------------------------------------------------------------
+        # GET /alert-document-config
+        if method == "GET" and parts == ["alert-document-config"]:
+            return get_alert_document_config()
+        # POST /alert-document-config
+        if method == "POST" and parts == ["alert-document-config"]:
+            return create_alert_document_config(body)
+        # PUT /alert-document-config/{id}
+        if method == "PUT" and len(parts) == 2 and parts[0] == "alert-document-config":
+            return update_alert_document_config(parts[1], body)
+        # DELETE /alert-document-config/{id}
+        if method == "DELETE" and len(parts) == 2 and parts[0] == "alert-document-config":
+            return delete_alert_document_config(parts[1])
+        # POST /alert-prioritization/test-run
+        if method == "POST" and parts == ["alert-prioritization", "test-run"]:
+            return run_alert_prioritization_test(body)
+
         # GET /alerts/reviewed
         if method == "GET" and parts == ["alerts", "reviewed"]:
             return get_alerts(status="reviewed")
@@ -1994,6 +2035,159 @@ def add_to_whitelist(body: dict):
 def remove_from_whitelist(whitelist_id: str):
     _crm_delete("whitelist", whitelist_id)
     return resp(200, {"message": f"Whitelist entry '{whitelist_id}' removed"})
+
+
+# ---------------------------------------------------------------------------
+# Priorización de Alertas — mantenedor de documentos a solicitar por alerta
+# (un solo JSON en S3, mismo patrón que auto_case_rules) + corrida de prueba
+# end-to-end: evaluación → prioridad → email (Gmail SMTP) → caso sin asignar.
+# ---------------------------------------------------------------------------
+def _load_alert_document_config() -> list[dict]:
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=ALERT_DOCS_CONFIG_KEY)
+        return json.loads(obj["Body"].read())
+    except Exception:
+        return []
+
+
+def _save_alert_document_config(records: list[dict]) -> None:
+    s3.put_object(
+        Bucket=S3_BUCKET, Key=ALERT_DOCS_CONFIG_KEY,
+        Body=json.dumps(records, ensure_ascii=False, default=str).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
+def get_alert_document_config():
+    return resp(200, {"config": _load_alert_document_config()})
+
+
+def create_alert_document_config(body: dict):
+    alerta = str(body.get("alerta", "")).strip()
+    if not alerta:
+        return resp(400, {"error": "alerta is required"})
+    records = _load_alert_document_config()
+    entry = {
+        "config_id": str(uuid.uuid4()),
+        "tipo_alerta": str(body.get("tipo_alerta", "")).strip(),
+        "alerta": alerta,
+        "documentos_b2b": body.get("documentos_b2b") or [],
+        "documentos_b2c": body.get("documentos_b2c") or [],
+    }
+    records.append(entry)
+    _save_alert_document_config(records)
+    return resp(201, {"config": entry})
+
+
+def update_alert_document_config(config_id: str, body: dict):
+    records = _load_alert_document_config()
+    for r in records:
+        if r.get("config_id") == config_id:
+            for field in ("tipo_alerta", "alerta", "documentos_b2b", "documentos_b2c"):
+                if field in body:
+                    r[field] = body[field]
+            _save_alert_document_config(records)
+            return resp(200, {"config": r})
+    return resp(404, {"error": "Config not found"})
+
+
+def delete_alert_document_config(config_id: str):
+    records = _load_alert_document_config()
+    new_records = [r for r in records if r.get("config_id") != config_id]
+    if len(new_records) == len(records):
+        return resp(404, {"error": "Config not found"})
+    _save_alert_document_config(new_records)
+    return resp(200, {"message": "Config eliminada"})
+
+
+def run_alert_prioritization_test(body: dict):
+    """Prueba de concepto end-to-end: lee compliance.alert_priority_test_data
+    (datos ficticios cargados a mano, con prioridad ya asignada) y por cada
+    fila compone el correo de solicitud de documentos (modo prueba = TODAS las
+    categorías, según lo pedido), lo manda vía _send_email (Gmail SMTP — hoy
+    no-opea en silencio porque GMAIL_APP_PASSWORD no está configurado todavía,
+    apenas se configure empieza a mandar de verdad sin tocar este código) y
+    crea un caso automático sin asignar. Deja un registro de auditoría de cada
+    solicitud de documentos en S3 (crm/document_requests/) independientemente
+    de si el correo realmente salió o no.
+    """
+    try:
+        rows = _rs_exec(
+            "SELECT customer_id, total_payins_7d, total_payin_usd_7d, avg_payin_usd_7d, "
+            "total_payouts_7d, total_payout_usd_7d, avg_payout_usd_7d, "
+            "last_payin_date::VARCHAR AS last_payin_date, last_payout_date::VARCHAR AS last_payout_date, "
+            "payout_vs_payin_ratio, nombre_completo, correo, prioridad, concepto "
+            f"FROM {PRIORITY_TEST_TABLE} ORDER BY customer_id"
+        )
+    except Exception as e:
+        return resp(500, {"error": f"No se pudo leer la tabla de prueba: {e}"})
+
+    results = []
+    for r in rows:
+        customer_id = r.get("customer_id")
+        nombre = r.get("nombre_completo") or ""
+        correo = r.get("correo") or ""
+        prioridad = str(r.get("prioridad") or "P3").strip().upper()
+        concepto = r.get("concepto") or ""
+        case_priority = _PRIORITY_TO_CASE_PRIORITY.get(prioridad, "low")
+
+        # Modo prueba: se piden TODOS los documentos (los datos son ficticios,
+        # "concepto" no es un nombre real de alerta del mantenedor). El cuerpo
+        # del correo es la plantilla oficial de Global66 (solo se reemplaza el
+        # nombre); la lista de documentos queda fija en la plantilla misma.
+        documentos = _ALL_DOC_CATEGORIES
+
+        subject = "Solicitud de información adicional — Global66"
+        html_body = _render_documentos_email(nombre)
+        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+
+        req_id = str(uuid.uuid4())
+        _crm_put("document_requests", req_id, {
+            "request_id": req_id,
+            "customer_id": customer_id,
+            "correo": correo,
+            "nombre_completo": nombre,
+            "prioridad": prioridad,
+            "concepto": concepto,
+            "documentos_solicitados": documentos,
+            "subject": subject,
+            "sent": bool(GMAIL_APP_PASSWORD),
+            "created_at": _now_str(),
+            "test_mode": True,
+        })
+
+        case_resp = create_case({
+            "title": f"[{prioridad}] {concepto} — cliente {customer_id}",
+            "description": (
+                f"Caso generado automáticamente por priorización de alertas (PRUEBA).\n"
+                f"Cliente: {nombre} ({customer_id})\n"
+                f"Pay-ins 7d: {r.get('total_payins_7d')} (USD {r.get('total_payin_usd_7d')})\n"
+                f"Pay-outs 7d: {r.get('total_payouts_7d')} (USD {r.get('total_payout_usd_7d')})\n"
+                f"Ratio payout/payin: {r.get('payout_vs_payin_ratio')}\n"
+                f"Último pay-in: {r.get('last_payin_date')} | Último pay-out: {r.get('last_payout_date')}\n"
+                f"Documentos solicitados: {', '.join(documentos)}"
+            ),
+            "priority": case_priority,
+            "entity_type": "customer_test",
+            "entity_id": str(customer_id),
+            "report_name": "alert_prioritization_test",
+            "assigned_to": "",
+            "created_by": "alert_prioritization_test",
+        })
+        case_body = json.loads(case_resp["body"])
+        case_id = case_body.get("case_id", "")
+
+        results.append({
+            "customer_id": customer_id,
+            "prioridad": prioridad,
+            "concepto": concepto,
+            "case_id": case_id,
+            "email_sent": bool(GMAIL_APP_PASSWORD),
+            "email_to": correo,
+            "documentos_solicitados": documentos,
+        })
+
+    return resp(200, {"processed": len(results), "results": results})
 
 
 # ---------------------------------------------------------------------------
@@ -2627,22 +2821,30 @@ def get_analytics_result(q0: str = "", q1: str = "", q2: str = "", q3: str = "",
 # Phase 8 — Email notifications
 # ---------------------------------------------------------------------------
 
-def _send_email(to: str, subject: str, html_body: str) -> None:
-    """Send an email via Gmail SMTP (non-blocking — errors are swallowed)."""
+def _send_email(to: str, subject: str, html_body: str, from_addr: str | None = None) -> None:
+    """Send an email via Gmail SMTP (non-blocking — errors are swallowed).
+
+    Always authenticates as GMAIL_USER (the account holding the app password),
+    but `from_addr` lets the message go out as one of that account's "send
+    mail as" aliases (e.g. compliance@global66.com) without needing a
+    separate app password — Gmail allows this as long as the alias is
+    configured under Settings → Accounts in that mailbox.
+    """
     if not GMAIL_APP_PASSWORD or not to or not to.strip():
         return
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
+    sender = from_addr or GMAIL_USER
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = GMAIL_USER
+    msg["From"] = sender
     msg["To"] = to
     msg.attach(MIMEText(html_body, "html"))
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as server:
             server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_USER, [to], msg.as_string())
+            server.sendmail(sender, [to], msg.as_string())
     except Exception:
         pass
 
