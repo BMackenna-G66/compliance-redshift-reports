@@ -1433,7 +1433,7 @@ def handler(event, context):  # noqa: ARG001
                 "headers": {
                     "Content-Type": "application/json",
                     "Access-Control-Allow-Origin": cors_origin,
-                    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
                     "Access-Control-Allow-Headers": "Authorization, Content-Type",
                     "Access-Control-Max-Age": "300",
                 },
