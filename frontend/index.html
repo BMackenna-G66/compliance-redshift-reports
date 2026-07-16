@@ -2819,6 +2819,29 @@
             </template>
           </div>
         </div>
+        <!-- Attachments -->
+        <div class="mb-6">
+          <span class="text-xs text-slate-500 block mb-3">Documentos adjuntos (<span x-text="activeCaseAttachments.length"></span>)</span>
+          <div x-show="activeCaseAttachments.length === 0" class="text-sm text-slate-600 italic mb-3">Sin adjuntos aún.</div>
+          <div class="space-y-2 mb-3">
+            <template x-for="a in activeCaseAttachments" :key="a.attachment_id">
+              <div class="bg-slate-700/50 rounded-lg px-3 py-2 flex items-center justify-between text-xs">
+                <button @click="downloadCaseAttachment(a.attachment_id)"
+                  class="text-slate-200 hover:text-orange-400 transition text-left truncate flex-1"
+                  x-text="'📎 ' + a.filename"></button>
+                <span class="text-slate-500 shrink-0 ml-2" x-text="(a.uploaded_by || '') + ' · ' + new Date(a.uploaded_at).toLocaleDateString('es-CL')"></span>
+                <button @click="deleteCaseAttachment(a.attachment_id)"
+                  class="text-red-400 hover:text-red-300 shrink-0 ml-3">🗑</button>
+              </div>
+            </template>
+          </div>
+          <label class="inline-flex items-center gap-2 px-3 py-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-200 text-xs font-medium rounded-lg cursor-pointer transition"
+            :class="caseAttachmentUploading ? 'opacity-50 cursor-not-allowed' : ''">
+            <span x-text="caseAttachmentUploading ? '⏳ Subiendo...' : '+ Adjuntar archivo'"></span>
+            <input type="file" class="hidden" @change="uploadCaseAttachment($event)" :disabled="caseAttachmentUploading">
+          </label>
+          <p x-show="caseAttachmentError" class="text-xs text-red-400 mt-2" x-text="caseAttachmentError"></p>
+        </div>
         <!-- Notes timeline -->
         <div>
           <span class="text-xs text-slate-500 block mb-3">Notas de investigación (<span x-text="activeCaseNotes.length"></span>)</span>
@@ -4306,6 +4329,9 @@
       activeCase: {},
       activeCaseNotes: [],
       activeCaseAlerts: [],
+      activeCaseAttachments: [],
+      caseAttachmentUploading: false,
+      caseAttachmentError: '',
       newCaseNote: '',
       activeCaseAI: '',
       activeCaseAILoading: false,
@@ -6050,6 +6076,8 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         this.activeCase = {};
         this.activeCaseNotes = [];
         this.activeCaseAlerts = [];
+        this.activeCaseAttachments = [];
+        this.caseAttachmentError = '';
         this.newCaseNote = '';
         this.activeCaseAI = '';
         this.activeCaseAILoading = false;
@@ -6059,7 +6087,52 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           this.activeCase = d.case;
           this.activeCaseNotes = d.notes || [];
           this.activeCaseAlerts = d.alerts || [];
+          this.activeCaseAttachments = d.case.attachments || [];
         }
+      },
+
+      async uploadCaseAttachment(event) {
+        const file = event.target.files && event.target.files[0];
+        event.target.value = '';
+        if (!file || !this.activeCase.case_id) return;
+        this.caseAttachmentError = '';
+        this.caseAttachmentUploading = true;
+        try {
+          const caseId = this.activeCase.case_id;
+          const step1 = await this.api('POST', `/cases/${caseId}/attachments/upload-url`, {
+            filename: file.name, content_type: file.type || 'application/octet-stream',
+          });
+          if (!step1?.upload_url) throw new Error('No se pudo generar la URL de subida.');
+          const putRes = await fetch(step1.upload_url, {
+            method: 'PUT', body: file,
+            headers: { 'Content-Type': step1.content_type },
+          });
+          if (!putRes.ok) throw new Error('La subida a S3 falló (' + putRes.status + ').');
+          await this.api('POST', `/cases/${caseId}/attachments`, {
+            filename: file.name, s3_key: step1.s3_key, size: file.size,
+            content_type: step1.content_type,
+            uploaded_by: this.currentUserEmail || this.userEmail || '',
+          });
+          const d = await this.api('GET', '/cases/' + caseId);
+          if (d?.case) this.activeCaseAttachments = d.case.attachments || [];
+        } catch (e) {
+          this.caseAttachmentError = e?.message || 'Error al subir el archivo.';
+        } finally {
+          this.caseAttachmentUploading = false;
+        }
+      },
+
+      async downloadCaseAttachment(attachmentId) {
+        if (!this.activeCase.case_id) return;
+        const d = await this.api('GET', `/cases/${this.activeCase.case_id}/attachments/${attachmentId}/download-url`);
+        if (d?.download_url) window.open(d.download_url, '_blank');
+      },
+
+      async deleteCaseAttachment(attachmentId) {
+        if (!this.activeCase.case_id) return;
+        if (!confirm('¿Eliminar este adjunto? Esta acción no se puede deshacer.')) return;
+        await this.api('DELETE', `/cases/${this.activeCase.case_id}/attachments/${attachmentId}`);
+        this.activeCaseAttachments = this.activeCaseAttachments.filter(a => a.attachment_id !== attachmentId);
       },
 
       openCreateCaseModal(fromAlert = null) {
