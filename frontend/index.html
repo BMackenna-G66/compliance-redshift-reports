@@ -5445,7 +5445,7 @@
         this.analyticsLoading = true;
         this.analyticsPaused = false;
         try {
-          const initRes = await this.apiCall('GET', 'analytics/summary');
+          const initRes = await this.api('GET', '/analytics/summary');
           if (initRes.error === 'cluster_paused') {
             this.analyticsPaused = true;
             this.analyticsLoading = false;
@@ -5461,7 +5461,7 @@
           let data = null;
           for (let attempt = 0; attempt < 15; attempt++) {
             await new Promise(r => setTimeout(r, 2000));
-            data = await this.apiCall('GET', `analytics/result?q0=${q0}&q1=${q1}&q2=${q2}&q3=${q3}&q4=${q4}`);
+            data = await this.api('GET', `/analytics/result?q0=${q0}&q1=${q1}&q2=${q2}&q3=${q3}&q4=${q4}`);
             if (data.all_done) break;
           }
           if (!data) { this.analyticsLoading = false; return; }
@@ -5570,8 +5570,8 @@
         this.crmUsersLoading = true;
         try {
           const [uRes, rRes] = await Promise.all([
-            this.apiCall('GET', 'users'),
-            this.apiCall('GET', 'roles'),
+            this.api('GET', '/users'),
+            this.api('GET', '/roles'),
           ]);
           this.crmUsers = uRes.users || [];
           this.crmRoles = rRes.roles || [];
@@ -5583,9 +5583,9 @@
         const f = this.crmUserModal.form;
         try {
           if (this.crmUserModal.mode === 'create') {
-            await this.apiCall('POST', 'users', { email: f.email, full_name: f.full_name, role_id: f.role_id });
+            await this.api('POST', '/users', { email: f.email, full_name: f.full_name, role_id: f.role_id });
           } else {
-            await this.apiCall('PUT', `users/${this.crmUserModal.userId}`, { full_name: f.full_name, role_id: f.role_id, is_active: f.is_active });
+            await this.api('POST', `/users/${this.crmUserModal.userId}`, { full_name: f.full_name, role_id: f.role_id, is_active: f.is_active });
           }
           this.crmUserModal = { open: false };
           await this.loadCrmUsers();
@@ -5595,7 +5595,7 @@
       async deactivateCrmUser(userId) {
         if (!confirm('¿Desactivar este analista?')) return;
         try {
-          await this.apiCall('DELETE', `users/${userId}`);
+          await this.api('DELETE', `/users/${userId}`);
           await this.loadCrmUsers();
         } catch(e) {}
       },
@@ -5607,7 +5607,7 @@
         if (this.slaLoading) return;
         this.slaLoading = true;
         try {
-          const initRes = await this.apiCall('GET', 'analytics/sla');
+          const initRes = await this.api('GET', '/analytics/sla');
           if (initRes.error === 'cluster_paused' || !initRes.stmt_ids) {
             this.slaLoading = false;
             return;
@@ -5616,7 +5616,7 @@
           let data = null;
           for (let i = 0; i < 15; i++) {
             await new Promise(r => setTimeout(r, 2000));
-            data = await this.apiCall('GET', `analytics/sla/result?q0=${q0}&q1=${q1}&q2=${q2}`);
+            data = await this.api('GET', `/analytics/sla/result?q0=${q0}&q1=${q1}&q2=${q2}`);
             if (data.all_done) break;
           }
           if (!data) { this.slaLoading = false; return; }
@@ -5634,7 +5634,7 @@
       async loadRules() {
         this.rulesLoading = true;
         try {
-          const res = await this.apiCall('GET', 'rules');
+          const res = await this.api('GET', '/rules');
           this.rules = res.rules || [];
         } catch(e) {}
         this.rulesLoading = false;
@@ -5644,9 +5644,9 @@
         const f = this.ruleModal.form;
         try {
           if (this.ruleModal.mode === 'create') {
-            await this.apiCall('POST', 'rules', f);
+            await this.api('POST', '/rules', f);
           } else {
-            await this.apiCall('PUT', `rules/${this.ruleModal.ruleId}`, f);
+            await this.api('POST', `/rules/${this.ruleModal.ruleId}`, f);
           }
           this.ruleModal = { open: false };
           await this.loadRules();
@@ -5656,7 +5656,7 @@
       async deleteRule(ruleId) {
         if (!confirm('¿Eliminar esta regla?')) return;
         try {
-          await this.apiCall('DELETE', `rules/${ruleId}`);
+          await this.api('DELETE', `/rules/${ruleId}`);
           await this.loadRules();
         } catch(e) {}
       },
@@ -5981,7 +5981,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
 
       async confirmReview() {
         const { alert_id, notes, reviewed_by } = this.reviewModal;
-        await this.api('PUT', '/alerts/' + alert_id + '/review', { notes, reviewed_by });
+        await this.api('POST', '/alerts/' + alert_id + '/review', { notes, reviewed_by });
         this.reviewModal.open = false;
         await this.loadAlerts();
       },
@@ -5992,7 +5992,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
 
       async confirmAssign() {
         const { alert_id, assigned_to } = this.assignModal;
-        await this.api('PUT', '/alerts/' + alert_id + '/assign', { assigned_to });
+        await this.api('POST', '/alerts/' + alert_id + '/assign', { assigned_to });
         this.assignModal.open = false;
         await this.loadAlerts();
       },
@@ -6115,7 +6115,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       },
 
       async changeCaseStatus(case_id, status) {
-        await this.api('PUT', '/cases/' + case_id + '/status', { status });
+        await this.api('POST', '/cases/' + case_id + '/status', { status });
         const d = await this.api('GET', '/cases/' + case_id);
         if (d?.case) this.activeCase = d.case;
         await this.loadCases();
@@ -6126,7 +6126,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       },
 
       async confirmCaseAssign() {
-        await this.api('PUT', '/cases/' + this.caseAssignModal.case_id + '/assign', { assigned_to: this.caseAssignModal.assigned_to });
+        await this.api('POST', '/cases/' + this.caseAssignModal.case_id + '/assign', { assigned_to: this.caseAssignModal.assigned_to });
         this.caseAssignModal.open = false;
         const d = await this.api('GET', '/cases/' + this.caseAssignModal.case_id);
         if (d?.case) this.activeCase = d.case;
@@ -6260,13 +6260,13 @@ Responde en español, de forma estructurada y concisa.`;
       },
 
       async toggleSchedule(name, action) {
-        await this.api('PUT', `/schedules/${encodeURIComponent(name)}/toggle`, { action });
+        await this.api("POST", `/schedules/${encodeURIComponent(name)}/toggle`, { action });
         await this.loadSchedules();
       },
 
       async saveScheduleExpression(name) {
         if (!this.editScheduleExpr.trim()) return;
-        await this.api('PUT', `/schedules/${encodeURIComponent(name)}/expression`, {
+        await this.api("POST", `/schedules/${encodeURIComponent(name)}/expression`, {
           schedule_expression: this.editScheduleExpr.trim(),
         });
         this.editingSchedule = null;

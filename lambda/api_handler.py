@@ -1522,7 +1522,7 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["alert-document-config"]:
             return create_alert_document_config(body)
         # PUT /alert-document-config/{id}
-        if method == "PUT" and len(parts) == 2 and parts[0] == "alert-document-config":
+        if method in ("PUT", "POST") and len(parts) == 2 and parts[0] == "alert-document-config":
             return update_alert_document_config(parts[1], body)
         # DELETE /alert-document-config/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "alert-document-config":
@@ -1541,13 +1541,13 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["alerts"]:
             return add_alert(body)
         # PUT /alerts/{id}/review
-        if method == "PUT" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "review":
+        if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "review":
             return review_alert(parts[1], body)
         # PUT /alerts/{id}/assign
-        if method == "PUT" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "assign":
+        if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "assign":
             return assign_alert(parts[1], body)
         # PUT /alerts/{id}/notes
-        if method == "PUT" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "notes":
+        if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "notes":
             return update_alert_notes(parts[1], body)
         # DELETE /alerts/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "alerts":
@@ -1571,13 +1571,13 @@ def handler(event, context):  # noqa: ARG001
         if method == "GET" and len(parts) == 2 and parts[0] == "cases":
             return get_case_detail(parts[1])
         # PUT /cases/{id}  (update title / description / priority)
-        if method == "PUT" and len(parts) == 2 and parts[0] == "cases":
+        if method in ("PUT", "POST") and len(parts) == 2 and parts[0] == "cases":
             return update_case(parts[1], body)
         # PUT /cases/{id}/status
-        if method == "PUT" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "status":
+        if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "cases" and parts[2] == "status":
             return update_case_status(parts[1], body)
         # PUT /cases/{id}/assign
-        if method == "PUT" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "assign":
+        if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "cases" and parts[2] == "assign":
             return update_case_assign(parts[1], body)
         # POST /cases/{id}/notes
         if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "notes":
@@ -1625,10 +1625,10 @@ def handler(event, context):  # noqa: ARG001
         if method == "GET" and parts == ["schedules"]:
             return get_schedules()
         # PUT /schedules/{name}/toggle
-        if method == "PUT" and len(parts) == 3 and parts[0] == "schedules" and parts[2] == "toggle":
+        if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "schedules" and parts[2] == "toggle":
             return toggle_schedule(parts[1], body)
         # PUT /schedules/{name}/expression
-        if method == "PUT" and len(parts) == 3 and parts[0] == "schedules" and parts[2] == "expression":
+        if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "schedules" and parts[2] == "expression":
             return update_schedule_expression(parts[1], body)
 
         # GET /dashboard/stats (submit queries, returns stmt_ids)
@@ -1665,7 +1665,7 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["users"]:
             return create_user(body)
         # PUT /users/{id}
-        if method == "PUT" and len(parts) == 2 and parts[0] == "users":
+        if method in ("PUT", "POST") and len(parts) == 2 and parts[0] == "users":
             return update_user(parts[1], body)
         # DELETE /users/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "users":
@@ -1682,7 +1682,7 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["rules"]:
             return create_rule(body)
         # PUT /rules/{id}
-        if method == "PUT" and len(parts) == 2 and parts[0] == "rules":
+        if method in ("PUT", "POST") and len(parts) == 2 and parts[0] == "rules":
             return update_rule(parts[1], body)
         # DELETE /rules/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "rules":
