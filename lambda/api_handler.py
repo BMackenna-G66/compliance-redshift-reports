@@ -45,6 +45,7 @@ import datetime as dt
 import decimal
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -1582,6 +1583,18 @@ def handler(event, context):  # noqa: ARG001
         # POST /cases/{id}/notes
         if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "notes":
             return add_case_note(parts[1], body)
+        # POST /cases/{id}/attachments/upload-url
+        if method == "POST" and len(parts) == 4 and parts[0] == "cases" and parts[2] == "attachments" and parts[3] == "upload-url":
+            return get_attachment_upload_url(parts[1], body)
+        # POST /cases/{id}/attachments
+        if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "attachments":
+            return add_case_attachment(parts[1], body)
+        # GET /cases/{id}/attachments/{attachment_id}/download-url
+        if method == "GET" and len(parts) == 5 and parts[0] == "cases" and parts[2] == "attachments" and parts[4] == "download-url":
+            return get_attachment_download_url(parts[1], parts[3])
+        # DELETE /cases/{id}/attachments/{attachment_id}
+        if method == "DELETE" and len(parts) == 4 and parts[0] == "cases" and parts[2] == "attachments":
+            return delete_case_attachment(parts[1], parts[3])
         # POST /alerts/{id}/link-case
         if method == "POST" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "link-case":
             return link_alert_to_case(parts[1], body)
@@ -2522,6 +2535,124 @@ def link_alert_to_case(alert_id: str, body: dict):
         return resp(404, {"error": f"Alert '{alert_id}' not found"})
     _crm_update("cases", case_id, {"updated_at": _now_str()})
     return resp(200, {"message": f"Alert '{alert_id}' linked to case '{case_id}'"})
+
+
+# ---------------------------------------------------------------------------
+# CASE ATTACHMENTS — documentos adjuntos a un caso, organizados en S3 por
+# cliente (customer_id o company_id), no solo por caso, para que todo lo que
+# se le pidió/recibió de un cliente sea encontrable aunque abra varios casos
+# a lo largo del tiempo:
+#
+#   client-documents/{entity_type}/{entity_id}/{case_id}/{ts}_{filename}
+#
+# Subida vía presigned PUT (el navegador sube directo a S3, sin pasar por el
+# Lambda) — evita el límite de payload del Lambda/API Gateway para archivos
+# grandes (PDFs escaneados, etc). Mismo patrón que ya usa el proyecto para
+# descargas de reportes (presigned URL).
+# ---------------------------------------------------------------------------
+def _safe_filename(name: str) -> str:
+    name = (name or "archivo").strip().replace("/", "_").replace("\\", "_")
+    name = re.sub(r"[^A-Za-z0-9._\-]", "_", name)
+    return name[:200] or "archivo"
+
+
+def _attachment_s3_key(entity_type: str, entity_id: str, case_id: str, ts: str, filename: str) -> str:
+    entity_type = (entity_type or "customer").strip().lower()
+    if entity_type not in ("customer", "company"):
+        entity_type = "customer"
+    entity_id = re.sub(r"[^A-Za-z0-9_\-]", "_", str(entity_id or "sin_id"))
+    return f"client-documents/{entity_type}/{entity_id}/{case_id}/{ts}_{_safe_filename(filename)}"
+
+
+def get_attachment_upload_url(case_id: str, body: dict):
+    """Paso 1 de la subida: devuelve una URL PUT firmada + la key donde va a
+    quedar el archivo. El navegador sube directo a S3 con esa URL."""
+    filename = body.get("filename", "").strip()
+    if not filename:
+        return resp(400, {"error": "filename is required"})
+    content_type = body.get("content_type", "").strip() or "application/octet-stream"
+
+    case = _crm_get("cases", case_id)
+    if case is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+
+    ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    key = _attachment_s3_key(case.get("entity_type", ""), case.get("entity_id", ""), case_id, ts, filename)
+
+    upload_url = s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": S3_BUCKET, "Key": key, "ContentType": content_type},
+        ExpiresIn=300,
+    )
+    return resp(200, {"upload_url": upload_url, "s3_key": key, "content_type": content_type})
+
+
+def add_case_attachment(case_id: str, body: dict):
+    """Paso 2: el navegador ya subió el archivo a S3 con la URL del paso 1;
+    esto registra la metadata en el caso (el archivo en sí no pasa por acá)."""
+    s3_key = body.get("s3_key", "").strip()
+    filename = body.get("filename", "").strip()
+    if not s3_key or not filename:
+        return resp(400, {"error": "s3_key and filename are required"})
+
+    case = _crm_get("cases", case_id)
+    if case is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+
+    uploaded_by = body.get("uploaded_by", "").strip()
+    attachment = {
+        "attachment_id": str(uuid.uuid4()),
+        "filename": filename,
+        "s3_key": s3_key,
+        "size": int(body.get("size") or 0),
+        "content_type": body.get("content_type", "").strip(),
+        "uploaded_by": uploaded_by,
+        "uploaded_at": _now_str(),
+    }
+    case.setdefault("attachments", []).append(attachment)
+    case["updated_at"] = _now_str()
+    _crm_put("cases", case_id, case)
+    _safe_audit(user_email=uploaded_by or "unknown", action="case.attachment_add",
+                entity_type="case", entity_id=case_id, new_value={"filename": filename})
+    return resp(201, {"attachment": attachment})
+
+
+def get_attachment_download_url(case_id: str, attachment_id: str):
+    case = _crm_get("cases", case_id)
+    if case is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+    for a in case.get("attachments", []):
+        if a.get("attachment_id") == attachment_id:
+            url = s3.generate_presigned_url(
+                "get_object",
+                Params={
+                    "Bucket": S3_BUCKET, "Key": a["s3_key"],
+                    "ResponseContentDisposition": f'attachment; filename="{a.get("filename","archivo")}"',
+                },
+                ExpiresIn=300,
+            )
+            return resp(200, {"download_url": url, "filename": a.get("filename", "")})
+    return resp(404, {"error": "Attachment not found"})
+
+
+def delete_case_attachment(case_id: str, attachment_id: str):
+    case = _crm_get("cases", case_id)
+    if case is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+    attachments = case.get("attachments", [])
+    target = next((a for a in attachments if a.get("attachment_id") == attachment_id), None)
+    if target is None:
+        return resp(404, {"error": "Attachment not found"})
+    try:
+        s3.delete_object(Bucket=S3_BUCKET, Key=target["s3_key"])
+    except Exception:
+        pass
+    case["attachments"] = [a for a in attachments if a.get("attachment_id") != attachment_id]
+    case["updated_at"] = _now_str()
+    _crm_put("cases", case_id, case)
+    _safe_audit(action="case.attachment_delete", entity_type="case", entity_id=case_id,
+                new_value={"filename": target.get("filename", "")})
+    return resp(200, {"message": "Attachment deleted"})
 
 
 # ---------------------------------------------------------------------------
