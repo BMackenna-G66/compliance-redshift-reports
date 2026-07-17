@@ -1542,6 +1542,9 @@ def handler(event, context):  # noqa: ARG001
         # POST /alert-prioritization/settings
         if method == "POST" and parts == ["alert-prioritization", "settings"]:
             return update_priority_queue_settings(body)
+        # POST /alert-prioritization/run — flujo real (no datos de prueba)
+        if method == "POST" and parts == ["alert-prioritization", "run"]:
+            return run_alert_prioritization_real(body)
 
         # GET /alerts/reviewed
         if method == "GET" and parts == ["alerts", "reviewed"]:
@@ -2245,6 +2248,158 @@ def run_alert_prioritization_test(body: dict):
             "customer_id": customer_id,
             "prioridad": prioridad,
             "concepto": concepto,
+            "case_id": case_id,
+            "email_sent": bool(GMAIL_APP_PASSWORD),
+            "email_to": correo,
+            "documentos_solicitados": documentos,
+        })
+
+    return resp(200, {"processed": len(results), "results": results})
+
+
+_PRIORITY_QUEUE_VIEW = {"customer": "compliance.priority_queue_b2c", "company": "compliance.priority_queue_b2b"}
+
+
+def _score_to_priority(score) -> str:
+    """UMBRALES PLACEHOLDER — pendientes de confirmar con compliance, junto
+    con los pesos reales de 'Riesgo Analizado'. Fáciles de ajustar acá."""
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        return "P3"
+    if score >= 75:
+        return "P1"
+    if score >= 50:
+        return "P2"
+    return "P3"
+
+
+def _lookup_alert_documents(alerta: str, entity_type: str) -> list[str]:
+    """Busca en el mantenedor (config/alert_document_config.json) los
+    documentos a pedir para esta alerta + tipo de cliente. Si la alerta no
+    está configurada, cae de vuelta a pedir todas las categorías (mismo
+    comportamiento que el modo prueba)."""
+    records = _load_alert_document_config()
+    alerta_norm = (alerta or "").strip().lower()
+    field = "documentos_b2b" if entity_type == "company" else "documentos_b2c"
+    for r in records:
+        if (r.get("alerta") or "").strip().lower() == alerta_norm:
+            docs = r.get(field) or []
+            return docs if docs else _ALL_DOC_CATEGORIES
+    return _ALL_DOC_CATEGORIES
+
+
+def run_alert_prioritization_real(body: dict):
+    """Flujo real: recibe alertas ya gatilladas (entity_type, entity_id,
+    alerta, concepto) — típicamente el resultado de correr uno de los 29
+    reportes — y por cada una:
+      1. Calcula prioridad real desde compliance.priority_queue_b2c/b2b
+         (score PLACEHOLDER: promedio simple de los 4 componentes, pendiente
+         de los pesos reales de 'Riesgo Analizado' — ver Notas de la matriz).
+      2. Busca en el mantenedor qué documentos pedir para esa alerta + tipo
+         de cliente.
+      3. Manda el correo (plantilla completa — el recorte dinámico del HTML
+         por categoría queda pendiente de confirmar el mapeo) y crea un caso
+         automático sin asignar.
+    Respeta el interruptor general, igual que el modo prueba.
+
+    body: {"alerts": [{"entity_type": "customer"|"company", "entity_id": 123,
+                        "alerta": "Transacciones a Países Alto Riesgo",
+                        "concepto": "texto libre opcional"}]}
+    """
+    settings = _load_priority_queue_settings()
+    if not settings.get("enabled"):
+        return resp(409, {
+            "error": "El proceso de priorización de alertas está apagado. "
+                     "Prendelo desde Admin antes de correrlo.",
+            "enabled": False,
+        })
+
+    alerts_in = body.get("alerts") or []
+    if not alerts_in:
+        return resp(400, {"error": "alerts es requerido (lista de {entity_type, entity_id, alerta})"})
+
+    results = []
+    for item in alerts_in:
+        entity_type = (item.get("entity_type") or "customer").strip().lower()
+        if entity_type not in ("customer", "company"):
+            entity_type = "customer"
+        entity_id = item.get("entity_id")
+        alerta = item.get("alerta", "")
+        concepto = item.get("concepto") or alerta
+
+        view = _PRIORITY_QUEUE_VIEW[entity_type]
+        id_col = "customer_id" if entity_type == "customer" else "company_id"
+        try:
+            rows = _rs_exec(f"SELECT * FROM {view} WHERE {id_col} = {int(entity_id)}")
+        except Exception as e:
+            results.append({"entity_type": entity_type, "entity_id": entity_id, "error": f"No se pudo calcular prioridad: {e}"})
+            continue
+        if not rows:
+            results.append({"entity_type": entity_type, "entity_id": entity_id, "error": "Cliente/empresa no encontrado en la vista de priorización"})
+            continue
+        row = rows[0]
+
+        score = row.get("risk_score")
+        prioridad = _score_to_priority(score)
+        case_priority = _PRIORITY_TO_CASE_PRIORITY.get(prioridad, "low")
+
+        if entity_type == "customer":
+            nombre = f"{row.get('name','') or ''} {row.get('last_name','') or ''}".strip()
+            correo = row.get("email") or ""
+        else:
+            nombre = row.get("rep_name") or row.get("company_name") or ""
+            correo = row.get("rep_email") or ""
+
+        documentos = _lookup_alert_documents(alerta, entity_type)
+
+        subject = "Solicitud de información adicional — Global66"
+        html_body = _render_documentos_email(nombre)
+        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+
+        req_id = str(uuid.uuid4())
+        _crm_put("document_requests", req_id, {
+            "request_id": req_id,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "correo": correo,
+            "nombre_completo": nombre,
+            "prioridad": prioridad,
+            "risk_score": score,
+            "alerta": alerta,
+            "concepto": concepto,
+            "documentos_solicitados": documentos,
+            "subject": subject,
+            "sent": bool(GMAIL_APP_PASSWORD),
+            "created_at": _now_str(),
+            "test_mode": False,
+        })
+
+        case_resp = create_case({
+            "title": f"[{prioridad}] {alerta} — {'cliente' if entity_type=='customer' else 'empresa'} {entity_id}",
+            "description": (
+                f"Caso generado automáticamente por priorización de alertas.\n"
+                f"{'Cliente' if entity_type=='customer' else 'Empresa'}: {nombre} ({entity_id})\n"
+                f"Alerta: {alerta}\n"
+                f"Score de riesgo: {score} (PLACEHOLDER — pendiente pesos reales de 'Riesgo Analizado')\n"
+                f"Documentos solicitados: {', '.join(documentos)}"
+            ),
+            "priority": case_priority,
+            "entity_type": entity_type,
+            "entity_id": str(entity_id),
+            "report_name": alerta,
+            "assigned_to": "",
+            "created_by": "alert_prioritization_real",
+        })
+        case_body = json.loads(case_resp["body"])
+        case_id = case_body.get("case_id", "")
+
+        results.append({
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "alerta": alerta,
+            "risk_score": score,
+            "prioridad": prioridad,
             "case_id": case_id,
             "email_sent": bool(GMAIL_APP_PASSWORD),
             "email_to": correo,
