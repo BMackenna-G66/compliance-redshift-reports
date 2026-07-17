@@ -118,6 +118,11 @@ _ALL_DOC_CATEGORIES = [
     "Origen de fondo", "Comprobantes/Soporte", "Relación/Beneficiario",
     "Domicilio", "Identidad/Datos personales",
 ]
+# Interruptor general del envío automático de solicitudes de documentos.
+# Apagado por defecto — se prende explícitamente desde el Admin cuando el
+# proceso esté listo para correr sobre alertas reales (hoy solo se usa en el
+# botón de prueba, que respeta este mismo interruptor).
+PRIORITY_QUEUE_SETTINGS_KEY = "config/priority_queue_settings.json"
 # Remitente "enviar como" — alias configurado en la cuenta de GMAIL_USER, no
 # necesita una app password propia (ver _send_email).
 ALERT_DOCS_FROM_ADDR = "compliance@global66.com"
@@ -1531,6 +1536,12 @@ def handler(event, context):  # noqa: ARG001
         # POST /alert-prioritization/test-run
         if method == "POST" and parts == ["alert-prioritization", "test-run"]:
             return run_alert_prioritization_test(body)
+        # GET /alert-prioritization/settings
+        if method == "GET" and parts == ["alert-prioritization", "settings"]:
+            return get_priority_queue_settings()
+        # POST /alert-prioritization/settings
+        if method == "POST" and parts == ["alert-prioritization", "settings"]:
+            return update_priority_queue_settings(body)
 
         # GET /alerts/reviewed
         if method == "GET" and parts == ["alerts", "reviewed"]:
@@ -2113,6 +2124,36 @@ def delete_alert_document_config(config_id: str):
     return resp(200, {"message": "Config eliminada"})
 
 
+def _load_priority_queue_settings() -> dict:
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=PRIORITY_QUEUE_SETTINGS_KEY)
+        return json.loads(obj["Body"].read())
+    except Exception:
+        return {"enabled": False, "updated_at": "", "updated_by": ""}
+
+
+def get_priority_queue_settings():
+    return resp(200, _load_priority_queue_settings())
+
+
+def update_priority_queue_settings(body: dict):
+    enabled = bool(body.get("enabled", False))
+    settings = {
+        "enabled": enabled,
+        "updated_at": _now_str(),
+        "updated_by": body.get("updated_by", "").strip(),
+    }
+    s3.put_object(
+        Bucket=S3_BUCKET, Key=PRIORITY_QUEUE_SETTINGS_KEY,
+        Body=json.dumps(settings, ensure_ascii=False).encode("utf-8"),
+        ContentType="application/json",
+    )
+    _safe_audit(user_email=settings["updated_by"] or "unknown",
+                action="priority_queue.toggle", entity_type="config",
+                entity_id="priority_queue_settings", new_value={"enabled": enabled})
+    return resp(200, settings)
+
+
 def run_alert_prioritization_test(body: dict):
     """Prueba de concepto end-to-end: lee compliance.alert_priority_test_data
     (datos ficticios cargados a mano, con prioridad ya asignada) y por cada
@@ -2123,7 +2164,17 @@ def run_alert_prioritization_test(body: dict):
     crea un caso automático sin asignar. Deja un registro de auditoría de cada
     solicitud de documentos en S3 (crm/document_requests/) independientemente
     de si el correo realmente salió o no.
+
+    Respeta el interruptor general (config/priority_queue_settings.json) —
+    si está apagado, no manda nada ni crea casos.
     """
+    settings = _load_priority_queue_settings()
+    if not settings.get("enabled"):
+        return resp(409, {
+            "error": "El proceso de priorización de alertas está apagado. "
+                     "Prendelo desde Admin antes de correr la prueba.",
+            "enabled": False,
+        })
     try:
         rows = _rs_exec(
             "SELECT customer_id, total_payins_7d, total_payin_usd_7d, avg_payin_usd_7d, "
