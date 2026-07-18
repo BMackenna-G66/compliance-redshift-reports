@@ -147,7 +147,7 @@ BUILTIN_REPORTS = [
     {
         "report_name": "priority_queue_test_alerts",
         "display_name": "Priorización de Alertas — Datos de Prueba",
-        "description": "5 alertas ficticias con prioridad ya asignada, para probar el flujo manual completo (documentos, correo, caso) sin tocar clientes reales.",
+        "description": "Priorización de alertas (datos de prueba): 5 filas ficticias con prioridad ya asignada, para probar el flujo manual completo (documentos, correo, caso) sin tocar datos reales.",
         "category": "priorizacion",
         "category_label": "Priorización (Pruebas)",
         "is_custom": False,

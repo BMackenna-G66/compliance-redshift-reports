@@ -4371,6 +4371,7 @@
         { key: 'comportamiento', label: 'Comportamiento Clientes', icon: '👤' },
         { key: 'kyc', label: 'KYC / Jumio', icon: '🪪' },
         { key: 'crypto', label: 'Crypto / Bridge', icon: '🔗' },
+        { key: 'priorizacion', label: 'Priorización', icon: '🚦' },
         { key: 'custom', label: 'Custom', icon: '✏️' },
       ],
 
@@ -4990,6 +4991,7 @@
           comportamiento: ['behavior', 'comportamiento', 'cliente', 'customer', 'kyc_score'],
           kyc: ['kyc', 'jumio', 'identity', 'onboard', 'verificacion'],
           crypto: ['crypto', 'bridge', 'blockchain', 'wallet', 'defi'],
+          priorizacion: ['priorizacion', 'priorización', 'priority_queue', 'priority queue'],
         };
         const keys = keyMap[catKey] || [];
         return this.reports.filter(r => {
