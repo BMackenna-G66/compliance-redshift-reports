@@ -126,14 +126,48 @@ PRIORITY_QUEUE_SETTINGS_KEY = "config/priority_queue_settings.json"
 # Remitente "enviar como" — alias configurado en la cuenta de GMAIL_USER, no
 # necesita una app password propia (ver _send_email).
 ALERT_DOCS_FROM_ADDR = "compliance@global66.com"
-_DOCS_EMAIL_TEMPLATE_PATH = Path(__file__).resolve().parent / "solicitud_documentos_email.html"
+_DOCS_EMAIL_FRAGMENTS_PATH = Path(__file__).resolve().parent / "solicitud_documentos_fragments.json"
+
+# Mapeo entre las 5 categorías del mantenedor y los 4 puntos numerados de la
+# plantilla oficial (algunas categorías comparten punto, ej. "Comprobantes/
+# Soporte" ya está cubierto por el punto de origen de fondos). Si se agregan
+# categorías nuevas al mantenedor sin actualizar este mapeo, simplemente no
+# agregan ningún punto extra al correo (no rompe nada).
+_CATEGORY_TO_FRAGMENT = {
+    "Domicilio": "domicilio",
+    "Identidad/Datos personales": "formulario",
+    "Origen de fondo": "origen",
+    "Comprobantes/Soporte": "origen",
+    "Relación/Beneficiario": "motivo",
+}
+_FRAGMENT_ORDER = ["domicilio", "formulario", "origen", "motivo"]
 
 
-def _render_documentos_email(nombre_completo: str) -> str:
+def _load_email_fragments() -> dict:
     try:
-        html = _DOCS_EMAIL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        return json.loads(_DOCS_EMAIL_FRAGMENTS_PATH.read_text(encoding="utf-8"))
     except Exception:
-        html = "<p>Hola {{nombre_completo}}, necesitamos que nos envíes documentación adicional.</p>"
+        return {}
+
+
+def _render_documentos_email(nombre_completo: str, documentos: list[str] | None = None) -> str:
+    """Arma el correo solo con los puntos que corresponden a los documentos
+    pedidos — antes mandaba siempre la plantilla completa sin importar qué
+    se hubiera elegido."""
+    frags = _load_email_fragments()
+    if not frags:
+        return f"<p>Hola {nombre_completo or 'cliente'}, necesitamos que nos envíes documentación adicional.</p>"
+
+    documentos = documentos or []
+    wanted_fragments = {_CATEGORY_TO_FRAGMENT[d] for d in documentos if d in _CATEGORY_TO_FRAGMENT}
+    if not wanted_fragments:
+        wanted_fragments = set(_FRAGMENT_ORDER)  # sin match conocido -> plantilla completa, por seguridad
+
+    spacer = '<p style="margin: 0px;"><br></p>'
+    body_parts = [frags[key] for key in _FRAGMENT_ORDER if key in wanted_fragments and key in frags]
+    body = spacer.join(body_parts)
+
+    html = frags.get("header", "") + body + frags.get("footer", "")
     return html.replace("{{nombre_completo}}", nombre_completo or "cliente")
 
 runs_table = dynamodb.Table(RUNS_TABLE_NAME)
@@ -2221,7 +2255,7 @@ def run_alert_prioritization_test(body: dict):
         documentos = _ALL_DOC_CATEGORIES
 
         subject = "Solicitud de información adicional — Global66"
-        html_body = _render_documentos_email(nombre)
+        html_body = _render_documentos_email(nombre, documentos)
         _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
 
         req_id = str(uuid.uuid4())
@@ -2370,7 +2404,7 @@ def run_alert_prioritization_real(body: dict):
         documentos = _lookup_alert_documents(alerta, entity_type)
 
         subject = "Solicitud de información adicional — Global66"
-        html_body = _render_documentos_email(nombre)
+        html_body = _render_documentos_email(nombre, documentos)
         _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
 
         req_id = str(uuid.uuid4())
@@ -2455,7 +2489,7 @@ def send_manual_document_request(body: dict):
         return resp(400, {"error": "documentos (lista, al menos 1) is required"})
 
     subject = "Solicitud de información adicional — Global66"
-    html_body = _render_documentos_email(nombre)
+    html_body = _render_documentos_email(nombre, documentos)
     _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
 
     req_id = str(uuid.uuid4())
