@@ -988,6 +988,8 @@
                           class="text-slate-500 hover:text-blue-400 transition text-base" title="Asignar a analista">👤</button>
                         <button @click="analyzeRow(row, resultsView?.report_name)"
                           class="text-slate-500 hover:text-purple-400 transition text-base" title="Analizar con IA">🤖</button>
+                        <button x-show="'prioridad' in row" @click="openDocumentRequestRow(row, resultsView?.report_name)"
+                          class="text-slate-500 hover:text-teal-400 transition text-base" title="Solicitar documentos">📄</button>
                       </div>
                     </td>
                     <template x-for="col in (resultsView?.columns||[])" :key="col">
@@ -2819,6 +2821,21 @@
             </template>
           </div>
         </div>
+        <!-- Checklist de documentos solicitados -->
+        <div class="mb-6" x-show="(activeCase.documentos_checklist || []).length > 0">
+          <span class="text-xs text-slate-500 block mb-3">Documentos solicitados</span>
+          <div class="space-y-1.5">
+            <template x-for="item in (activeCase.documentos_checklist || [])" :key="item.categoria">
+              <label class="flex items-center gap-2 cursor-pointer bg-slate-700/50 rounded-lg px-3 py-2">
+                <input type="checkbox" :checked="item.entregado"
+                  @change="toggleCaseDocumentChecklist(item.categoria, $event.target.checked)"
+                  class="accent-teal-500" />
+                <span class="text-sm" :class="item.entregado ? 'text-slate-300 line-through' : 'text-slate-300'" x-text="item.categoria"></span>
+                <span class="text-xs ml-auto" :class="item.entregado ? 'text-teal-400' : 'text-slate-500'" x-text="item.entregado ? 'Entregado' : 'Pendiente'"></span>
+              </label>
+            </template>
+          </div>
+        </div>
         <!-- Attachments -->
         <div class="mb-6">
           <span class="text-xs text-slate-500 block mb-3">Documentos adjuntos (<span x-text="activeCaseAttachments.length"></span>)</span>
@@ -3031,6 +3048,144 @@
         <button @click="addWhitelistFromRow()"
           class="flex-1 py-2 text-sm font-semibold text-white bg-orange-500 hover:bg-orange-600 rounded-lg transition">
           Confirmar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: SOLICITAR DOCUMENTOS (manual) ===== -->
+  <div x-show="docRequestModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="docRequestModal.open=false"></div>
+    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg mx-auto p-6">
+      <div class="flex items-center justify-between mb-5">
+        <h3 class="font-bold text-white text-lg">Solicitar documentos</h3>
+        <button @click="docRequestModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none transition">×</button>
+      </div>
+
+      <div class="space-y-4">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1">Tipo</label>
+            <select x-model="docRequestModal.entity_type"
+              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+              <option value="customer">Cliente (B2C)</option>
+              <option value="company">Empresa (B2B)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-1">Prioridad</label>
+            <select x-model="docRequestModal.prioridad"
+              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+              <option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">ID (customer_id / company_id)</label>
+          <input type="text" x-model="docRequestModal.entity_id"
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Nombre</label>
+          <input type="text" x-model="docRequestModal.nombre"
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Correo</label>
+          <input type="email" x-model="docRequestModal.correo"
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Alerta (referencia)</label>
+          <input type="text" x-model="docRequestModal.alerta"
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-2">Documentos a pedir</label>
+          <div class="space-y-2">
+            <template x-for="doc in docCategoriesAll" :key="doc">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" :value="doc" :checked="docRequestModal.documentos.includes(doc)"
+                  @change="$event.target.checked ? docRequestModal.documentos.push(doc) : (docRequestModal.documentos = docRequestModal.documentos.filter(d => d !== doc))"
+                  class="accent-teal-500" />
+                <span class="text-sm text-slate-300" x-text="doc"></span>
+              </label>
+            </template>
+          </div>
+        </div>
+        <p x-show="docRequestModal.error" class="text-xs text-red-400" x-text="docRequestModal.error"></p>
+      </div>
+
+      <div class="flex gap-2 mt-6">
+        <button @click="docRequestModal.open=false"
+          class="py-2 px-4 text-sm text-slate-300 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-lg transition">
+          Cancelar
+        </button>
+        <button @click="submitManualDocumentRequest()" :disabled="docRequestModal.sending"
+          class="flex-1 py-2 text-sm font-semibold text-white bg-teal-600 hover:bg-teal-500 disabled:opacity-50 rounded-lg transition">
+          <span x-text="docRequestModal.sending ? 'Enviando...' : 'Enviar solicitud'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: MANTENEDOR DOCUMENTOS POR ALERTA ===== -->
+  <div x-show="docConfigModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="docConfigModal.open=false"></div>
+    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg mx-auto p-6">
+      <div class="flex items-center justify-between mb-5">
+        <h3 class="font-bold text-white text-lg" x-text="docConfigModal.config_id ? 'Editar alerta' : 'Nueva alerta'"></h3>
+        <button @click="docConfigModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none transition">×</button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Tipo de alerta</label>
+          <input type="text" x-model="docConfigModal.tipo_alerta" placeholder="Ej: AML Transaccional"
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-500" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Nombre de la alerta</label>
+          <input type="text" x-model="docConfigModal.alerta" placeholder="Ej: Transacciones a Países Alto Riesgo"
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-500" />
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-2">Documentos B2C</label>
+            <div class="space-y-1.5">
+              <template x-for="doc in docCategoriesAll" :key="'b2c-'+doc">
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" :value="doc" :checked="docConfigModal.documentos_b2c.includes(doc)"
+                    @change="$event.target.checked ? docConfigModal.documentos_b2c.push(doc) : (docConfigModal.documentos_b2c = docConfigModal.documentos_b2c.filter(d => d !== doc))"
+                    class="accent-teal-500" />
+                  <span class="text-xs text-slate-300" x-text="doc"></span>
+                </label>
+              </template>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-300 mb-2">Documentos B2B</label>
+            <div class="space-y-1.5">
+              <template x-for="doc in docCategoriesAll" :key="'b2b-'+doc">
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" :value="doc" :checked="docConfigModal.documentos_b2b.includes(doc)"
+                    @change="$event.target.checked ? docConfigModal.documentos_b2b.push(doc) : (docConfigModal.documentos_b2b = docConfigModal.documentos_b2b.filter(d => d !== doc))"
+                    class="accent-teal-500" />
+                  <span class="text-xs text-slate-300" x-text="doc"></span>
+                </label>
+              </template>
+            </div>
+          </div>
+        </div>
+        <p x-show="docConfigModal.error" class="text-xs text-red-400" x-text="docConfigModal.error"></p>
+      </div>
+      <div class="flex gap-2 mt-6">
+        <button @click="docConfigModal.open=false"
+          class="py-2 px-4 text-sm text-slate-300 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-lg transition">
+          Cancelar
+        </button>
+        <button @click="submitDocConfig()"
+          class="flex-1 py-2 text-sm font-semibold text-white bg-teal-600 hover:bg-teal-500 rounded-lg transition">
+          Guardar
         </button>
       </div>
     </div>
@@ -3446,6 +3601,11 @@
             :class="adminSubtab==='priorizacion' ? 'border-b-2 border-pink-500 text-pink-400' : 'text-slate-400 hover:text-white'"
             class="pb-3 px-2 text-sm font-medium transition">
             🚦 Priorización
+          </button>
+          <button @click="adminSubtab='documentos'; loadAlertDocumentConfig()"
+            :class="adminSubtab==='documentos' ? 'border-b-2 border-teal-500 text-teal-400' : 'text-slate-400 hover:text-white'"
+            class="pb-3 px-2 text-sm font-medium transition">
+            📄 Documentos
           </button>
         </div>
 
@@ -4123,6 +4283,64 @@
           </div>
         </div>
 
+        <!-- ---- Sub-tab: Mantenedor de Documentos por Alerta ---- -->
+        <div x-show="adminSubtab==='documentos'">
+          <div class="flex items-center justify-between mb-4">
+            <p class="text-xs text-slate-500 max-w-md">
+              Qué documentos pedir por correo según la alerta gatillada y el tipo de cliente (B2B/B2C).
+              Si una alerta no está acá, se piden todas las categorías por defecto.
+            </p>
+            <button @click="openDocConfigModal()"
+              class="text-xs font-semibold text-white bg-teal-600 hover:bg-teal-500 px-3 py-1.5 rounded-lg transition shrink-0 ml-4">
+              + Nueva alerta
+            </button>
+          </div>
+
+          <div x-show="alertDocConfigLoading" class="text-center py-8 text-slate-400">
+            <span class="spin text-xl">⏳</span>
+          </div>
+          <div x-show="!alertDocConfigLoading && alertDocConfigList.length === 0" class="text-slate-500 text-sm py-8 text-center">
+            Sin alertas configuradas todavía.
+          </div>
+
+          <div class="space-y-2">
+            <template x-for="c in alertDocConfigList" :key="c.config_id">
+              <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                <div class="flex items-start justify-between mb-2">
+                  <div>
+                    <h4 class="text-sm font-semibold text-white" x-text="c.alerta"></h4>
+                    <p class="text-xs text-slate-500" x-text="c.tipo_alerta"></p>
+                  </div>
+                  <div class="flex gap-2 shrink-0">
+                    <button @click="openDocConfigModal(c)" class="text-slate-400 hover:text-white text-xs">✏️</button>
+                    <button @click="deleteDocConfig(c.config_id)" class="text-red-400 hover:text-red-300 text-xs">🗑</button>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 mt-2">
+                  <div>
+                    <p class="text-xs text-slate-500 mb-1">B2C</p>
+                    <div class="flex flex-wrap gap-1">
+                      <template x-for="d in c.documentos_b2c" :key="d">
+                        <span class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full" x-text="d"></span>
+                      </template>
+                      <span x-show="!c.documentos_b2c || c.documentos_b2c.length===0" class="text-xs text-slate-600 italic">ninguno</span>
+                    </div>
+                  </div>
+                  <div>
+                    <p class="text-xs text-slate-500 mb-1">B2B</p>
+                    <div class="flex flex-wrap gap-1">
+                      <template x-for="d in c.documentos_b2b" :key="d">
+                        <span class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full" x-text="d"></span>
+                      </template>
+                      <span x-show="!c.documentos_b2b || c.documentos_b2b.length===0" class="text-xs text-slate-600 italic">ninguno</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
         </div><!-- end inner max-w container -->
       </div><!-- end admin tab overlay -->
 
@@ -4207,6 +4425,15 @@
       newWL: { entity_field: 'customer_id', entity_value: '', duration_days: 30, reason: '', scope: 'global', report_name: '' },
       whitelistRowOpen: false,
       whitelistRowData: { entity_field: 'customer_id', entity_value: '', duration_days: 30, reason: '', scope: 'global', report_name: '' },
+
+      // Solicitud manual de documentos
+      docCategoriesAll: ['Origen de fondo', 'Comprobantes/Soporte', 'Relación/Beneficiario', 'Domicilio', 'Identidad/Datos personales'],
+      docRequestModal: { open: false, entity_type: 'customer', entity_id: '', nombre: '', correo: '', prioridad: 'P3', alerta: '', documentos: [], sending: false, error: '', case_id: '' },
+
+      // Mantenedor de documentos por alerta
+      alertDocConfigList: [],
+      alertDocConfigLoading: false,
+      docConfigModal: { open: false, config_id: '', tipo_alerta: '', alerta: '', documentos_b2c: [], documentos_b2b: [], error: '' },
 
       // Queries editor
       customQueries: [],
@@ -5382,6 +5609,101 @@
       },
 
       // -----------------------------------------------
+      // SOLICITUD MANUAL DE DOCUMENTOS
+      // -----------------------------------------------
+      openDocumentRequestRow(row, reportName) {
+        const keys = Object.keys(row);
+        const custKey = keys.find(k => /^customer_id$/i.test(k));
+        const compKey = keys.find(k => /^company_id$/i.test(k));
+        const idKey = custKey || compKey;
+        const nameKey = keys.find(k => /nombre_completo|^name$|customer_name/i.test(k));
+        const emailKey = keys.find(k => /^correo$|^email$|customer_email/i.test(k));
+        this.docRequestModal = {
+          open: true,
+          entity_type: compKey ? 'company' : 'customer',
+          entity_id: idKey ? String(row[idKey] ?? '') : '',
+          nombre: nameKey ? String(row[nameKey] ?? '') : '',
+          correo: emailKey ? String(row[emailKey] ?? '') : '',
+          prioridad: row.prioridad || 'P3',
+          alerta: reportName || row.concepto || '',
+          documentos: [...this.docCategoriesAll],
+          sending: false,
+          error: '',
+          case_id: '',
+        };
+      },
+
+      async submitManualDocumentRequest() {
+        if (!this.docRequestModal.correo.trim()) {
+          this.docRequestModal.error = 'El correo es requerido.';
+          return;
+        }
+        if (this.docRequestModal.documentos.length === 0) {
+          this.docRequestModal.error = 'Elegí al menos un documento.';
+          return;
+        }
+        this.docRequestModal.sending = true;
+        this.docRequestModal.error = '';
+        const d = await this.api('POST', '/alert-prioritization/send-manual', {
+          entity_type: this.docRequestModal.entity_type,
+          entity_id: this.docRequestModal.entity_id,
+          nombre: this.docRequestModal.nombre,
+          correo: this.docRequestModal.correo,
+          prioridad: this.docRequestModal.prioridad,
+          alerta: this.docRequestModal.alerta,
+          documentos: this.docRequestModal.documentos,
+          case_id: this.docRequestModal.case_id,
+        });
+        this.docRequestModal.sending = false;
+        if (d?.case_id) {
+          this.docRequestModal.open = false;
+        } else if (d?.error) {
+          this.docRequestModal.error = d.error;
+        }
+      },
+
+      async loadAlertDocumentConfig() {
+        this.alertDocConfigLoading = true;
+        const d = await this.api('GET', '/alert-document-config');
+        this.alertDocConfigList = d?.config || [];
+        this.alertDocConfigLoading = false;
+      },
+
+      openDocConfigModal(existing = null) {
+        this.docConfigModal = existing
+          ? { open: true, config_id: existing.config_id, tipo_alerta: existing.tipo_alerta || '',
+              alerta: existing.alerta || '', documentos_b2c: [...(existing.documentos_b2c || [])],
+              documentos_b2b: [...(existing.documentos_b2b || [])], error: '' }
+          : { open: true, config_id: '', tipo_alerta: '', alerta: '', documentos_b2c: [], documentos_b2b: [], error: '' };
+      },
+
+      async submitDocConfig() {
+        if (!this.docConfigModal.alerta.trim()) {
+          this.docConfigModal.error = 'El nombre de la alerta es requerido.';
+          return;
+        }
+        const payload = {
+          tipo_alerta: this.docConfigModal.tipo_alerta,
+          alerta: this.docConfigModal.alerta,
+          documentos_b2c: this.docConfigModal.documentos_b2c,
+          documentos_b2b: this.docConfigModal.documentos_b2b,
+        };
+        const d = this.docConfigModal.config_id
+          ? await this.api('PUT', '/alert-document-config/' + this.docConfigModal.config_id, payload)
+          : await this.api('POST', '/alert-document-config', payload);
+        if (d) {
+          this.docConfigModal.open = false;
+          await this.loadAlertDocumentConfig();
+        }
+      },
+
+      async deleteDocConfig(configId) {
+        if (!confirm('¿Eliminar esta configuración de alerta?')) return;
+        await this.api('DELETE', '/alert-document-config/' + configId);
+        await this.loadAlertDocumentConfig();
+      },
+
+      // -----------------------------------------------
       // QUERIES (custom SQL)
       // -----------------------------------------------
       async saveQuery() {
@@ -6228,6 +6550,12 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         if (!confirm('¿Eliminar este adjunto? Esta acción no se puede deshacer.')) return;
         await this.api('DELETE', `/cases/${this.activeCase.case_id}/attachments/${attachmentId}`);
         this.activeCaseAttachments = this.activeCaseAttachments.filter(a => a.attachment_id !== attachmentId);
+      },
+
+      async toggleCaseDocumentChecklist(categoria, entregado) {
+        if (!this.activeCase.case_id) return;
+        const d = await this.api('POST', `/cases/${this.activeCase.case_id}/documentos-checklist`, { categoria, entregado });
+        if (d?.documentos_checklist) this.activeCase.documentos_checklist = d.documentos_checklist;
       },
 
       openCreateCaseModal(fromAlert = null) {

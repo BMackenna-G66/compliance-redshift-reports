@@ -143,6 +143,16 @@ catalog_table = dynamodb.Table(CATALOG_TABLE_NAME)
 # Built-in report definitions (mirrors REPORT_CONFIGS in handler.py)
 # ---------------------------------------------------------------------------
 BUILTIN_REPORTS = [
+    # ─── Priorización de Alertas (datos de prueba) ──────────────────────────
+    {
+        "report_name": "priority_queue_test_alerts",
+        "display_name": "Priorización de Alertas — Datos de Prueba",
+        "description": "5 alertas ficticias con prioridad ya asignada, para probar el flujo manual completo (documentos, correo, caso) sin tocar clientes reales.",
+        "category": "priorizacion",
+        "category_label": "Priorización (Pruebas)",
+        "is_custom": False,
+        "params": [],
+    },
     # ─── AML Transaccional ───────────────────────────────────────────────────
     {
         "report_name": "high_risk_countries",
@@ -1545,6 +1555,12 @@ def handler(event, context):  # noqa: ARG001
         # POST /alert-prioritization/run — flujo real (no datos de prueba)
         if method == "POST" and parts == ["alert-prioritization", "run"]:
             return run_alert_prioritization_real(body)
+        # POST /alert-prioritization/send-manual — boton manual, documentos a eleccion
+        if method == "POST" and parts == ["alert-prioritization", "send-manual"]:
+            return send_manual_document_request(body)
+        # POST /cases/{id}/documentos-checklist
+        if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "documentos-checklist":
+            return update_case_document_checklist(parts[1], body)
 
         # GET /alerts/reviewed
         if method == "GET" and parts == ["alerts", "reviewed"]:
@@ -2393,6 +2409,10 @@ def run_alert_prioritization_real(body: dict):
         })
         case_body = json.loads(case_resp["body"])
         case_id = case_body.get("case_id", "")
+        if case_id:
+            _crm_update("cases", case_id, {
+                "documentos_checklist": [{"categoria": d, "entregado": False} for d in documentos],
+            })
 
         results.append({
             "entity_type": entity_type,
@@ -2407,6 +2427,111 @@ def run_alert_prioritization_real(body: dict):
         })
 
     return resp(200, {"processed": len(results), "results": results})
+
+
+def send_manual_document_request(body: dict):
+    """Botón manual — mismo correo/caso que el flujo automático, pero:
+      - no depende del interruptor general (es una acción deliberada de un
+        analista, uno a la vez, no el proceso masivo automático)
+      - los documentos a pedir los elige el analista a mano (no el
+        mantenedor), útil para casos puntuales fuera de lo estándar.
+
+    body: {entity_type, entity_id, nombre, correo, prioridad, alerta,
+           documentos: [...], case_id (opcional, para linkear a un caso
+           existente en vez de crear uno nuevo)}
+    """
+    entity_type = (body.get("entity_type") or "customer").strip().lower()
+    entity_id = body.get("entity_id", "")
+    nombre = body.get("nombre", "").strip()
+    correo = body.get("correo", "").strip()
+    prioridad = (body.get("prioridad") or "P3").strip().upper()
+    alerta = body.get("alerta", "").strip()
+    documentos = body.get("documentos") or []
+    existing_case_id = body.get("case_id", "").strip()
+
+    if not correo:
+        return resp(400, {"error": "correo is required"})
+    if not documentos:
+        return resp(400, {"error": "documentos (lista, al menos 1) is required"})
+
+    subject = "Solicitud de información adicional — Global66"
+    html_body = _render_documentos_email(nombre)
+    _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+
+    req_id = str(uuid.uuid4())
+    _crm_put("document_requests", req_id, {
+        "request_id": req_id,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "correo": correo,
+        "nombre_completo": nombre,
+        "prioridad": prioridad,
+        "alerta": alerta,
+        "documentos_solicitados": documentos,
+        "subject": subject,
+        "sent": bool(GMAIL_APP_PASSWORD),
+        "created_at": _now_str(),
+        "manual": True,
+    })
+
+    checklist = [{"categoria": d, "entregado": False} for d in documentos]
+
+    if existing_case_id:
+        updated = _crm_update("cases", existing_case_id, {"documentos_checklist": checklist})
+        case_id = existing_case_id if updated else ""
+    else:
+        case_priority = _PRIORITY_TO_CASE_PRIORITY.get(prioridad, "low")
+        case_resp = create_case({
+            "title": f"[{prioridad}] {alerta or 'Solicitud manual'} — {'cliente' if entity_type=='customer' else 'empresa'} {entity_id}",
+            "description": (
+                f"Caso generado por solicitud manual de documentos.\n"
+                f"{'Cliente' if entity_type=='customer' else 'Empresa'}: {nombre} ({entity_id})\n"
+                f"Alerta: {alerta or '(sin alerta asociada)'}\n"
+                f"Documentos solicitados: {', '.join(documentos)}"
+            ),
+            "priority": case_priority,
+            "entity_type": entity_type,
+            "entity_id": str(entity_id),
+            "report_name": alerta,
+            "assigned_to": "",
+            "created_by": "manual_document_request",
+        })
+        case_body = json.loads(case_resp["body"])
+        case_id = case_body.get("case_id", "")
+        if case_id:
+            _crm_update("cases", case_id, {"documentos_checklist": checklist})
+
+    return resp(200, {
+        "case_id": case_id,
+        "email_sent": bool(GMAIL_APP_PASSWORD),
+        "email_to": correo,
+        "documentos_solicitados": documentos,
+    })
+
+
+def update_case_document_checklist(case_id: str, body: dict):
+    """Marca un documento del checklist como entregado o no. body: {categoria, entregado}."""
+    categoria = body.get("categoria", "").strip()
+    entregado = bool(body.get("entregado", False))
+    if not categoria:
+        return resp(400, {"error": "categoria is required"})
+
+    case = _crm_get("cases", case_id)
+    if case is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+
+    checklist = case.get("documentos_checklist") or []
+    found = False
+    for item in checklist:
+        if item.get("categoria") == categoria:
+            item["entregado"] = entregado
+            found = True
+            break
+    if not found:
+        checklist.append({"categoria": categoria, "entregado": entregado})
+
+    _crm_update("cases", case_id, {"documentos_checklist": checklist})
+    return resp(200, {"documentos_checklist": checklist})
 
 
 # ---------------------------------------------------------------------------

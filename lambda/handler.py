@@ -102,6 +102,12 @@ MAX_WAIT_QUERY_SECONDS = 540    # 9 min
 # Add new reports here — no other changes needed for simple cases.
 # ---------------------------------------------------------------------------
 REPORT_CONFIGS: dict[str, dict] = {
+    "priority_queue_test_alerts": {
+        "display_name": "Priorización de Alertas — Datos de Prueba",
+        "sql_file": "priority_queue_test_alerts.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
     "high_risk_countries": {
         "display_name": "High-Risk Countries Transactions",
         "sql_file": "high_risk_countries_transactions.sql",
@@ -611,6 +617,54 @@ def execute_query(sql: str, api_params: list[dict] | None = None) -> list[dict]:
         raise TimeoutError(f"Query did not finish within {MAX_WAIT_QUERY_SECONDS}s")
 
     return fetch_results(statement_id)
+
+
+def enrich_rows_with_priority(rows: list[dict]) -> list[dict]:
+    """Le pega 'prioridad' y 'risk_score' a cada fila que tenga customer_id o
+    company_id, consultando compliance.priority_queue_b2c/b2b (una sola
+    consulta en batch, no una por fila). Reportes agregados/resumen que no
+    traen esas columnas quedan intactos — no todos los 29 reportes son
+    listas por cliente, algunos son resúmenes por corredor/método de pago.
+
+    Score PLACEHOLDER (promedio simple) — ver compliance.priority_queue_b2c/
+    b2b para el detalle; se actualiza solo cuando lleguen los pesos reales.
+    """
+    if not rows:
+        return rows
+
+    sample = rows[0]
+    if "prioridad" in sample:
+        return rows  # ya viene con prioridad propia (ej. datos de prueba) — no pisar
+    if "customer_id" in sample:
+        id_col, view = "customer_id", "compliance.priority_queue_b2c"
+    elif "company_id" in sample:
+        id_col, view = "company_id", "compliance.priority_queue_b2b"
+    else:
+        return rows
+
+    ids = {r.get(id_col) for r in rows if r.get(id_col) is not None}
+    if not ids:
+        return rows
+
+    try:
+        ids_sql = ", ".join(str(int(i)) for i in ids)
+        priority_rows = execute_query(
+            f"SELECT {id_col}, risk_score FROM {view} WHERE {id_col} IN ({ids_sql})"
+        )
+    except Exception:
+        logger.exception("No se pudo enriquecer con prioridad (no bloquea el reporte)")
+        return rows
+
+    score_by_id = {pr[id_col]: pr.get("risk_score") for pr in priority_rows}
+    for r in rows:
+        score = score_by_id.get(r.get(id_col))
+        r["risk_score"] = score
+        if score is None:
+            r["prioridad"] = None
+        else:
+            score = float(score)
+            r["prioridad"] = "P1" if score >= 75 else "P2" if score >= 50 else "P3"
+    return rows
 
 
 def fetch_results(statement_id: str) -> list[dict]:
@@ -1248,6 +1302,7 @@ ORDER BY start_date DESC
 
         sql, api_params = render_query(report_name, since_date, only_successful, country_codes)
         rows = execute_query(sql, api_params)
+        rows = enrich_rows_with_priority(rows)
 
         summary = build_summary(rows, report_name)
         xlsx_bytes = build_excel(rows)
