@@ -1253,6 +1253,8 @@
                           class="text-xs px-2.5 py-1.5 bg-orange-900/40 hover:bg-orange-800/60 text-orange-300 border border-orange-800 rounded-lg transition whitespace-nowrap">
                           📁 Caso
                         </button>
+                        <button x-show="alertHasDocRequestData(a)" @click="openDocumentRequestFromAlert(a)"
+                          class="text-xs px-2 py-1.5 bg-indigo-900/40 hover:bg-indigo-800/60 text-indigo-300 border border-indigo-800 rounded-lg transition" title="Solicitar documentos">📄</button>
                         <button @click="deleteAlert(a.alert_id)"
                           class="text-xs px-2 py-1.5 bg-slate-700 hover:bg-red-900/50 text-red-400 hover:text-red-300 border border-slate-600 hover:border-red-700 rounded-lg transition">
                           🗑
@@ -1308,10 +1310,14 @@
                       <span x-show="!a.reviewed_by" class="text-slate-600 italic">—</span>
                     </td>
                     <td class="px-4 py-3">
-                      <button @click="deleteAlert(a.alert_id)"
-                        class="text-xs px-2 py-1.5 bg-slate-700 hover:bg-red-900/50 text-red-400 hover:text-red-300 border border-slate-600 hover:border-red-700 rounded-lg transition">
-                        🗑 Eliminar
-                      </button>
+                      <div class="flex items-center gap-1.5">
+                        <button x-show="alertHasDocRequestData(a)" @click="openDocumentRequestFromAlert(a)"
+                          class="text-xs px-2 py-1.5 bg-indigo-900/40 hover:bg-indigo-800/60 text-indigo-300 border border-indigo-800 rounded-lg transition" title="Solicitar documentos">📄</button>
+                        <button @click="deleteAlert(a.alert_id)"
+                          class="text-xs px-2 py-1.5 bg-slate-700 hover:bg-red-900/50 text-red-400 hover:text-red-300 border border-slate-600 hover:border-red-700 rounded-lg transition">
+                          🗑 Eliminar
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 </template>
@@ -5749,6 +5755,25 @@
       // -----------------------------------------------
       // SOLICITUD MANUAL DE DOCUMENTOS
       // -----------------------------------------------
+      _parseAlertRowData(a) {
+        try {
+          const raw = a?.row_data;
+          if (!raw) return null;
+          return typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch (e) {
+          return null;
+        }
+      },
+      alertHasDocRequestData(a) {
+        const row = this._parseAlertRowData(a);
+        if (!row) return false;
+        return Object.keys(row).some(k => /^customer_id$/i.test(k) || /^company_id$/i.test(k));
+      },
+      openDocumentRequestFromAlert(a) {
+        const row = this._parseAlertRowData(a);
+        if (!row) return;
+        this.openDocumentRequestRow(row, a.report_name);
+      },
       openDocumentRequestRow(row, reportName) {
         const keys = Object.keys(row);
         const custKey = keys.find(k => /^customer_id$/i.test(k));
