@@ -3099,6 +3099,9 @@ def run_transaction_search(body: dict):
 def run_wallet_search(body: dict):
     """Submit a wallet search by list of partner_account_ids (ej. 'CL-KNNW-8795')."""
     partner_account_ids = body.get("partner_account_ids", [])
+    entity_type = body.get("entity_type", "b2c")
+    if entity_type not in ("b2c", "b2b"):
+        entity_type = "b2c"
     if not partner_account_ids:
         return resp(400, {"error": "partner_account_ids is required"})
     if len(partner_account_ids) > 5000:
@@ -3119,7 +3122,7 @@ def run_wallet_search(body: dict):
         "run_id": run_id,
         "report_name": "wallet_search",
         "status": "RUNNING",
-        "params": json.dumps({"partner_account_ids": clean_ids, "n_ids": len(clean_ids)}),
+        "params": json.dumps({"partner_account_ids": clean_ids, "n_ids": len(clean_ids), "entity_type": entity_type}),
         "started_at": now,
         "user_email": user_email,
         "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
@@ -3131,6 +3134,7 @@ def run_wallet_search(body: dict):
         Payload=json.dumps({
             "report_name": "wallet_search",
             "partner_account_ids": clean_ids,
+            "entity_type": entity_type,
             "run_id": run_id,
             "keep_session": False,
         }),

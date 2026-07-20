@@ -1910,6 +1910,17 @@
           </div>
           <div class="space-y-4">
             <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Tipo de entidad</label>
+              <div class="flex gap-1.5">
+                <button @click="walletEntityType='b2c'"
+                  :class="walletEntityType==='b2c' ? 'bg-indigo-500 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700 border border-slate-700'"
+                  class="text-xs px-4 py-1.5 rounded-lg transition font-medium">👤 B2C (Clientes)</button>
+                <button @click="walletEntityType='b2b'"
+                  :class="walletEntityType==='b2b' ? 'bg-indigo-500 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700 border border-slate-700'"
+                  class="text-xs px-4 py-1.5 rounded-lg transition font-medium">🏢 B2B (Empresas)</button>
+              </div>
+            </div>
+            <div>
               <label class="block text-xs font-medium text-slate-400 mb-1.5">
                 Partner Account IDs <span class="text-slate-500">(separados por comas o saltos de línea)</span>
                 <span x-show="walletSearchIds.trim()" class="ml-2 text-indigo-400"
@@ -4592,6 +4603,7 @@
       txSearchResult: null,
       txSearchError: null,
       txSearchStatusMsg: 'Iniciando búsqueda...',
+      walletEntityType: 'b2c',
       walletSearchIds: '',
       walletSearchRunning: false,
       walletSearchRunId: null,
@@ -5601,7 +5613,7 @@
         this.walletSearchRunId = null;
         this.walletSearchStatusMsg = 'Enviando consulta a la nube...';
 
-        const d = await this.api('POST', '/search/wallet', { partner_account_ids: ids, user_email: this.currentUserEmail });
+        const d = await this.api('POST', '/search/wallet', { partner_account_ids: ids, entity_type: this.walletEntityType, user_email: this.currentUserEmail });
         if (!d) { this.walletSearchRunning = false; this.walletSearchError = 'Error al iniciar la búsqueda.'; return; }
 
         this.walletSearchRunId = d.run_id;

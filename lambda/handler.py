@@ -1200,6 +1200,7 @@ def handler(event, context):  # noqa: ARG001
     # ── Módulo especial: Análisis de Wallet por partner_account_id ───────────
     if report_name == "wallet_search":
         partner_account_ids = event.get("partner_account_ids", [])
+        wallet_entity_type = event.get("entity_type", "b2c")
         if not partner_account_ids:
             err = "partner_account_ids is required for wallet_search"
             _update_run(run_id, status="ERROR", error_message=err,
@@ -1211,7 +1212,40 @@ def handler(event, context):  # noqa: ARG001
             _update_run(run_id, status="RUNNING")
 
             ids_sql = ", ".join("'" + str(pid).replace("'", "''") + "'" for pid in partner_account_ids)
-            sql = f"""
+
+            if wallet_entity_type == "b2b":
+                sql = f"""
+SELECT
+    pg.partner_account_id,
+    pg.customer_id,
+    pgg.account_group_id,
+
+    co.name AS company_name,
+    co.username,
+    co.identification_type,
+    co.identification_number,
+
+    co.kyc_stage_1,
+    co.compliance_status,
+    co.risk_level
+
+FROM "db_prod"."product_gateway"."account" AS pg
+
+INNER JOIN "db_prod"."product_gateway"."account_group" AS pgg
+    ON pg.account_group_id = pgg.account_group_id
+
+INNER JOIN "db_prod"."company"."company" AS co
+    ON pg.customer_id = co.company_id
+
+WHERE pg.partner_account_id IN ({ids_sql})
+  AND UPPER(co.kyc_stage_1) = 'APPROVED'
+  AND UPPER(co.identification_type) = 'RUT'
+
+ORDER BY
+    co.name
+""".strip()
+            else:
+                sql = f"""
 WITH latest_compliance AS (
     SELECT
         customer_id,
@@ -1301,7 +1335,7 @@ ORDER BY
             xlsx_bytes = build_excel(rows)
 
             run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-            key = f"wallet_search/{run_ts}_ids-{len(partner_account_ids)}.xlsx"
+            key = f"wallet_search/{run_ts}_{wallet_entity_type}_ids-{len(partner_account_ids)}.xlsx"
             upload_to_s3(xlsx_bytes, key,
                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
