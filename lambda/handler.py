@@ -1197,6 +1197,132 @@ def handler(event, context):  # noqa: ARG001
             keep_session = event.get("keep_session", False)
             if AUTO_PAUSE and not keep_session:
                 pause_cluster()
+    # ── Módulo especial: Análisis de Wallet por partner_account_id ───────────
+    if report_name == "wallet_search":
+        partner_account_ids = event.get("partner_account_ids", [])
+        if not partner_account_ids:
+            err = "partner_account_ids is required for wallet_search"
+            _update_run(run_id, status="ERROR", error_message=err,
+                        completed_at=dt.datetime.utcnow().isoformat())
+            raise ValueError(err)
+        try:
+            _update_run(run_id, status="RESUMING")
+            ensure_cluster_available()
+            _update_run(run_id, status="RUNNING")
+
+            ids_sql = ", ".join("'" + str(pid).replace("'", "''") + "'" for pid in partner_account_ids)
+            sql = f"""
+WITH latest_compliance AS (
+    SELECT
+        customer_id,
+        compliance_status,
+        ROW_NUMBER() OVER (
+            PARTITION BY customer_id
+            ORDER BY status_created_at DESC
+        ) AS rn
+    FROM "db_prod"."customer"."compliance"
+),
+
+latest_customer_kyc AS (
+    SELECT
+        customer_id,
+        kyc_status,
+        created_at,
+        ROW_NUMBER() OVER (
+            PARTITION BY customer_id
+            ORDER BY created_at DESC
+        ) AS rn
+    FROM "db_prod"."customer"."customer_kyc"
+),
+
+latest_kyc_document AS (
+    SELECT
+        customer_id,
+        document_number,
+        document_type,
+        country_code,
+        ROW_NUMBER() OVER (
+            PARTITION BY customer_id
+            ORDER BY COALESCE(updated_at, created_at) DESC
+        ) AS rn
+    FROM "db_prod"."customer"."kyc_document"
+)
+
+SELECT
+    pg.partner_account_id,
+    pg.gmoney_account_id,
+    pg.customer_id,
+
+    pgg.account_type,
+    pgg.currency_code,
+    pgg.country_code AS account_country_code,
+
+    c.name,
+    c.last_name,
+    c.email,
+
+    kd.document_number,
+    kd.document_type,
+    kd.country_code,
+
+    kyc.kyc_status,
+    lc.compliance_status
+
+FROM "db_prod"."product_gateway"."account" AS pg
+
+INNER JOIN "db_prod"."product_gateway"."account_group" AS pgg
+    ON pg.account_group_id = pgg.account_group_id
+
+INNER JOIN "db_prod"."customer"."customer_v2" AS c
+    ON pg.customer_id = c.customer_id
+
+INNER JOIN latest_customer_kyc AS kyc
+    ON pg.customer_id = kyc.customer_id
+   AND kyc.rn = 1
+
+INNER JOIN latest_kyc_document AS kd
+    ON pg.customer_id = kd.customer_id
+   AND kd.rn = 1
+
+LEFT JOIN latest_compliance AS lc
+    ON pg.customer_id = lc.customer_id
+   AND lc.rn = 1
+
+WHERE pg.partner_account_id IN ({ids_sql})
+  AND UPPER(kyc.kyc_status) = 'APPROVED'
+  AND UPPER(kd.document_type) = 'RUT'
+
+ORDER BY
+    c.name,
+    c.last_name
+""".strip()
+
+            rows = execute_query(sql)
+            xlsx_bytes = build_excel(rows)
+
+            run_ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            key = f"wallet_search/{run_ts}_ids-{len(partner_account_ids)}.xlsx"
+            upload_to_s3(xlsx_bytes, key,
+                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            _update_run(
+                run_id,
+                status="DONE",
+                completed_at=dt.datetime.utcnow().isoformat(),
+                s3_key=key,
+                row_count=len(rows),
+                result_preview=json.dumps(rows[:10], default=str),
+            )
+            return {"status": "ok", "report_name": report_name, "rows": len(rows), "s3_key": key}
+        except Exception as e:
+            logger.exception("Wallet search failed: %s", e)
+            _update_run(run_id, status="ERROR", completed_at=dt.datetime.utcnow().isoformat(),
+                        error_message=str(e))
+            raise
+        finally:
+            keep_session = event.get("keep_session", False)
+            if AUTO_PAUSE and not keep_session:
+                pause_cluster()
     # ── Módulo especial: Búsqueda de Transacciones por ID (Remesas) ─────────
     if report_name == "transaction_search":
         transaction_ids = event.get("transaction_ids", [])

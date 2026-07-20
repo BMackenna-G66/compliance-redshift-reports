@@ -1535,6 +1535,9 @@ def handler(event, context):  # noqa: ARG001
         # POST /search/transactions
         if method == "POST" and parts == ["search", "transactions"]:
             return run_transaction_search(body)
+        # POST /search/wallet
+        if method == "POST" and parts == ["search", "wallet"]:
+            return run_wallet_search(body)
 
         # POST /cluster/wake
         if method == "POST" and parts == ["cluster", "wake"]:
@@ -3091,6 +3094,48 @@ def run_transaction_search(body: dict):
         }),
     )
     return resp(202, {"run_id": run_id, "status": "RUNNING", "n_transactions": len(clean_ids)})
+
+
+def run_wallet_search(body: dict):
+    """Submit a wallet search by list of partner_account_ids (ej. 'CL-KNNW-8795')."""
+    partner_account_ids = body.get("partner_account_ids", [])
+    if not partner_account_ids:
+        return resp(400, {"error": "partner_account_ids is required"})
+    if len(partner_account_ids) > 5000:
+        return resp(400, {"error": "Maximum 5000 partner_account_ids per search"})
+
+    clean_ids = []
+    for pid in partner_account_ids:
+        pid = str(pid).strip()
+        if pid:
+            clean_ids.append(pid)
+    if not clean_ids:
+        return resp(400, {"error": "partner_account_ids is required"})
+
+    run_id = str(uuid.uuid4())
+    now = dt.datetime.utcnow().isoformat()
+    user_email = str(body.get("user_email", "")).strip()[:200]
+    runs_table.put_item(Item={
+        "run_id": run_id,
+        "report_name": "wallet_search",
+        "status": "RUNNING",
+        "params": json.dumps({"partner_account_ids": clean_ids, "n_ids": len(clean_ids)}),
+        "started_at": now,
+        "user_email": user_email,
+        "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
+    })
+
+    lambda_client.invoke(
+        FunctionName=REPORT_LAMBDA_NAME,
+        InvocationType="Event",
+        Payload=json.dumps({
+            "report_name": "wallet_search",
+            "partner_account_ids": clean_ids,
+            "run_id": run_id,
+            "keep_session": False,
+        }),
+    )
+    return resp(202, {"run_id": run_id, "status": "RUNNING", "n_ids": len(clean_ids)})
 
 
 def run_individual_analysis(body: dict):
