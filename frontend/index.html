@@ -2915,13 +2915,17 @@
           <span class="text-xs text-slate-500 block mb-3">Documentos solicitados</span>
           <div class="space-y-1.5">
             <template x-for="item in (activeCase.documentos_checklist || [])" :key="item.categoria">
-              <label class="flex items-center gap-2 cursor-pointer bg-slate-700/50 rounded-lg px-3 py-2">
-                <input type="checkbox" :checked="item.entregado"
-                  @change="toggleCaseDocumentChecklist(item.categoria, $event.target.checked)"
-                  class="accent-teal-500" />
-                <span class="text-sm" :class="item.entregado ? 'text-slate-300 line-through' : 'text-slate-300'" x-text="item.categoria"></span>
-                <span class="text-xs ml-auto" :class="item.entregado ? 'text-teal-400' : 'text-slate-500'" x-text="item.entregado ? 'Entregado' : 'Pendiente'"></span>
-              </label>
+              <button @click="cycleCaseDocumentChecklist(item.categoria, item.estado || 'pendiente')"
+                class="w-full flex items-center gap-2 cursor-pointer bg-slate-700/50 hover:bg-slate-700 rounded-lg px-3 py-2 transition text-left">
+                <span class="text-sm" :class="(item.estado === 'entregado') ? 'text-slate-300 line-through' : 'text-slate-300'" x-text="item.categoria"></span>
+                <span class="text-xs ml-auto px-2 py-0.5 rounded-full font-medium"
+                  :class="{
+                    'bg-slate-600/50 text-slate-400': (item.estado || 'pendiente') === 'pendiente',
+                    'bg-amber-900/50 text-amber-300 border border-amber-700': item.estado === 'recibido',
+                    'bg-teal-900/50 text-teal-300 border border-teal-700': item.estado === 'entregado'
+                  }"
+                  x-text="{pendiente: 'Pendiente', recibido: 'Recibido · sin validar', entregado: 'Entregado'}[item.estado || 'pendiente']"></span>
+              </button>
             </template>
           </div>
         </div>
@@ -2935,6 +2939,8 @@
                 <button @click="downloadCaseAttachment(a.attachment_id)"
                   class="text-slate-200 hover:text-orange-400 transition text-left truncate flex-1"
                   x-text="'📎 ' + a.filename"></button>
+                <span x-show="a.source === 'email_reply'"
+                  class="text-xs px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-800 shrink-0 ml-2">✉️ por correo</span>
                 <span class="text-slate-500 shrink-0 ml-2" x-text="(a.uploaded_by || '') + ' · ' + new Date(a.uploaded_at).toLocaleDateString('es-CL')"></span>
                 <button @click="deleteCaseAttachment(a.attachment_id)"
                   class="text-red-400 hover:text-red-300 shrink-0 ml-3">🗑</button>
@@ -6731,9 +6737,11 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         this.activeCaseAttachments = this.activeCaseAttachments.filter(a => a.attachment_id !== attachmentId);
       },
 
-      async toggleCaseDocumentChecklist(categoria, entregado) {
+      async cycleCaseDocumentChecklist(categoria, estadoActual) {
         if (!this.activeCase.case_id) return;
-        const d = await this.api('POST', `/cases/${this.activeCase.case_id}/documentos-checklist`, { categoria, entregado });
+        const next = { pendiente: 'recibido', recibido: 'entregado', entregado: 'pendiente' };
+        const estado = next[estadoActual] || 'pendiente';
+        const d = await this.api('POST', `/cases/${this.activeCase.case_id}/documentos-checklist`, { categoria, estado });
         if (d?.documentos_checklist) this.activeCase.documentos_checklist = d.documentos_checklist;
       },
 

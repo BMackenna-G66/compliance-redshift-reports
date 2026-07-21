@@ -60,6 +60,12 @@ except Exception:
     def _apply_auto_case_rules(*args, **kwargs):  # noqa: ANN001
         pass
 
+try:
+    from api_handler import poll_document_replies as _poll_document_replies
+except Exception:
+    def _poll_document_replies(*args, **kwargs):  # noqa: ANN001
+        return {"status": "error", "error": "poll_document_replies not importable"}
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -1109,6 +1115,13 @@ def handler(event, context):  # noqa: ARG001
     report_name = event.get("report_name") or REPORT_NAME
     # run_id is injected by api_handler when a user triggers via the frontend
     run_id: str | None = event.get("run_id")
+
+    # ── Módulo especial: escucha de respuestas de documentos por correo ────
+    # No usa Redshift ni el ciclo normal de runs — es un job de polling IMAP
+    # disparado por EventBridge cada ~10 min. Retorna directo, sin pasar por
+    # el resto del flujo de reportes (encendido de clúster, Excel, etc.).
+    if report_name == "poll_document_replies":
+        return _poll_document_replies()
 
     # ── Módulo especial: Análisis AML Individual ──────────────────────────
     if report_name == "individual_aml_analysis":

@@ -128,6 +128,17 @@ PRIORITY_QUEUE_SETTINGS_KEY = "config/priority_queue_settings.json"
 ALERT_DOCS_FROM_ADDR = "compliance@global66.com"
 _DOCS_EMAIL_FRAGMENTS_PATH = Path(__file__).resolve().parent / "solicitud_documentos_fragments.json"
 
+# Escucha de respuestas del cliente (documentos adjuntos por correo).
+# compliance@global66.com es un GRUPO de Workspace, no una casilla con login
+# propio — no se puede hacer IMAP directo sobre el grupo. compliance.masivo@
+# global66.com es una cuenta Gmail real que es miembro del grupo, así que una
+# copia de cada respuesta le llega ahí también; ese es el buzón que se lee.
+DOC_REPLY_IMAP_HOST = "imap.gmail.com"
+DOC_REPLY_IMAP_USER = os.environ.get("DOC_REPLY_IMAP_USER", "compliance.masivo@global66.com")
+DOC_REPLY_IMAP_SECRET_ARN = os.environ.get("DOC_REPLY_IMAP_SECRET_ARN", "")
+_ATTACHMENT_EXTS_ALLOWED = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xls", ".xlsx", ".heic", ".webp"}
+_EMAIL_REF_RE = re.compile(r"\[ref:\s*([0-9a-f]{8})\]", re.IGNORECASE)
+
 # Mapeo entre las 5 categorías del mantenedor y los 4 puntos numerados de la
 # plantilla oficial (algunas categorías comparten punto, ej. "Comprobantes/
 # Soporte" ya está cubierto por el punto de origen de fondos). Si se agregan
@@ -2210,6 +2221,21 @@ def update_priority_queue_settings(body: dict):
     return resp(200, settings)
 
 
+def _register_email_ref(case_id: str) -> str:
+    """Genera una referencia corta (8 hex) para un caso y la guarda como un
+    índice separado (crm/email_refs/{ref}.json -> {case_id}) para que
+    poll_document_replies pueda encontrar el caso a partir del asunto de una
+    respuesta, sin tener que escanear todos los casos."""
+    ref = case_id.replace("-", "")[:8]
+    _crm_put("email_refs", ref, {"ref": ref, "case_id": case_id, "created_at": _now_str()})
+    _crm_update("cases", case_id, {"email_ref": ref})
+    return ref
+
+
+def _subject_with_ref(base_subject: str, ref: str) -> str:
+    return f"{base_subject} [ref: {ref}]" if ref else base_subject
+
+
 def run_alert_prioritization_test(body: dict):
     """Prueba de concepto end-to-end: lee compliance.alert_priority_test_data
     (datos ficticios cargados a mano, con prioridad ya asignada) y por cada
@@ -2257,25 +2283,9 @@ def run_alert_prioritization_test(body: dict):
         # nombre); la lista de documentos queda fija en la plantilla misma.
         documentos = _ALL_DOC_CATEGORIES
 
-        subject = "Solicitud de información adicional — Global66"
-        html_body = _render_documentos_email(nombre, documentos)
-        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
-
-        req_id = str(uuid.uuid4())
-        _crm_put("document_requests", req_id, {
-            "request_id": req_id,
-            "customer_id": customer_id,
-            "correo": correo,
-            "nombre_completo": nombre,
-            "prioridad": prioridad,
-            "concepto": concepto,
-            "documentos_solicitados": documentos,
-            "subject": subject,
-            "sent": bool(GMAIL_APP_PASSWORD),
-            "created_at": _now_str(),
-            "test_mode": True,
-        })
-
+        # El caso se crea ANTES de mandar el correo para poder incluir su
+        # referencia corta en el asunto — así una respuesta del cliente se
+        # puede vincular de vuelta a este caso (ver poll_document_replies).
         case_resp = create_case({
             "title": f"[{prioridad}] {concepto} — cliente {customer_id}",
             "description": (
@@ -2296,6 +2306,31 @@ def run_alert_prioritization_test(body: dict):
         })
         case_body = json.loads(case_resp["body"])
         case_id = case_body.get("case_id", "")
+        if case_id:
+            _crm_update("cases", case_id, {
+                "documentos_checklist": [{"categoria": d, "estado": "pendiente"} for d in documentos],
+            })
+
+        ref = _register_email_ref(case_id) if case_id else ""
+        subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
+        html_body = _render_documentos_email(nombre, documentos)
+        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+
+        req_id = str(uuid.uuid4())
+        _crm_put("document_requests", req_id, {
+            "request_id": req_id,
+            "customer_id": customer_id,
+            "case_id": case_id,
+            "correo": correo,
+            "nombre_completo": nombre,
+            "prioridad": prioridad,
+            "concepto": concepto,
+            "documentos_solicitados": documentos,
+            "subject": subject,
+            "sent": bool(GMAIL_APP_PASSWORD),
+            "created_at": _now_str(),
+            "test_mode": True,
+        })
 
         results.append({
             "customer_id": customer_id,
@@ -2406,28 +2441,6 @@ def run_alert_prioritization_real(body: dict):
 
         documentos = _lookup_alert_documents(alerta, entity_type)
 
-        subject = "Solicitud de información adicional — Global66"
-        html_body = _render_documentos_email(nombre, documentos)
-        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
-
-        req_id = str(uuid.uuid4())
-        _crm_put("document_requests", req_id, {
-            "request_id": req_id,
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "correo": correo,
-            "nombre_completo": nombre,
-            "prioridad": prioridad,
-            "risk_score": score,
-            "alerta": alerta,
-            "concepto": concepto,
-            "documentos_solicitados": documentos,
-            "subject": subject,
-            "sent": bool(GMAIL_APP_PASSWORD),
-            "created_at": _now_str(),
-            "test_mode": False,
-        })
-
         case_resp = create_case({
             "title": f"[{prioridad}] {alerta} — {'cliente' if entity_type=='customer' else 'empresa'} {entity_id}",
             "description": (
@@ -2448,8 +2461,32 @@ def run_alert_prioritization_real(body: dict):
         case_id = case_body.get("case_id", "")
         if case_id:
             _crm_update("cases", case_id, {
-                "documentos_checklist": [{"categoria": d, "entregado": False} for d in documentos],
+                "documentos_checklist": [{"categoria": d, "estado": "pendiente"} for d in documentos],
             })
+
+        ref = _register_email_ref(case_id) if case_id else ""
+        subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
+        html_body = _render_documentos_email(nombre, documentos)
+        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+
+        req_id = str(uuid.uuid4())
+        _crm_put("document_requests", req_id, {
+            "request_id": req_id,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "case_id": case_id,
+            "correo": correo,
+            "nombre_completo": nombre,
+            "prioridad": prioridad,
+            "risk_score": score,
+            "alerta": alerta,
+            "concepto": concepto,
+            "documentos_solicitados": documentos,
+            "subject": subject,
+            "sent": bool(GMAIL_APP_PASSWORD),
+            "created_at": _now_str(),
+            "test_mode": False,
+        })
 
         results.append({
             "entity_type": entity_type,
@@ -2491,31 +2528,14 @@ def send_manual_document_request(body: dict):
     if not documentos:
         return resp(400, {"error": "documentos (lista, al menos 1) is required"})
 
-    subject = "Solicitud de información adicional — Global66"
-    html_body = _render_documentos_email(nombre, documentos)
-    _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+    checklist = [{"categoria": d, "estado": "pendiente"} for d in documentos]
 
-    req_id = str(uuid.uuid4())
-    _crm_put("document_requests", req_id, {
-        "request_id": req_id,
-        "entity_type": entity_type,
-        "entity_id": entity_id,
-        "correo": correo,
-        "nombre_completo": nombre,
-        "prioridad": prioridad,
-        "alerta": alerta,
-        "documentos_solicitados": documentos,
-        "subject": subject,
-        "sent": bool(GMAIL_APP_PASSWORD),
-        "created_at": _now_str(),
-        "manual": True,
-    })
-
-    checklist = [{"categoria": d, "entregado": False} for d in documentos]
-
+    # El caso se crea/actualiza ANTES de mandar el correo para poder incluir
+    # su referencia corta en el asunto (ver _register_email_ref).
     if existing_case_id:
         updated = _crm_update("cases", existing_case_id, {"documentos_checklist": checklist})
         case_id = existing_case_id if updated else ""
+        ref = (updated or {}).get("email_ref") or (_register_email_ref(case_id) if case_id else "")
     else:
         case_priority = _PRIORITY_TO_CASE_PRIORITY.get(prioridad, "low")
         case_resp = create_case({
@@ -2537,6 +2557,28 @@ def send_manual_document_request(body: dict):
         case_id = case_body.get("case_id", "")
         if case_id:
             _crm_update("cases", case_id, {"documentos_checklist": checklist})
+        ref = _register_email_ref(case_id) if case_id else ""
+
+    subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
+    html_body = _render_documentos_email(nombre, documentos)
+    _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+
+    req_id = str(uuid.uuid4())
+    _crm_put("document_requests", req_id, {
+        "request_id": req_id,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "case_id": case_id,
+        "correo": correo,
+        "nombre_completo": nombre,
+        "prioridad": prioridad,
+        "alerta": alerta,
+        "documentos_solicitados": documentos,
+        "subject": subject,
+        "sent": bool(GMAIL_APP_PASSWORD),
+        "created_at": _now_str(),
+        "manual": True,
+    })
 
     return resp(200, {
         "case_id": case_id,
@@ -2546,12 +2588,22 @@ def send_manual_document_request(body: dict):
     })
 
 
+_CHECKLIST_ESTADOS = {"pendiente", "recibido", "entregado"}
+
+
 def update_case_document_checklist(case_id: str, body: dict):
-    """Marca un documento del checklist como entregado o no. body: {categoria, entregado}."""
+    """Actualiza el estado de un documento del checklist.
+    body: {categoria, estado: "pendiente"|"recibido"|"entregado"}.
+
+    "recibido" es un estado intermedio — lo pone el poller de correos cuando
+    detecta una respuesta con adjuntos, antes de que un analista valide el
+    contenido y lo pase a mano a "entregado" (ver poll_document_replies)."""
     categoria = body.get("categoria", "").strip()
-    entregado = bool(body.get("entregado", False))
+    estado = (body.get("estado") or "").strip().lower()
     if not categoria:
         return resp(400, {"error": "categoria is required"})
+    if estado not in _CHECKLIST_ESTADOS:
+        return resp(400, {"error": f"estado debe ser uno de: {', '.join(sorted(_CHECKLIST_ESTADOS))}"})
 
     case = _crm_get("cases", case_id)
     if case is None:
@@ -2561,11 +2613,11 @@ def update_case_document_checklist(case_id: str, body: dict):
     found = False
     for item in checklist:
         if item.get("categoria") == categoria:
-            item["entregado"] = entregado
+            item["estado"] = estado
             found = True
             break
     if not found:
-        checklist.append({"categoria": categoria, "entregado": entregado})
+        checklist.append({"categoria": categoria, "estado": estado})
 
     _crm_update("cases", case_id, {"documentos_checklist": checklist})
     return resp(200, {"documentos_checklist": checklist})
@@ -3021,6 +3073,144 @@ def delete_case_attachment(case_id: str, attachment_id: str):
     _safe_audit(action="case.attachment_delete", entity_type="case", entity_id=case_id,
                 new_value={"filename": target.get("filename", "")})
     return resp(200, {"message": "Attachment deleted"})
+
+
+# ---------------------------------------------------------------------------
+# Escucha de respuestas del cliente (documentos por correo)
+# ---------------------------------------------------------------------------
+def _get_imap_password() -> str:
+    if not DOC_REPLY_IMAP_SECRET_ARN:
+        return ""
+    try:
+        val = secrets_client.get_secret_value(SecretId=DOC_REPLY_IMAP_SECRET_ARN)
+        return val["SecretString"].strip()
+    except Exception:
+        return ""
+
+
+def _decode_mime_words(s: str) -> str:
+    from email.header import decode_header
+    out = []
+    for text, enc in decode_header(s or ""):
+        out.append(text.decode(enc or "utf-8", errors="replace") if isinstance(text, bytes) else text)
+    return "".join(out)
+
+
+def poll_document_replies() -> dict:
+    """Revisa compliance.masivo@global66.com (cuenta Gmail real, miembro del
+    grupo compliance@global66.com) por respuestas de clientes a una
+    solicitud de documentos, sube los adjuntos al caso correspondiente en S3
+    y pasa el checklist de "pendiente" a "recibido" — nunca a "entregado"
+    directamente, eso lo confirma un analista a mano tras revisar el
+    contenido (decisión de producto).
+
+    La correlación caso <-> respuesta es por el token [ref: xxxxxxxx] en el
+    asunto (ver _register_email_ref) — los clientes de correo preservan el
+    asunto original al responder. Si no se encuentra el token o no matchea
+    ningún caso, el mensaje se marca leído igual (para no reprocesarlo en
+    cada corrida) pero no se toca ningún caso; queda para revisión manual
+    directa en el buzón si hiciera falta.
+
+    Se invoca periódicamente vía EventBridge -> Report Runner Lambda con
+    {"report_name": "poll_document_replies"}."""
+    import imaplib
+    import email as email_lib
+
+    password = _get_imap_password()
+    if not password:
+        return {"status": "skipped", "reason": "DOC_REPLY_IMAP_SECRET_ARN no configurado"}
+
+    processed = matched = unmatched = errors = 0
+
+    try:
+        imap = imaplib.IMAP4_SSL(DOC_REPLY_IMAP_HOST)
+        imap.login(DOC_REPLY_IMAP_USER, password)
+        imap.select("INBOX")
+    except Exception as e:
+        return {"status": "error", "error": f"No se pudo conectar/autenticar por IMAP: {e}"}
+
+    try:
+        status, data = imap.search(None, "UNSEEN")
+        if status != "OK":
+            return {"status": "error", "error": "IMAP search falló"}
+
+        for num in data[0].split():
+            try:
+                status, msg_data = imap.fetch(num, "(RFC822)")
+                if status != "OK":
+                    errors += 1
+                    continue
+                msg = email_lib.message_from_bytes(msg_data[0][1])
+                subject = _decode_mime_words(msg.get("Subject", ""))
+                from_addr = email_lib.utils.parseaddr(msg.get("From", ""))[1]
+
+                m = _EMAIL_REF_RE.search(subject)
+                ref_record = _crm_get("email_refs", m.group(1).lower()) if m else None
+                case = _crm_get("cases", ref_record["case_id"]) if ref_record else None
+                if case is None:
+                    unmatched += 1
+                    imap.store(num, "+FLAGS", "\\Seen")
+                    continue
+                case_id = ref_record["case_id"]
+
+                saved_any = False
+                for part in msg.walk():
+                    if part.get_content_maintype() == "multipart":
+                        continue
+                    filename = part.get_filename()
+                    if not filename:
+                        continue
+                    filename = _decode_mime_words(filename)
+                    if os.path.splitext(filename)[1].lower() not in _ATTACHMENT_EXTS_ALLOWED:
+                        continue
+                    payload = part.get_payload(decode=True)
+                    if not payload or len(payload) < 200:
+                        continue  # descarta íconos/firmas embebidas, no documentos reales
+
+                    ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                    s3_key = _attachment_s3_key(case.get("entity_type", ""), case.get("entity_id", ""), case_id, ts, filename)
+                    s3.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=payload,
+                                  ContentType=part.get_content_type() or "application/octet-stream")
+                    case.setdefault("attachments", []).append({
+                        "attachment_id": str(uuid.uuid4()),
+                        "filename": filename,
+                        "s3_key": s3_key,
+                        "size": len(payload),
+                        "content_type": part.get_content_type() or "",
+                        "uploaded_by": from_addr,
+                        "uploaded_at": _now_str(),
+                        "source": "email_reply",
+                    })
+                    saved_any = True
+
+                if saved_any:
+                    checklist = case.get("documentos_checklist") or []
+                    for item in checklist:
+                        if item.get("estado") == "pendiente":
+                            item["estado"] = "recibido"
+                    case["documentos_checklist"] = checklist
+                    case["updated_at"] = _now_str()
+                    _crm_put("cases", case_id, case)
+                    _safe_audit(user_email=from_addr or "cliente", action="case.email_reply_attachments",
+                                entity_type="case", entity_id=case_id,
+                                new_value={"n_attachments": len(case.get("attachments", []))})
+                    matched += 1
+                else:
+                    unmatched += 1
+
+                imap.store(num, "+FLAGS", "\\Seen")
+                processed += 1
+            except Exception as e:
+                print(f"poll_document_replies: error procesando mensaje {num}: {e}")
+                errors += 1
+    finally:
+        try:
+            imap.close()
+            imap.logout()
+        except Exception:
+            pass
+
+    return {"status": "ok", "processed": processed, "matched": matched, "unmatched": unmatched, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
