@@ -3671,7 +3671,7 @@
             class="pb-3 px-2 text-sm font-medium transition">
             ⚙ Automatización
           </button>
-          <button @click="adminSubtab='analistas'; loadCrmUsers()"
+          <button @click="adminSubtab='analistas'; loadCrmAnalysts()"
             :class="adminSubtab==='analistas' ? 'border-b-2 border-indigo-500 text-indigo-400' : 'text-slate-400 hover:text-white'"
             class="pb-3 px-2 text-sm font-medium transition">
             👤 Analistas CRM
@@ -4032,10 +4032,10 @@
               + Nuevo analista
             </button>
           </div>
-          <div x-show="crmUsersLoading" class="text-center py-8 text-slate-400 text-sm">Cargando...</div>
-          <div x-show="!crmUsersLoading && crmUsers.length===0" class="text-center py-8 text-slate-600 text-sm">Sin analistas registrados</div>
+          <div x-show="crmAnalystsLoading" class="text-center py-8 text-slate-400 text-sm">Cargando...</div>
+          <div x-show="!crmAnalystsLoading && crmAnalysts.length===0" class="text-center py-8 text-slate-600 text-sm">Sin analistas registrados</div>
           <div class="space-y-2">
-            <template x-for="u in crmUsers" :key="u.id">
+            <template x-for="u in crmAnalysts" :key="u.id">
               <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 flex items-center gap-4">
                 <div class="w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 bg-indigo-700"
                   x-text="(u.full_name||u.email||'?').substring(0,2).toUpperCase()"></div>
@@ -4691,9 +4691,9 @@
       _chartAlertsDaily: null,
 
       // Phase 7 — CRM Users
-      crmUsers: [],
+      crmAnalysts: [],
       crmRoles: [],
-      crmUsersLoading: false,
+      crmAnalystsLoading: false,
       crmUserModal: { open: false, mode: 'create', form: {} },
 
       // Phase 9 — SLA
@@ -6141,18 +6141,18 @@
       // -----------------------------------------------
       // PHASE 7 — CRM User Management
       // -----------------------------------------------
-      async loadCrmUsers() {
-        if (this.crmUsersLoading) return;
-        this.crmUsersLoading = true;
+      async loadCrmAnalysts() {
+        if (this.crmAnalystsLoading) return;
+        this.crmAnalystsLoading = true;
         try {
           const [uRes, rRes] = await Promise.all([
             this.api('GET', '/users'),
             this.api('GET', '/roles'),
           ]);
-          this.crmUsers = uRes.users || [];
+          this.crmAnalysts = uRes.users || [];
           this.crmRoles = rRes.roles || [];
         } catch(e) {}
-        this.crmUsersLoading = false;
+        this.crmAnalystsLoading = false;
       },
 
       async saveCrmUser() {
@@ -6164,7 +6164,7 @@
             await this.api('POST', `/users/${this.crmUserModal.userId}`, { full_name: f.full_name, role_id: f.role_id, is_active: f.is_active });
           }
           this.crmUserModal = { open: false };
-          await this.loadCrmUsers();
+          await this.loadCrmAnalysts();
         } catch(e) { alert('Error: ' + e.message); }
       },
 
@@ -6172,7 +6172,7 @@
         if (!confirm('¿Desactivar este analista?')) return;
         try {
           await this.api('DELETE', `/users/${userId}`);
-          await this.loadCrmUsers();
+          await this.loadCrmAnalysts();
         } catch(e) {}
       },
 
