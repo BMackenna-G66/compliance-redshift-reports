@@ -4118,9 +4118,9 @@
           <div class="flex items-center justify-between mb-4">
             <div>
               <h3 class="text-sm font-semibold text-white">Reglas de Creación Automática de Casos</h3>
-              <p class="text-xs text-slate-500 mt-0.5">Cuando un reporte supera el umbral de filas, se crea un caso automáticamente.</p>
+              <p class="text-xs text-slate-500 mt-0.5">Cuando un reporte supera el umbral de filas (o un cliente supera un valor de campo), se crea un caso automáticamente.</p>
             </div>
-            <button @click="ruleModal={open:true,mode:'create',form:{name:'',report_name:'',row_threshold:1,case_title_template:'Alerta automática: {report_name} ({row_count} filas)',priority:'medium',assigned_to:'',enabled:true}}"
+            <button @click="ruleModal={open:true,mode:'create',form:{name:'',report_name:'',row_threshold:1,field_name:'',field_value:'',case_title_template:'Alerta automática: {report_name} ({row_count} filas)',priority:'medium',assigned_to:'',enabled:true}}"
               class="text-xs px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg transition">
               + Nueva regla
             </button>
@@ -4136,7 +4136,8 @@
                       <span class="text-sm font-medium text-white" x-text="r.name"></span>
                       <span :class="r.enabled ? 'bg-green-500/20 text-green-400' : 'bg-slate-600/40 text-slate-400'"
                         class="text-xs px-2 py-0.5 rounded-full" x-text="r.enabled ? 'Activa' : 'Inactiva'"></span>
-                      <span class="text-xs text-slate-500" x-text="'≥ '+r.row_threshold+' filas'"></span>
+                      <span x-show="r.field_name" class="text-xs text-slate-500" x-text="'por cliente: '+r.field_name+' > '+r.field_value"></span>
+                      <span x-show="!r.field_name" class="text-xs text-slate-500" x-text="'≥ '+r.row_threshold+' filas'"></span>
                     </div>
                     <p class="text-xs text-slate-400 mt-1" x-text="'Reporte: '+(r.report_name||'cualquiera')"></p>
                     <p class="text-xs text-slate-500 mt-0.5" x-text="'Título: '+r.case_title_template"></p>
@@ -4172,11 +4173,26 @@
                       class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
                   </div>
                   <div>
-                    <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Umbral filas</label>
+                    <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Umbral filas (si no usa condición por campo)</label>
                     <input type="number" x-model.number="ruleModal.form.row_threshold" min="1"
                       class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
                   </div>
                 </div>
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Campo (opcional — evalúa por cliente)</label>
+                    <input type="text" x-model="ruleModal.form.field_name" placeholder="small_payins_7d"
+                      class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
+                  </div>
+                  <div>
+                    <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Valor umbral (campo &gt; valor)</label>
+                    <input type="number" x-model="ruleModal.form.field_value" placeholder="1000"
+                      class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none">
+                  </div>
+                </div>
+                <p x-show="ruleModal.form.field_name" class="text-xs text-slate-500 -mt-1">
+                  Se creará un caso por cada cliente/empresa cuya fila tenga <span class="font-mono" x-text="ruleModal.form.field_name"></span> &gt; <span x-text="ruleModal.form.field_value"></span> (ignora el umbral de filas).
+                </p>
                 <div>
                   <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Título del caso (use {report_name}, {row_count})</label>
                   <input type="text" x-model="ruleModal.form.case_title_template"

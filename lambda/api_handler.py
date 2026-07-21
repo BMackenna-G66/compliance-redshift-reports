@@ -3616,6 +3616,8 @@ def create_rule(body: dict):
         "name": str(body.get("name", "")).strip()[:100],
         "report_name": str(body.get("report_name", "")).strip()[:100],
         "row_threshold": int(body.get("row_threshold", 1)),
+        "field_name": str(body.get("field_name", "")).strip()[:100],
+        "field_value": float(body["field_value"]) if str(body.get("field_value", "")).strip() != "" else None,
         "case_title_template": str(body.get("case_title_template", "Alerta automática: {report_name}")).strip()[:255],
         "priority": str(body.get("priority", "medium")),
         "assigned_to": str(body.get("assigned_to", "")).strip()[:255],
@@ -3631,9 +3633,11 @@ def update_rule(rule_id: str, body: dict):
     rules = _load_rules()
     for rule in rules:
         if rule["id"] == rule_id:
-            for field in ["name", "report_name", "row_threshold", "case_title_template", "priority", "assigned_to", "enabled"]:
+            for field in ["name", "report_name", "row_threshold", "field_name", "case_title_template", "priority", "assigned_to", "enabled"]:
                 if field in body:
                     rule[field] = body[field]
+            if "field_value" in body:
+                rule["field_value"] = float(body["field_value"]) if str(body["field_value"]).strip() != "" else None
             _save_rules(rules)
             return resp(200, {"message": "Regla actualizada", "rule": rule})
     return resp(404, {"error": "Rule not found"})
@@ -3648,8 +3652,52 @@ def delete_rule(rule_id: str):
     return resp(200, {"message": "Regla eliminada"})
 
 
-def apply_auto_case_rules(report_name: str, row_count: int, run_id: str) -> None:
-    """Called after a report completes — creates cases for matching enabled rules."""
+def _create_auto_case(report_name: str, rule: dict, title: str, description: str,
+                       entity_type: str = "report", entity_id: str = "") -> None:
+    case_id = str(uuid.uuid4())
+    now = _now_str()
+    assigned = str(rule.get("assigned_to", "")).strip()
+    priority = rule.get("priority", "medium")
+    # Casos viven en S3 (always-on) → escribir ahí, no en Redshift.
+    _crm_put("cases", case_id, {
+        "case_id": case_id,
+        "title": title,
+        "description": description,
+        "status": "open",
+        "priority": priority,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "report_name": report_name,
+        "assigned_to": assigned,
+        "created_by": "sistema@auto",
+        "created_at": now,
+        "updated_at": now,
+        "closed_at": "",
+        "notes": [],
+    })
+    if assigned:
+        _case_assignment_email(assigned, case_id, title, priority, "sistema automático")
+
+
+class _SafeFormatDict(dict):
+    """.format_map() dict that leaves unknown {placeholders} as literal text
+    instead of raising KeyError (case_title_template is user-authored)."""
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def apply_auto_case_rules(report_name: str, rows: list[dict], run_id: str) -> None:
+    """Called after a report completes — creates cases for matching enabled rules.
+
+    Two modes, chosen per rule:
+    - field_name/field_value set  → condición por fila: crea UN caso por cada
+      fila donde float(row[field_name]) > field_value (ej. smurfing con
+      small_payins_7d > 1000). No envía solicitud de documentos, solo abre
+      el caso y notifica al analista asignado.
+    - field_name vacío (legado)   → condición por reporte completo: crea UN
+      solo caso si el total de filas del reporte >= row_threshold.
+    """
+    row_count = len(rows)
     try:
         rules = _load_rules()
         for rule in rules:
@@ -3657,34 +3705,36 @@ def apply_auto_case_rules(report_name: str, row_count: int, run_id: str) -> None
                 continue
             if rule.get("report_name") and rule["report_name"] != report_name:
                 continue
-            if row_count < int(rule.get("row_threshold", 1)):
-                continue
-            title = rule.get("case_title_template", "Alerta automática: {report_name}").format(
-                report_name=report_name, row_count=row_count, run_id=run_id
-            )
-            case_id = str(uuid.uuid4())
-            now = _now_str()
-            assigned = str(rule.get("assigned_to", "")).strip()
             rule_name = str(rule.get("name", ""))
-            # Casos viven en S3 (always-on) → escribir ahí, no en Redshift.
-            _crm_put("cases", case_id, {
-                "case_id": case_id,
-                "title": title,
-                "description": (f'Creado automáticamente por regla "{rule_name}" — '
-                                f"{report_name} con {row_count} filas (run {run_id})."),
-                "status": "open",
-                "priority": rule.get("priority", "medium"),
-                "entity_type": "report",
-                "entity_id": "",
-                "report_name": report_name,
-                "assigned_to": assigned,
-                "created_by": "sistema@auto",
-                "created_at": now,
-                "updated_at": now,
-                "closed_at": "",
-                "notes": [],
-            })
-            if assigned:
-                _case_assignment_email(assigned, case_id, title, rule.get("priority", "medium"), "sistema automático")
+            field_name = str(rule.get("field_name", "")).strip()
+            field_value = rule.get("field_value")
+
+            if field_name and field_value is not None:
+                for row in rows:
+                    raw = row.get(field_name)
+                    if raw is None:
+                        continue
+                    try:
+                        val = float(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if val <= float(field_value):
+                        continue
+                    entity_type = "customer" if "customer_id" in row else "company" if "company_id" in row else "report"
+                    entity_id = str(row.get("customer_id") or row.get("company_id") or "")
+                    ctx = _SafeFormatDict(row)
+                    ctx.update(report_name=report_name, row_count=row_count, run_id=run_id)
+                    title = rule.get("case_title_template", "Alerta automática: {report_name}").format_map(ctx)
+                    description = (f'Creado automáticamente por regla "{rule_name}" — '
+                                    f"{report_name}: {field_name}={raw} (run {run_id}).")
+                    _create_auto_case(report_name, rule, title, description, entity_type, entity_id)
+            else:
+                ctx = _SafeFormatDict(report_name=report_name, row_count=row_count, run_id=run_id)
+                if row_count < int(rule.get("row_threshold", 1)):
+                    continue
+                title = rule.get("case_title_template", "Alerta automática: {report_name}").format_map(ctx)
+                description = (f'Creado automáticamente por regla "{rule_name}" — '
+                                f"{report_name} con {row_count} filas (run {run_id}).")
+                _create_auto_case(report_name, rule, title, description, "report", "")
     except Exception:
         pass

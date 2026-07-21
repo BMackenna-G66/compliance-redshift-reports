@@ -655,9 +655,9 @@ def enrich_rows_with_priority(rows: list[dict]) -> list[dict]:
         logger.exception("No se pudo enriquecer con prioridad (no bloquea el reporte)")
         return rows
 
-    score_by_id = {pr[id_col]: pr.get("risk_score") for pr in priority_rows}
+    score_by_id = {str(pr[id_col]): pr.get("risk_score") for pr in priority_rows}
     for r in rows:
-        score = score_by_id.get(r.get(id_col))
+        score = score_by_id.get(str(r.get(id_col)))
         r["risk_score"] = score
         if score is None:
             r["prioridad"] = None
@@ -1509,7 +1509,7 @@ ORDER BY start_date DESC
 
         # Phase 10 — apply auto-case rules (non-blocking)
         try:
-            _apply_auto_case_rules(report_name, total_rows, run_id)
+            _apply_auto_case_rules(report_name, rows, run_id)
         except Exception:
             pass
 
