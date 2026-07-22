@@ -3096,6 +3096,84 @@ def _decode_mime_words(s: str) -> str:
     return "".join(out)
 
 
+def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -> str:
+    """Procesa un único mensaje IMAP. Retorna 'matched', 'unmatched' o 'error'.
+    No decide por sí solo si hay que marcarlo \\Seen — eso lo hace el caller,
+    porque la política difiere entre INBOX (todo se marca leído) y Spam
+    (solo lo que matchea, para no tocar spam real)."""
+    # BODY.PEEK[] (no RFC822 plano) — leer un mensaje por IMAP marca \Seen como
+    # efecto secundario a menos que se use PEEK; sin esto, cualquier lectura
+    # (incluso solo para inspeccionar) marcaría como leído un spam real que
+    # no matcheó ningún caso, rompiendo la garantía de "no tocar nada".
+    status, msg_data = imap.fetch(num, "(BODY.PEEK[])")
+    if status != "OK":
+        return "error"
+    msg = email_lib.message_from_bytes(msg_data[0][1])
+    subject = _decode_mime_words(msg.get("Subject", ""))
+    from_addr = email_lib.utils.parseaddr(msg.get("From", ""))[1]
+
+    m = _EMAIL_REF_RE.search(subject)
+    ref_record = _crm_get("email_refs", m.group(1).lower()) if m else None
+    case = _crm_get("cases", ref_record["case_id"]) if ref_record else None
+    if case is None:
+        return "unmatched"
+    case_id = ref_record["case_id"]
+
+    saved_any = False
+    for part in msg.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        filename = part.get_filename()
+        if not filename:
+            continue
+        filename = _decode_mime_words(filename)
+        if os.path.splitext(filename)[1].lower() not in _ATTACHMENT_EXTS_ALLOWED:
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload or len(payload) < 200:
+            continue  # descarta íconos/firmas embebidas, no documentos reales
+
+        ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        s3_key = _attachment_s3_key(case.get("entity_type", ""), case.get("entity_id", ""), case_id, ts, filename)
+        s3.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=payload,
+                      ContentType=part.get_content_type() or "application/octet-stream")
+        case.setdefault("attachments", []).append({
+            "attachment_id": str(uuid.uuid4()),
+            "filename": filename,
+            "s3_key": s3_key,
+            "size": len(payload),
+            "content_type": part.get_content_type() or "",
+            "uploaded_by": from_addr,
+            "uploaded_at": _now_str(),
+            "source": "email_reply",
+        })
+        saved_any = True
+
+    if not saved_any:
+        return "unmatched"
+
+    checklist = case.get("documentos_checklist") or []
+    for item in checklist:
+        if item.get("estado") == "pendiente":
+            item["estado"] = "recibido"
+    case["documentos_checklist"] = checklist
+    case["updated_at"] = _now_str()
+    _crm_put("cases", case_id, case)
+    _safe_audit(user_email=from_addr or "cliente", action="case.email_reply_attachments",
+                entity_type="case", entity_id=case_id,
+                new_value={"n_attachments": len(case.get("attachments", []))})
+
+    if move_matched_from_spam:
+        try:
+            imap.copy(num, "INBOX")
+            imap.store(num, "+FLAGS", "\\Deleted")
+            imap.expunge()
+        except Exception:
+            pass  # no bloquea el match si Gmail no deja mover — igual queda guardado en el caso
+
+    return "matched"
+
+
 def poll_document_replies() -> dict:
     """Revisa compliance.masivo@global66.com (cuenta Gmail real, miembro del
     grupo compliance@global66.com) por respuestas de clientes a una
@@ -3107,9 +3185,13 @@ def poll_document_replies() -> dict:
     La correlación caso <-> respuesta es por el token [ref: xxxxxxxx] en el
     asunto (ver _register_email_ref) — los clientes de correo preservan el
     asunto original al responder. Si no se encuentra el token o no matchea
-    ningún caso, el mensaje se marca leído igual (para no reprocesarlo en
-    cada corrida) pero no se toca ningún caso; queda para revisión manual
-    directa en el buzón si hiciera falta.
+    ningún caso en INBOX, el mensaje se marca leído igual (para no
+    reprocesarlo en cada corrida) pero no se toca ningún caso.
+
+    También revisa Spam — el primer correo de un remitente externo
+    respondiendo a un alias/grupo cae ahí seguido — pero SOLO actúa sobre
+    mensajes cuyo token matchea un caso real (y los mueve a INBOX); todo lo
+    demás en Spam se deja intacto, nunca se marca leído ni se toca.
 
     Se invoca periódicamente vía EventBridge -> Report Runner Lambda con
     {"report_name": "poll_document_replies"}."""
@@ -3120,89 +3202,46 @@ def poll_document_replies() -> dict:
     if not password:
         return {"status": "skipped", "reason": "DOC_REPLY_IMAP_SECRET_ARN no configurado"}
 
-    processed = matched = unmatched = errors = 0
-
     try:
         imap = imaplib.IMAP4_SSL(DOC_REPLY_IMAP_HOST)
         imap.login(DOC_REPLY_IMAP_USER, password)
-        imap.select("INBOX")
     except Exception as e:
         return {"status": "error", "error": f"No se pudo conectar/autenticar por IMAP: {e}"}
 
+    processed = matched = unmatched = errors = 0
     try:
-        status, data = imap.search(None, "UNSEEN")
-        if status != "OK":
-            return {"status": "error", "error": "IMAP search falló"}
-
-        for num in data[0].split():
-            try:
-                status, msg_data = imap.fetch(num, "(RFC822)")
-                if status != "OK":
-                    errors += 1
-                    continue
-                msg = email_lib.message_from_bytes(msg_data[0][1])
-                subject = _decode_mime_words(msg.get("Subject", ""))
-                from_addr = email_lib.utils.parseaddr(msg.get("From", ""))[1]
-
-                m = _EMAIL_REF_RE.search(subject)
-                ref_record = _crm_get("email_refs", m.group(1).lower()) if m else None
-                case = _crm_get("cases", ref_record["case_id"]) if ref_record else None
-                if case is None:
-                    unmatched += 1
+        # ── INBOX: todo lo no matcheado se marca leído (comportamiento normal) ──
+        status, _ = imap.select("INBOX")
+        if status == "OK":
+            status, data = imap.search(None, "UNSEEN")
+            for num in (data[0].split() if status == "OK" else []):
+                try:
+                    outcome = _process_reply_message(imap, num, email_lib)
+                    if outcome == "error":
+                        errors += 1
+                        continue
                     imap.store(num, "+FLAGS", "\\Seen")
-                    continue
-                case_id = ref_record["case_id"]
+                    processed += 1
+                    matched += (outcome == "matched")
+                    unmatched += (outcome == "unmatched")
+                except Exception as e:
+                    print(f"poll_document_replies: error procesando mensaje INBOX {num}: {e}")
+                    errors += 1
 
-                saved_any = False
-                for part in msg.walk():
-                    if part.get_content_maintype() == "multipart":
-                        continue
-                    filename = part.get_filename()
-                    if not filename:
-                        continue
-                    filename = _decode_mime_words(filename)
-                    if os.path.splitext(filename)[1].lower() not in _ATTACHMENT_EXTS_ALLOWED:
-                        continue
-                    payload = part.get_payload(decode=True)
-                    if not payload or len(payload) < 200:
-                        continue  # descarta íconos/firmas embebidas, no documentos reales
-
-                    ts = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-                    s3_key = _attachment_s3_key(case.get("entity_type", ""), case.get("entity_id", ""), case_id, ts, filename)
-                    s3.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=payload,
-                                  ContentType=part.get_content_type() or "application/octet-stream")
-                    case.setdefault("attachments", []).append({
-                        "attachment_id": str(uuid.uuid4()),
-                        "filename": filename,
-                        "s3_key": s3_key,
-                        "size": len(payload),
-                        "content_type": part.get_content_type() or "",
-                        "uploaded_by": from_addr,
-                        "uploaded_at": _now_str(),
-                        "source": "email_reply",
-                    })
-                    saved_any = True
-
-                if saved_any:
-                    checklist = case.get("documentos_checklist") or []
-                    for item in checklist:
-                        if item.get("estado") == "pendiente":
-                            item["estado"] = "recibido"
-                    case["documentos_checklist"] = checklist
-                    case["updated_at"] = _now_str()
-                    _crm_put("cases", case_id, case)
-                    _safe_audit(user_email=from_addr or "cliente", action="case.email_reply_attachments",
-                                entity_type="case", entity_id=case_id,
-                                new_value={"n_attachments": len(case.get("attachments", []))})
-                    matched += 1
-                else:
-                    unmatched += 1
-
-                imap.store(num, "+FLAGS", "\\Seen")
-                processed += 1
-            except Exception as e:
-                print(f"poll_document_replies: error procesando mensaje {num}: {e}")
-                errors += 1
+        # ── Spam: solo se toca lo que matchea un token real; el resto ni se mira ──
+        status, _ = imap.select('"[Gmail]/Spam"')
+        if status == "OK":
+            status, data = imap.search(None, "UNSEEN")
+            for num in (data[0].split() if status == "OK" else []):
+                try:
+                    outcome = _process_reply_message(imap, num, email_lib, move_matched_from_spam=True)
+                    if outcome == "matched":
+                        processed += 1
+                        matched += 1
+                    # unmatched/error en Spam: no se toca, no se marca, no se cuenta —
+                    # es spam real de otra gente, no nuestro.
+                except Exception as e:
+                    print(f"poll_document_replies: error procesando mensaje Spam {num}: {e}")
     finally:
         try:
             imap.close()
