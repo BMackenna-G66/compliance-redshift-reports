@@ -3096,11 +3096,58 @@ def _decode_mime_words(s: str) -> str:
     return "".join(out)
 
 
+_QUOTE_HEADER_RE = re.compile(
+    r"^\s*(El .+escribi[oó]:|On .+wrote:|>+.*)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _strip_quoted_reply(text: str) -> str:
+    """Corta el texto en la primera línea que arranca el thread citado
+    (encabezado tipo "El ... escribió:" / "On ... wrote:") o una línea de
+    cita ("> ..."), para que la nota del caso muestre solo lo que el
+    cliente realmente escribió, no el correo completo de vuelta."""
+    m = _QUOTE_HEADER_RE.search(text)
+    return (text[:m.start()] if m else text).strip()
+
+
+def _extract_email_text(msg) -> str:
+    """Cuerpo de texto plano del mensaje (preferido) o HTML despojado de
+    tags si no hay texto plano, recortado del thread citado. Usado para
+    dejar como nota en el caso la respuesta de un cliente que no adjuntó
+    nada."""
+    for part in msg.walk():
+        if part.get_filename() or part.get_content_type() != "text/plain":
+            continue
+        payload = part.get_payload(decode=True)
+        if payload:
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                text = payload.decode(charset, errors="replace").strip()
+            except LookupError:
+                text = payload.decode("utf-8", errors="replace").strip()
+            return _strip_quoted_reply(text)
+    for part in msg.walk():
+        if part.get_filename() or part.get_content_type() != "text/html":
+            continue
+        payload = part.get_payload(decode=True)
+        if payload:
+            charset = part.get_content_charset() or "utf-8"
+            html = payload.decode(charset, errors="replace")
+            text = re.sub(r"<[^>]+>", " ", html)
+            text = _strip_quoted_reply(text)
+            return re.sub(r"[ \t]+", " ", text).strip()
+    return ""
+
+
 def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -> str:
-    """Procesa un único mensaje IMAP. Retorna 'matched', 'unmatched' o 'error'.
-    No decide por sí solo si hay que marcarlo \\Seen — eso lo hace el caller,
-    porque la política difiere entre INBOX (todo se marca leído) y Spam
-    (solo lo que matchea, para no tocar spam real)."""
+    """Procesa un único mensaje IMAP. Retorna 'matched' (adjuntos subidos,
+    checklist a "recibido"), 'matched_no_attachment' (el caso matcheó pero
+    el cliente no adjuntó nada válido — se deja una nota con el texto de su
+    respuesta, el checklist NO se toca), 'unmatched' (no matchea ningún
+    caso) o 'error'. No decide por sí solo si hay que marcarlo \\Seen — eso
+    lo hace el caller, porque la política difiere entre INBOX (todo se
+    marca leído) y Spam (solo lo que matchea, para no tocar spam real)."""
     # BODY.PEEK[] (no RFC822 plano) — leer un mensaje por IMAP marca \Seen como
     # efecto secundario a menos que se use PEEK; sin esto, cualquier lectura
     # (incluso solo para inspeccionar) marcaría como leído un spam real que
@@ -3149,19 +3196,36 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
         })
         saved_any = True
 
-    if not saved_any:
-        return "unmatched"
-
-    checklist = case.get("documentos_checklist") or []
-    for item in checklist:
-        if item.get("estado") == "pendiente":
-            item["estado"] = "recibido"
-    case["documentos_checklist"] = checklist
-    case["updated_at"] = _now_str()
-    _crm_put("cases", case_id, case)
-    _safe_audit(user_email=from_addr or "cliente", action="case.email_reply_attachments",
-                entity_type="case", entity_id=case_id,
-                new_value={"n_attachments": len(case.get("attachments", []))})
+    if saved_any:
+        checklist = case.get("documentos_checklist") or []
+        for item in checklist:
+            if item.get("estado") == "pendiente":
+                item["estado"] = "recibido"
+        case["documentos_checklist"] = checklist
+        case["updated_at"] = _now_str()
+        _crm_put("cases", case_id, case)
+        _safe_audit(user_email=from_addr or "cliente", action="case.email_reply_attachments",
+                    entity_type="case", entity_id=case_id,
+                    new_value={"n_attachments": len(case.get("attachments", []))})
+        outcome = "matched"
+    else:
+        # El caso matcheó pero no vino ningún adjunto válido — igual es una
+        # respuesta real del cliente, así que queda registrada como nota
+        # (no se toca el checklist: no se recibió ningún documento).
+        body_text = _extract_email_text(msg)[:2000] or "(sin contenido de texto legible)"
+        note = {
+            "note_id": str(uuid.uuid4()),
+            "case_id": case_id,
+            "author_email": from_addr or "cliente",
+            "content": f"Respuesta del cliente por correo, sin documentos adjuntos:\n\n{body_text}",
+            "created_at": _now_str(),
+        }
+        case.setdefault("notes", []).append(note)
+        case["updated_at"] = _now_str()
+        _crm_put("cases", case_id, case)
+        _safe_audit(user_email=from_addr or "cliente", action="case.email_reply_no_attachment",
+                    entity_type="case", entity_id=case_id, new_value={"note_id": note["note_id"]})
+        outcome = "matched_no_attachment"
 
     if move_matched_from_spam:
         try:
@@ -3171,7 +3235,7 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
         except Exception:
             pass  # no bloquea el match si Gmail no deja mover — igual queda guardado en el caso
 
-    return "matched"
+    return outcome
 
 
 def poll_document_replies() -> dict:
@@ -3208,7 +3272,7 @@ def poll_document_replies() -> dict:
     except Exception as e:
         return {"status": "error", "error": f"No se pudo conectar/autenticar por IMAP: {e}"}
 
-    processed = matched = unmatched = errors = 0
+    processed = matched = matched_no_doc = unmatched = errors = 0
     try:
         # ── INBOX: todo lo no matcheado se marca leído (comportamiento normal) ──
         status, _ = imap.select("INBOX")
@@ -3223,6 +3287,7 @@ def poll_document_replies() -> dict:
                     imap.store(num, "+FLAGS", "\\Seen")
                     processed += 1
                     matched += (outcome == "matched")
+                    matched_no_doc += (outcome == "matched_no_attachment")
                     unmatched += (outcome == "unmatched")
                 except Exception as e:
                     print(f"poll_document_replies: error procesando mensaje INBOX {num}: {e}")
@@ -3235,9 +3300,10 @@ def poll_document_replies() -> dict:
             for num in (data[0].split() if status == "OK" else []):
                 try:
                     outcome = _process_reply_message(imap, num, email_lib, move_matched_from_spam=True)
-                    if outcome == "matched":
+                    if outcome in ("matched", "matched_no_attachment"):
                         processed += 1
-                        matched += 1
+                        matched += (outcome == "matched")
+                        matched_no_doc += (outcome == "matched_no_attachment")
                     # unmatched/error en Spam: no se toca, no se marca, no se cuenta —
                     # es spam real de otra gente, no nuestro.
                 except Exception as e:
@@ -3249,7 +3315,8 @@ def poll_document_replies() -> dict:
         except Exception:
             pass
 
-    return {"status": "ok", "processed": processed, "matched": matched, "unmatched": unmatched, "errors": errors}
+    return {"status": "ok", "processed": processed, "matched": matched,
+            "matched_no_attachment": matched_no_doc, "unmatched": unmatched, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
