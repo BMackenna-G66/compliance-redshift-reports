@@ -66,6 +66,12 @@ except Exception:
     def _poll_document_replies(*args, **kwargs):  # noqa: ANN001
         return {"status": "error", "error": "poll_document_replies not importable"}
 
+try:
+    from api_handler import maybe_trigger_auto_document_requests as _trigger_auto_document_requests
+except Exception:
+    def _trigger_auto_document_requests(*args, **kwargs):  # noqa: ANN001
+        return {"triggered": 0, "error": "not importable"}
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -1523,6 +1529,15 @@ ORDER BY start_date DESC
         # Phase 10 — apply auto-case rules (non-blocking)
         try:
             _apply_auto_case_rules(report_name, rows, run_id)
+        except Exception:
+            pass
+
+        # Trigger de automatización end-to-end: si el interruptor maestro de
+        # priorización está prendido, dispara solicitud de documentos + caso
+        # para las filas P1 de este reporte (non-blocking, nunca rompe la
+        # ejecución del reporte). Apagado por defecto — ver Admin > Priorización.
+        try:
+            _trigger_auto_document_requests(report_name, rows)
         except Exception:
             pass
 

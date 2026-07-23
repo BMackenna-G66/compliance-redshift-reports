@@ -2503,6 +2503,51 @@ def run_alert_prioritization_real(body: dict):
     return resp(200, {"processed": len(results), "results": results})
 
 
+_REPORT_DISPLAY_NAMES = {r["report_name"]: r["display_name"] for r in BUILTIN_REPORTS}
+
+
+def maybe_trigger_auto_document_requests(report_name: str, rows: list[dict]) -> dict:
+    """Cierra el ciclo de un reporte programado: si el interruptor maestro
+    de Priorización está prendido (Admin > Priorización, apagado por
+    defecto), dispara automáticamente el flujo real (prioridad + búsqueda
+    de documentos en el mantenedor + correo + caso) para las filas de
+    prioridad P1 de esta corrida — P2/P3 quedan con su prioridad visible en
+    el Excel/tabla pero requieren acción manual del analista (decisión de
+    producto: el modelo de scoring todavía usa pesos placeholder).
+
+    Best-effort — nunca debe romper la ejecución del reporte que lo llama."""
+    try:
+        settings = _load_priority_queue_settings()
+        if not settings.get("enabled"):
+            return {"triggered": 0, "reason": "priorización automática apagada"}
+        if not rows:
+            return {"triggered": 0, "reason": "sin filas"}
+
+        alertas_in = []
+        for r in rows:
+            if r.get("prioridad") != "P1":
+                continue
+            if r.get("company_id") is not None:
+                entity_type, entity_id = "company", r["company_id"]
+            elif r.get("customer_id") is not None:
+                entity_type, entity_id = "customer", r["customer_id"]
+            else:
+                continue
+            alertas_in.append({
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "alerta": _REPORT_DISPLAY_NAMES.get(report_name, report_name),
+            })
+        if not alertas_in:
+            return {"triggered": 0, "reason": "sin filas P1"}
+
+        result = run_alert_prioritization_real({"alerts": alertas_in})
+        body = json.loads(result["body"])
+        return {"triggered": body.get("processed", 0)}
+    except Exception as e:
+        return {"triggered": 0, "error": str(e)}
+
+
 def send_manual_document_request(body: dict):
     """Botón manual — mismo correo/caso que el flujo automático, pero:
       - no depende del interruptor general (es una acción deliberada de un
