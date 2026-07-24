@@ -1350,19 +1350,43 @@ def get_institutional_rules():
     return resp(200, {"rules": _load_institutional_rules()})
 
 
+_INSTITUTIONAL_METRICS = {"monto_usd", "n_transacciones"}
+_INSTITUTIONAL_WINDOWS = {"daily", "monthly", "custom_days"}
+_INSTITUTIONAL_WINDOW_DAYS = {"daily": 1, "monthly": 30}
+INSTITUTIONAL_LOOKBACK_DAYS = 90  # tope de la ventana custom_days
+
+
+def _institutional_window_days(rule: dict) -> int:
+    window = rule.get("window", "daily")
+    if window == "custom_days":
+        return max(1, min(INSTITUTIONAL_LOOKBACK_DAYS, int(rule.get("window_days") or 1)))
+    return _INSTITUTIONAL_WINDOW_DAYS.get(window, 1)
+
+
 def create_institutional_rule(body: dict):
     """body: {company_id (opcional — vacío/None = regla default/global
-    para institucionales sin regla propia), company_name, umbral_usd,
-    enabled}."""
-    umbral = body.get("umbral_usd")
+    para institucionales sin regla propia), company_name,
+    metric: "monto_usd"|"n_transacciones",
+    window: "daily"|"monthly"|"custom_days", window_days (solo si window
+    es custom_days), umbral, enabled}."""
+    umbral = body.get("umbral")
     if umbral is None:
-        return resp(400, {"error": "umbral_usd is required"})
+        return resp(400, {"error": "umbral is required"})
+    metric = body.get("metric", "monto_usd")
+    if metric not in _INSTITUTIONAL_METRICS:
+        return resp(400, {"error": f"metric debe ser uno de: {', '.join(sorted(_INSTITUTIONAL_METRICS))}"})
+    window = body.get("window", "daily")
+    if window not in _INSTITUTIONAL_WINDOWS:
+        return resp(400, {"error": f"window debe ser uno de: {', '.join(sorted(_INSTITUTIONAL_WINDOWS))}"})
     company_id = body.get("company_id")
     rule = {
         "rule_id": str(uuid.uuid4()),
         "company_id": company_id if company_id not in (None, "") else None,
         "company_name": str(body.get("company_name", "")).strip(),
-        "umbral_usd": float(umbral),
+        "metric": metric,
+        "window": window,
+        "window_days": int(body.get("window_days") or 1) if window == "custom_days" else None,
+        "umbral": float(umbral),
         "enabled": bool(body.get("enabled", True)),
         "created_at": _now_str(),
         "updated_at": _now_str(),
@@ -1377,7 +1401,7 @@ def update_institutional_rule(rule_id: str, body: dict):
     rules = _load_institutional_rules()
     for r in rules:
         if r.get("rule_id") == rule_id:
-            for field in ("company_id", "company_name", "umbral_usd", "enabled"):
+            for field in ("company_id", "company_name", "metric", "window", "window_days", "umbral", "enabled"):
                 if field in body:
                     r[field] = body[field]
             r["updated_at"] = _now_str()
@@ -1396,41 +1420,72 @@ def delete_institutional_rule(rule_id: str):
 
 
 def apply_institutional_alert_rules(daily_rows: list[dict]) -> int:
-    """Compara el monto acumulado del día de cada cliente institucional
-    contra su regla asignada (o la regla default/global si no tiene una
-    propia) y crea una mini-alerta si se supera el umbral. Deduplica por
-    company_id + fecha — no crea una alerta nueva si ya hay una para ese
-    cliente en el mismo día. Best-effort, nunca debería romper la corrida
-    del reporte que la invoca."""
+    """daily_rows: agregados por (company_id, dia) de los últimos
+    INSTITUTIONAL_LOOKBACK_DAYS días — {company_id, company_name, dia,
+    monto_usd, n_transacciones}.
+
+    Para cada cliente institucional con datos en la ventana, calcula el
+    valor de SU regla asignada (o la regla default/global si no tiene una
+    propia) sobre la métrica y ventana configuradas (diaria/mensual/X
+    días) y crea una mini-alerta si se supera el umbral. Deduplica por
+    company_id + rule_id + fecha de hoy — como mucho una alerta por
+    cliente por regla por día, sin importar cuántas veces se corra el
+    chequeo. Best-effort, nunca debería romper la corrida que la invoca."""
     try:
         rules = _load_institutional_rules()
         by_company = {r["company_id"]: r for r in rules if r.get("company_id") and r.get("enabled", True)}
         default_rule = next((r for r in rules if not r.get("company_id") and r.get("enabled", True)), None)
+        if not by_company and not default_rule:
+            return 0
 
-        today = _now_str()[:10]
+        rows_by_company: dict = {}
+        for row in daily_rows:
+            rows_by_company.setdefault(row.get("company_id"), []).append(row)
+
+        today = dt.date.today()
+        today_str = today.isoformat()
         already_alerted = {
-            (a.get("company_id"), a.get("fecha")) for a in _crm_list("institutional_alerts")
+            (a.get("company_id"), a.get("rule_id"), a.get("fecha")) for a in _crm_list("institutional_alerts")
         }
 
         n_created = 0
-        for row in daily_rows:
-            company_id = row.get("company_id")
-            monto = float(row.get("monto_dia_usd") or 0)
+        for company_id, rows in rows_by_company.items():
             rule = by_company.get(company_id) or default_rule
             if not rule:
                 continue
-            umbral = float(rule.get("umbral_usd", 0))
-            if monto <= umbral or (company_id, today) in already_alerted:
+            metric = rule.get("metric", "monto_usd")
+            window_days = _institutional_window_days(rule)
+            cutoff = today - dt.timedelta(days=window_days - 1)
+
+            value = 0.0
+            company_name = ""
+            for r in rows:
+                company_name = r.get("company_name") or company_name
+                try:
+                    dia = dt.datetime.strptime(str(r.get("dia"))[:10], "%Y-%m-%d").date()
+                except (ValueError, TypeError):
+                    continue
+                if dia < cutoff:
+                    continue
+                value += float(r.get(metric) or 0)
+
+            umbral = float(rule.get("umbral", 0))
+            if value <= umbral:
+                continue
+            if (company_id, rule.get("rule_id"), today_str) in already_alerted:
                 continue
 
             aid = str(uuid.uuid4())
             _crm_put("institutional_alerts", aid, {
                 "alert_id": aid,
                 "company_id": company_id,
-                "company_name": row.get("company_name", ""),
-                "fecha": today,
-                "monto_dia_usd": monto,
-                "umbral_usd": umbral,
+                "company_name": company_name,
+                "fecha": today_str,
+                "metric": metric,
+                "window": rule.get("window"),
+                "window_days": window_days,
+                "valor": value,
+                "umbral": umbral,
                 "rule_id": rule.get("rule_id", ""),
                 "revisado": False,
                 "created_at": _now_str(),

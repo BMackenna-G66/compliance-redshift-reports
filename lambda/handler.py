@@ -1471,7 +1471,8 @@ WITH inst_tx AS (
         t.customer_id,
         t.transaction_id,
         t.beneficiary_id,
-        t.destiny_amount_usd
+        t.destiny_amount_usd,
+        t.start_date
     FROM "db_prod"."transaction"."transaction" t
     INNER JOIN "db_prod"."company"."company" co ON co.company_id = t.customer_id
     WHERE co.institutional = 1
@@ -1488,7 +1489,9 @@ SELECT
     ind.name AS industry,
     COUNT(DISTINCT tx.beneficiary_id) AS n_beneficiarios,
     COUNT(tx.transaction_id) AS n_transacciones,
-    COALESCE(SUM(tx.destiny_amount_usd), 0) AS monto_total_usd
+    COALESCE(SUM(tx.destiny_amount_usd), 0) AS monto_total_usd,
+    COUNT(CASE WHEN tx.start_date >= DATEADD(day, -30, CURRENT_DATE) THEN tx.transaction_id END) AS n_transacciones_30d,
+    COALESCE(SUM(CASE WHEN tx.start_date >= DATEADD(day, -30, CURRENT_DATE) THEN tx.destiny_amount_usd END), 0) AS monto_30d_usd
 FROM "db_prod"."company"."company" co
 LEFT JOIN inst_tx tx ON tx.customer_id = co.company_id
 LEFT JOIN "db_prod"."company"."activity" act ON co.ind_activity = act.id
@@ -1531,26 +1534,33 @@ ORDER BY co.company_id
             ensure_cluster_available()
             _update_run(run_id, status="RUNNING")
 
+            # Agregados por (cliente, día) de los últimos 90 días — cubre
+            # cualquier regla diaria/mensual/X días sin tener que saber acá
+            # qué ventanas están configuradas (eso lo resuelve en Python
+            # apply_institutional_alert_rules, por cliente y por regla).
             sql = """
 SELECT
     t.customer_id AS company_id,
     co.name AS company_name,
-    SUM(t.destiny_amount_usd) AS monto_dia_usd
+    DATE(t.start_date) AS dia,
+    SUM(t.destiny_amount_usd) AS monto_usd,
+    COUNT(t.transaction_id) AS n_transacciones
 FROM "db_prod"."transaction"."transaction" t
 INNER JOIN "db_prod"."company"."company" co ON co.company_id = t.customer_id
 WHERE co.institutional = 1
   AND UPPER(t.tx_status) = 'TRANSFERENCIA_EXITOSA'
-  AND t.start_date >= DATE_TRUNC('day', CURRENT_DATE)
-GROUP BY t.customer_id, co.name
+  AND t.start_date >= DATEADD(day, -90, CURRENT_DATE)
+GROUP BY t.customer_id, co.name, DATE(t.start_date)
 """.strip()
             daily_rows = execute_query(sql)
             n_alerts = _apply_institutional_alert_rules(daily_rows)
+            n_companies = len({r["company_id"] for r in daily_rows})
 
             _update_run(
                 run_id, status="DONE", completed_at=dt.datetime.utcnow().isoformat(),
                 row_count=len(daily_rows), result_preview=json.dumps({"alerts_created": n_alerts}, default=str),
             )
-            return {"status": "ok", "report_name": report_name, "companies_checked": len(daily_rows), "alerts_created": n_alerts}
+            return {"status": "ok", "report_name": report_name, "companies_checked": n_companies, "alerts_created": n_alerts}
         except Exception as e:
             logger.exception("Institutional alert check failed: %s", e)
             _update_run(run_id, status="ERROR", completed_at=dt.datetime.utcnow().isoformat(),

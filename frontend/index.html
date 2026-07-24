@@ -3570,6 +3570,26 @@
             </button>
           </div>
 
+          <!-- Filtro + orden -->
+          <div class="flex flex-wrap items-center gap-3 mb-5">
+            <div class="relative flex-1 min-w-[240px]">
+              <input x-model="institutionalClientFilter" type="text"
+                placeholder="Buscar por nombre, company ID o N° documento..."
+                class="w-full bg-slate-800 border border-slate-600 text-slate-200 rounded-lg px-3 py-2 pl-9 text-sm focus:outline-none focus:border-orange-400">
+              <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">🔍</span>
+            </div>
+            <select x-model="institutionalClientSort"
+              class="bg-slate-800 border border-slate-600 text-slate-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-orange-400">
+              <option value="name">Ordenar: Nombre (A-Z)</option>
+              <option value="monto_total_usd">Ordenar: Monto total operado</option>
+              <option value="n_transacciones">Ordenar: Cantidad de transacciones (total)</option>
+              <option value="monto_30d_usd">Ordenar: Monto operado (últimos 30 días)</option>
+              <option value="n_transacciones_30d">Ordenar: Cantidad de transacciones (últimos 30 días)</option>
+            </select>
+            <span x-show="institutionalClientFilter.trim()" class="text-xs text-slate-500 cursor-pointer hover:text-white"
+              @click="institutionalClientFilter=''">✕ Limpiar</span>
+          </div>
+
           <div x-show="institutionalClientsLoading" class="text-center py-12 text-slate-400">
             <span class="spin text-2xl">⏳</span>
           </div>
@@ -3588,12 +3608,13 @@
               <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                 <template x-for="c in group.clients" :key="c.company_id">
                   <div class="bg-slate-800 border rounded-xl p-4" :class="institutionalStatusColor(c.compliance_status).border">
-                    <div class="flex items-start justify-between gap-2 mb-2">
+                    <div class="flex items-start justify-between gap-2 mb-1">
                       <h3 class="text-sm font-semibold text-white line-clamp-2" x-text="c.company_name"></h3>
                       <span class="text-xs px-2 py-0.5 rounded-full font-medium shrink-0"
                         :class="institutionalStatusColor(c.compliance_status).badge"
                         x-text="institutionalStatusLabel(c.compliance_status)"></span>
                     </div>
+                    <p class="text-xs text-slate-600 font-mono mb-1" x-text="'Company ID: ' + c.company_id"></p>
                     <p class="text-xs text-slate-500 mb-1" x-text="(c.identification_type||'ID') + ': ' + (c.identification_number||'—')"></p>
                     <p class="text-xs text-slate-500 mb-3 line-clamp-1" x-text="(c.economic_activity||'—') + ' · ' + (c.industry||'—')"></p>
                     <div class="grid grid-cols-3 gap-2 text-center border-t border-slate-700 pt-3">
@@ -3610,6 +3631,8 @@
                         <p class="text-xs text-slate-500">USD operado</p>
                       </div>
                     </div>
+                    <p class="text-xs text-slate-600 mt-2 pt-2 border-t border-slate-800"
+                      x-text="'Últimos 30d: $' + Number(c.monto_30d_usd||0).toLocaleString('en-US', {maximumFractionDigits:0}) + ' · ' + (c.n_transacciones_30d ?? 0) + ' tx'"></p>
                   </div>
                 </template>
               </div>
@@ -3669,7 +3692,7 @@
         <div x-show="institutionalSubtab==='alertas'">
           <!-- Reglas -->
           <div class="flex items-center justify-between mb-3">
-            <h2 class="text-sm font-semibold text-white">Reglas de umbral diario (USD)</h2>
+            <h2 class="text-sm font-semibold text-white">Reglas de umbral</h2>
             <button @click="openInstitutionalRuleModal()"
               class="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition">+ Nueva regla</button>
           </div>
@@ -3679,7 +3702,7 @@
               <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 flex items-center gap-4">
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-white" x-text="r.company_id ? (r.company_name || ('Cliente ' + r.company_id)) : 'Regla por defecto (todos sin regla propia)'"></p>
-                  <p class="text-xs text-slate-500" x-text="'Umbral: $' + Number(r.umbral_usd||0).toLocaleString('en-US') + ' USD / día'"></p>
+                  <p class="text-xs text-slate-500" x-text="institutionalRuleSummary(r)"></p>
                 </div>
                 <span class="text-xs px-2 py-0.5 rounded-full font-medium" :class="r.enabled ? 'bg-green-900/50 text-green-400' : 'bg-slate-700 text-slate-400'"
                   x-text="r.enabled ? 'Activa' : 'Inactiva'"></span>
@@ -3708,9 +3731,9 @@
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-white" x-text="a.company_name + ' (' + a.company_id + ')'"></p>
                   <p class="text-xs text-slate-500">
-                    <span x-text="a.fecha"></span> — operó
-                    <span class="text-red-400 font-semibold" x-text="'$' + Number(a.monto_dia_usd||0).toLocaleString('en-US')"></span>
-                    vs. umbral de <span x-text="'$' + Number(a.umbral_usd||0).toLocaleString('en-US')"></span>
+                    <span x-text="a.fecha"></span> — <span x-text="institutionalWindowLabel(a.window, a.window_days)"></span>:
+                    <span class="text-red-400 font-semibold" x-text="institutionalFormatMetric(a.metric, a.valor)"></span>
+                    vs. umbral de <span x-text="institutionalFormatMetric(a.metric, a.umbral)"></span>
                   </p>
                 </div>
                 <span class="text-xs px-2 py-0.5 rounded-full font-medium" :class="a.revisado ? 'bg-slate-700 text-slate-400' : 'bg-red-900/60 text-red-300 border border-red-700'"
@@ -3742,9 +3765,34 @@
               </template>
             </select>
           </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Variable</label>
+              <select x-model="institutionalRuleModal.form.metric"
+                class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="monto_usd">Monto operado (USD)</option>
+                <option value="n_transacciones">Cantidad de transacciones</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Ventana</label>
+              <select x-model="institutionalRuleModal.form.window"
+                class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="daily">Acumulado diario</option>
+                <option value="monthly">Acumulado mensual (30d)</option>
+                <option value="custom_days">X días</option>
+              </select>
+            </div>
+          </div>
+          <div x-show="institutionalRuleModal.form.window==='custom_days'">
+            <label class="block text-xs font-medium text-slate-400 mb-1.5">Cantidad de días (máx. 90)</label>
+            <input type="number" min="1" max="90" x-model.number="institutionalRuleModal.form.window_days"
+              class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1.5">Umbral diario (USD)</label>
-            <input type="number" x-model.number="institutionalRuleModal.form.umbral_usd"
+            <label class="block text-xs font-medium text-slate-400 mb-1.5"
+              x-text="institutionalRuleModal.form.metric==='n_transacciones' ? 'Umbral (cantidad de transacciones)' : 'Umbral (USD)'"></label>
+            <input type="number" x-model.number="institutionalRuleModal.form.umbral"
               class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
           </div>
           <div class="flex items-center gap-3">
@@ -4886,6 +4934,8 @@
       institutionalClientsLoading: false,
       institutionalClientsRefreshing: false,
       institutionalClientsRefreshRunId: null,
+      institutionalClientFilter: '',
+      institutionalClientSort: 'name',
       _institutionalRefreshPollTimer: null,
       institutionalTxRunning: false,
       institutionalTxRunId: null,
@@ -5953,10 +6003,30 @@
         };
         return colors[status] || { dot: 'bg-slate-500', border: 'border-slate-700', badge: 'bg-slate-700 text-slate-300' };
       },
+      institutionalFilteredSortedClients() {
+        const q = this.institutionalClientFilter.trim().toLowerCase();
+        let list = this.institutionalClients;
+        if (q) {
+          list = list.filter(c =>
+            String(c.company_name || '').toLowerCase().includes(q) ||
+            String(c.company_id || '').toLowerCase().includes(q) ||
+            String(c.identification_number || '').toLowerCase().includes(q)
+          );
+        }
+        const sortKey = this.institutionalClientSort;
+        list = [...list];
+        if (sortKey === 'name') {
+          list.sort((a, b) => String(a.company_name || '').localeCompare(String(b.company_name || '')));
+        } else {
+          list.sort((a, b) => Number(b[sortKey] || 0) - Number(a[sortKey] || 0));
+        }
+        return list;
+      },
       institutionalStatusGroups() {
+        const filtered = this.institutionalFilteredSortedClients();
         return this.institutionalStatusOrder.map(status => ({
           status,
-          clients: this.institutionalClients.filter(c => (c.compliance_status || '').toUpperCase() === status),
+          clients: filtered.filter(c => (c.compliance_status || '').toUpperCase() === status),
         }));
       },
 
@@ -6038,7 +6108,23 @@
       openInstitutionalRuleModal(rule = null) {
         this.institutionalRuleModal = rule
           ? { open: true, mode: 'edit', ruleId: rule.rule_id, form: { ...rule } }
-          : { open: true, mode: 'create', form: { company_id: '', company_name: '', umbral_usd: 100000, enabled: true } };
+          : { open: true, mode: 'create', form: { company_id: '', company_name: '', metric: 'monto_usd', window: 'daily', window_days: 7, umbral: 100000, enabled: true } };
+      },
+
+      institutionalWindowLabel(window, window_days) {
+        if (window === 'daily') return 'acumulado diario';
+        if (window === 'monthly') return 'acumulado mensual (30d)';
+        if (window === 'custom_days') return `acumulado ${window_days || '?'} días`;
+        return window || '—';
+      },
+      institutionalFormatMetric(metric, value) {
+        const n = Number(value || 0);
+        return metric === 'n_transacciones' ? n.toLocaleString('en-US') + ' tx' : '$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+      },
+      institutionalRuleSummary(rule) {
+        const label = this.institutionalWindowLabel(rule.window, rule.window_days);
+        const metricLabel = rule.metric === 'n_transacciones' ? 'transacciones' : 'monto USD';
+        return `Umbral: ${this.institutionalFormatMetric(rule.metric, rule.umbral)} de ${metricLabel} — ${label}`;
       },
 
       async saveInstitutionalRule() {
