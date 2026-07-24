@@ -72,6 +72,12 @@ except Exception:
     def _trigger_auto_document_requests(*args, **kwargs):  # noqa: ANN001
         return {"triggered": 0, "error": "not importable"}
 
+try:
+    from api_handler import apply_institutional_alert_rules as _apply_institutional_alert_rules
+except Exception:
+    def _apply_institutional_alert_rules(*args, **kwargs):  # noqa: ANN001
+        return 0
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -291,6 +297,12 @@ REPORT_CONFIGS: dict[str, dict] = {
     "crypto_full_bridge_activity": {
         "display_name": "Actividad Completa Bridge (30d)",
         "sql_file": "crypto_full_bridge_activity.sql",
+        "needs_country_filter": False,
+        "needs_since_date": False,
+    },
+    "institutional_active_transactions": {
+        "display_name": "Transacciones Recientes — Clientes Institucionales Activos",
+        "sql_file": "institutional_active_transactions.sql",
         "needs_country_filter": False,
         "needs_since_date": False,
     },
@@ -1435,6 +1447,112 @@ ORDER BY start_date DESC
             return {"status": "ok", "report_name": report_name, "rows": len(rows), "s3_key": key}
         except Exception as e:
             logger.exception("Transaction search failed: %s", e)
+            _update_run(run_id, status="ERROR", completed_at=dt.datetime.utcnow().isoformat(),
+                        error_message=str(e))
+            raise
+        finally:
+            keep_session = event.get("keep_session", False)
+            if AUTO_PAUSE and not keep_session:
+                pause_cluster()
+    # ── Módulo especial: snapshot de clientes institucionales ──────────────
+    # Los valores agregados (beneficiarios, monto, transacciones) quedan
+    # "fijos" en un JSON en S3 — la pestaña Institucional los lee directo
+    # sin tocar Redshift; solo se recalculan cuando un analista aprieta
+    # "Actualizar" (dispara este módulo).
+    if report_name == "institutional_clients_snapshot":
+        try:
+            _update_run(run_id, status="RESUMING")
+            ensure_cluster_available()
+            _update_run(run_id, status="RUNNING")
+
+            sql = """
+WITH inst_tx AS (
+    SELECT
+        t.customer_id,
+        t.transaction_id,
+        t.beneficiary_id,
+        t.destiny_amount_usd
+    FROM "db_prod"."transaction"."transaction" t
+    INNER JOIN "db_prod"."company"."company" co ON co.company_id = t.customer_id
+    WHERE co.institutional = 1
+      AND UPPER(t.tx_status) = 'TRANSFERENCIA_EXITOSA'
+)
+SELECT
+    co.company_id,
+    co.name AS company_name,
+    co.identification_number,
+    co.identification_type,
+    co.compliance_status,
+    co.risk_level,
+    act.name AS economic_activity,
+    ind.name AS industry,
+    COUNT(DISTINCT tx.beneficiary_id) AS n_beneficiarios,
+    COUNT(tx.transaction_id) AS n_transacciones,
+    COALESCE(SUM(tx.destiny_amount_usd), 0) AS monto_total_usd
+FROM "db_prod"."company"."company" co
+LEFT JOIN inst_tx tx ON tx.customer_id = co.company_id
+LEFT JOIN "db_prod"."company"."activity" act ON co.ind_activity = act.id
+LEFT JOIN "db_prod"."company"."industry" ind ON act.industry_id = ind.id
+WHERE co.institutional = 1
+GROUP BY co.company_id, co.name, co.identification_number, co.identification_type,
+         co.compliance_status, co.risk_level, act.name, ind.name
+ORDER BY co.company_id
+""".strip()
+            rows = execute_query(sql)
+
+            snapshot = {
+                "computed_at": dt.datetime.utcnow().isoformat(),
+                "clients": rows,
+            }
+            upload_to_s3(
+                json.dumps(snapshot, default=str).encode("utf-8"),
+                "compliance-data/institutional_clients_snapshot.json",
+                "application/json",
+            )
+
+            _update_run(
+                run_id, status="DONE", completed_at=dt.datetime.utcnow().isoformat(),
+                row_count=len(rows), result_preview=json.dumps(rows[:10], default=str),
+            )
+            return {"status": "ok", "report_name": report_name, "rows": len(rows)}
+        except Exception as e:
+            logger.exception("Institutional clients snapshot failed: %s", e)
+            _update_run(run_id, status="ERROR", completed_at=dt.datetime.utcnow().isoformat(),
+                        error_message=str(e))
+            raise
+        finally:
+            keep_session = event.get("keep_session", False)
+            if AUTO_PAUSE and not keep_session:
+                pause_cluster()
+    # ── Módulo especial: chequeo de alertas de umbral institucional ────────
+    if report_name == "institutional_alert_check":
+        try:
+            _update_run(run_id, status="RESUMING")
+            ensure_cluster_available()
+            _update_run(run_id, status="RUNNING")
+
+            sql = """
+SELECT
+    t.customer_id AS company_id,
+    co.name AS company_name,
+    SUM(t.destiny_amount_usd) AS monto_dia_usd
+FROM "db_prod"."transaction"."transaction" t
+INNER JOIN "db_prod"."company"."company" co ON co.company_id = t.customer_id
+WHERE co.institutional = 1
+  AND UPPER(t.tx_status) = 'TRANSFERENCIA_EXITOSA'
+  AND t.start_date >= DATE_TRUNC('day', CURRENT_DATE)
+GROUP BY t.customer_id, co.name
+""".strip()
+            daily_rows = execute_query(sql)
+            n_alerts = _apply_institutional_alert_rules(daily_rows)
+
+            _update_run(
+                run_id, status="DONE", completed_at=dt.datetime.utcnow().isoformat(),
+                row_count=len(daily_rows), result_preview=json.dumps({"alerts_created": n_alerts}, default=str),
+            )
+            return {"status": "ok", "report_name": report_name, "companies_checked": len(daily_rows), "alerts_created": n_alerts}
+        except Exception as e:
+            logger.exception("Institutional alert check failed: %s", e)
             _update_run(run_id, status="ERROR", completed_at=dt.datetime.utcnow().isoformat(),
                         error_message=str(e))
             raise

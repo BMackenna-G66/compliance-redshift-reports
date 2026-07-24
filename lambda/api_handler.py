@@ -467,6 +467,16 @@ BUILTIN_REPORTS = [
         "is_custom": False,
         "params": [],
     },
+    # ─── Institucional ───────────────────────────────────────────────────────
+    {
+        "report_name": "institutional_active_transactions",
+        "display_name": "Transacciones Recientes — Clientes Institucionales Activos",
+        "description": "Últimas transacciones de clientes institucionales que no están bloqueados ni fully blocked.",
+        "category": "institucional",
+        "category_label": "Institucional",
+        "is_custom": False,
+        "params": [],
+    },
 ]
 
 
@@ -1265,6 +1275,219 @@ def update_schedule_expression(name: str, body: dict):
 
 
 # ---------------------------------------------------------------------------
+# Monitoreo de Clientes Institucionales
+# ---------------------------------------------------------------------------
+INSTITUTIONAL_SNAPSHOT_KEY = "compliance-data/institutional_clients_snapshot.json"
+INSTITUTIONAL_RULES_KEY = "config/institutional_alert_rules.json"
+
+# Orden de severidad para agrupar las mini-fichas — cubre los 6 valores
+# reales de compliance_status vistos en clientes institucionales hoy.
+INSTITUTIONAL_STATUS_ORDER = [
+    "NORMAL", "PENDING_COMPLIANCE", "CUSTOMER_REVIEW",
+    "UNDER_COMPLIANCE_REVIEW", "BLOCKED", "FULLY_BLOCKED",
+]
+
+
+def run_institutional_clients_refresh(body: dict | None = None):
+    """Dispara el recálculo del snapshot de clientes institucionales
+    (beneficiarios, monto total, transacciones). Async — igual patrón que
+    wallet_search: crea un run y lo procesa el Report Runner."""
+    body = body or {}
+    run_id = str(uuid.uuid4())
+    now = dt.datetime.utcnow().isoformat()
+    user_email = str(body.get("user_email", "")).strip()[:200]
+    runs_table.put_item(Item={
+        "run_id": run_id,
+        "report_name": "institutional_clients_snapshot",
+        "status": "RUNNING",
+        "started_at": now,
+        "user_email": user_email,
+        "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
+    })
+    lambda_client.invoke(
+        FunctionName=REPORT_LAMBDA_NAME,
+        InvocationType="Event",
+        Payload=json.dumps({
+            "report_name": "institutional_clients_snapshot",
+            "run_id": run_id,
+            "keep_session": False,
+        }),
+    )
+    return resp(202, {"run_id": run_id, "status": "RUNNING"})
+
+
+def get_institutional_clients():
+    """Lee el snapshot ya calculado (fijo hasta el próximo 'Actualizar') —
+    no toca Redshift, funciona incluso con el clúster pausado."""
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=INSTITUTIONAL_SNAPSHOT_KEY)
+        snapshot = json.loads(obj["Body"].read())
+    except Exception:
+        return resp(200, {"computed_at": None, "clients": [], "never_computed": True})
+
+    order = {s: i for i, s in enumerate(INSTITUTIONAL_STATUS_ORDER)}
+    clients = snapshot.get("clients", [])
+    clients.sort(key=lambda c: (order.get((c.get("compliance_status") or "").upper(), 99), c.get("company_name") or ""))
+    return resp(200, {"computed_at": snapshot.get("computed_at"), "clients": clients})
+
+
+def _load_institutional_rules() -> list[dict]:
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=INSTITUTIONAL_RULES_KEY)
+        return json.loads(obj["Body"].read())
+    except Exception:
+        return []
+
+
+def _save_institutional_rules(rules: list[dict]) -> None:
+    s3.put_object(
+        Bucket=S3_BUCKET, Key=INSTITUTIONAL_RULES_KEY,
+        Body=json.dumps(rules, default=str).encode(), ContentType="application/json",
+    )
+
+
+def get_institutional_rules():
+    return resp(200, {"rules": _load_institutional_rules()})
+
+
+def create_institutional_rule(body: dict):
+    """body: {company_id (opcional — vacío/None = regla default/global
+    para institucionales sin regla propia), company_name, umbral_usd,
+    enabled}."""
+    umbral = body.get("umbral_usd")
+    if umbral is None:
+        return resp(400, {"error": "umbral_usd is required"})
+    company_id = body.get("company_id")
+    rule = {
+        "rule_id": str(uuid.uuid4()),
+        "company_id": company_id if company_id not in (None, "") else None,
+        "company_name": str(body.get("company_name", "")).strip(),
+        "umbral_usd": float(umbral),
+        "enabled": bool(body.get("enabled", True)),
+        "created_at": _now_str(),
+        "updated_at": _now_str(),
+    }
+    rules = _load_institutional_rules()
+    rules.append(rule)
+    _save_institutional_rules(rules)
+    return resp(201, {"rule": rule})
+
+
+def update_institutional_rule(rule_id: str, body: dict):
+    rules = _load_institutional_rules()
+    for r in rules:
+        if r.get("rule_id") == rule_id:
+            for field in ("company_id", "company_name", "umbral_usd", "enabled"):
+                if field in body:
+                    r[field] = body[field]
+            r["updated_at"] = _now_str()
+            _save_institutional_rules(rules)
+            return resp(200, {"rule": r})
+    return resp(404, {"error": "Rule not found"})
+
+
+def delete_institutional_rule(rule_id: str):
+    rules = _load_institutional_rules()
+    new_rules = [r for r in rules if r.get("rule_id") != rule_id]
+    if len(new_rules) == len(rules):
+        return resp(404, {"error": "Rule not found"})
+    _save_institutional_rules(new_rules)
+    return resp(200, {"message": "Regla eliminada"})
+
+
+def apply_institutional_alert_rules(daily_rows: list[dict]) -> int:
+    """Compara el monto acumulado del día de cada cliente institucional
+    contra su regla asignada (o la regla default/global si no tiene una
+    propia) y crea una mini-alerta si se supera el umbral. Deduplica por
+    company_id + fecha — no crea una alerta nueva si ya hay una para ese
+    cliente en el mismo día. Best-effort, nunca debería romper la corrida
+    del reporte que la invoca."""
+    try:
+        rules = _load_institutional_rules()
+        by_company = {r["company_id"]: r for r in rules if r.get("company_id") and r.get("enabled", True)}
+        default_rule = next((r for r in rules if not r.get("company_id") and r.get("enabled", True)), None)
+
+        today = _now_str()[:10]
+        already_alerted = {
+            (a.get("company_id"), a.get("fecha")) for a in _crm_list("institutional_alerts")
+        }
+
+        n_created = 0
+        for row in daily_rows:
+            company_id = row.get("company_id")
+            monto = float(row.get("monto_dia_usd") or 0)
+            rule = by_company.get(company_id) or default_rule
+            if not rule:
+                continue
+            umbral = float(rule.get("umbral_usd", 0))
+            if monto <= umbral or (company_id, today) in already_alerted:
+                continue
+
+            aid = str(uuid.uuid4())
+            _crm_put("institutional_alerts", aid, {
+                "alert_id": aid,
+                "company_id": company_id,
+                "company_name": row.get("company_name", ""),
+                "fecha": today,
+                "monto_dia_usd": monto,
+                "umbral_usd": umbral,
+                "rule_id": rule.get("rule_id", ""),
+                "revisado": False,
+                "created_at": _now_str(),
+            })
+            n_created += 1
+        return n_created
+    except Exception:
+        return 0
+
+
+def run_institutional_alert_check(body: dict | None = None):
+    """Dispara la revisión de umbral diario de todos los institucionales.
+    Async — mismo patrón que el resto de los módulos que necesitan
+    Redshift (puede tardar en encender el clúster)."""
+    body = body or {}
+    run_id = str(uuid.uuid4())
+    now = dt.datetime.utcnow().isoformat()
+    user_email = str(body.get("user_email", "")).strip()[:200]
+    runs_table.put_item(Item={
+        "run_id": run_id,
+        "report_name": "institutional_alert_check",
+        "status": "RUNNING",
+        "started_at": now,
+        "user_email": user_email,
+        "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
+    })
+    lambda_client.invoke(
+        FunctionName=REPORT_LAMBDA_NAME,
+        InvocationType="Event",
+        Payload=json.dumps({
+            "report_name": "institutional_alert_check",
+            "run_id": run_id,
+            "keep_session": False,
+        }),
+    )
+    return resp(202, {"run_id": run_id, "status": "RUNNING"})
+
+
+def get_institutional_alerts():
+    alerts = _crm_list("institutional_alerts")
+    alerts.sort(key=lambda a: a.get("created_at", ""), reverse=True)
+    return resp(200, {"alerts": alerts})
+
+
+def review_institutional_alert(alert_id: str, body: dict | None = None):
+    body = body or {}
+    updated = _crm_update("institutional_alerts", alert_id, {
+        "revisado": True,
+        "reviewed_by": str(body.get("reviewed_by", "")).strip(),
+        "reviewed_at": _now_str(),
+    })
+    if updated is None:
+        return resp(404, {"error": f"Alert '{alert_id}' not found"})
+    return resp(200, {"alert": updated})
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 # Admin — verifica capacidad de escritura en S3 (diagnóstico de permisos)
@@ -1549,6 +1772,36 @@ def handler(event, context):  # noqa: ARG001
         # POST /search/wallet
         if method == "POST" and parts == ["search", "wallet"]:
             return run_wallet_search(body)
+
+        # ── Institucional ────────────────────────────────────────────────
+        # GET  /institutional/clients
+        if method == "GET" and parts == ["institutional", "clients"]:
+            return get_institutional_clients()
+        # POST /institutional/clients/refresh
+        if method == "POST" and parts == ["institutional", "clients", "refresh"]:
+            return run_institutional_clients_refresh(body)
+        # GET  /institutional/rules
+        if method == "GET" and parts == ["institutional", "rules"]:
+            return get_institutional_rules()
+        # POST /institutional/rules
+        if method == "POST" and parts == ["institutional", "rules"]:
+            return create_institutional_rule(body)
+        # PUT|POST /institutional/rules/{id}
+        if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "institutional" and parts[1] == "rules":
+            return update_institutional_rule(parts[2], body)
+        # DELETE /institutional/rules/{id}
+        if method == "DELETE" and len(parts) == 3 and parts[0] == "institutional" and parts[1] == "rules":
+            return delete_institutional_rule(parts[2])
+        # GET  /institutional/alerts
+        if method == "GET" and parts == ["institutional", "alerts"]:
+            return get_institutional_alerts()
+        # POST /institutional/alerts/check
+        if method == "POST" and parts == ["institutional", "alerts", "check"]:
+            return run_institutional_alert_check(body)
+        # POST /institutional/alerts/{id} — marca revisada (debe ir DESPUÉS
+        # de /institutional/alerts/check para no interceptarla)
+        if method == "POST" and len(parts) == 3 and parts[0] == "institutional" and parts[1] == "alerts":
+            return review_institutional_alert(parts[2], body)
 
         # POST /cluster/wake
         if method == "POST" and parts == ["cluster", "wake"]:

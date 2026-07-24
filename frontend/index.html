@@ -259,6 +259,14 @@
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             🔎 Búsqueda
           </button>
+          <button @click="switchTab('institucional'); loadInstitutionalClients(); loadInstitutionalRules(); loadInstitutionalAlerts()"
+            :class="activeTab==='institucional' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
+            🏛️ Institucional
+            <span x-show="institutionalAlerts.filter(a=>!a.revisado).length > 0"
+              class="text-xs bg-red-600 text-white rounded-full px-1.5 py-0.5 leading-none"
+              x-text="institutionalAlerts.filter(a=>!a.revisado).length"></span>
+          </button>
           <!-- Admin tab: only for admins -->
           <button x-show="isAdmin()" @click="switchTab('admin'); loadAdminUsers()"
             :class="activeTab==='admin' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
@@ -3524,6 +3532,237 @@
         </div>
       </div>
 
+      <!-- ===== TAB: INSTITUCIONAL ===== -->
+      <div x-show="activeTab==='institucional'" x-cloak class="max-w-7xl mx-auto">
+        <div class="flex items-center justify-between mb-6">
+          <h1 class="text-xl font-bold text-white">🏛️ Monitoreo Institucional</h1>
+        </div>
+
+        <!-- Sub-tabs -->
+        <div class="flex items-center gap-1 mb-6 bg-slate-800 border border-slate-700 rounded-lg p-1 w-fit">
+          <button @click="institutionalSubtab='clientes'"
+            :class="institutionalSubtab==='clientes' ? 'bg-orange-600 text-white' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-2 text-sm font-medium rounded-md transition">👥 Clientes</button>
+          <button @click="institutionalSubtab='transacciones'"
+            :class="institutionalSubtab==='transacciones' ? 'bg-orange-600 text-white' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-2 text-sm font-medium rounded-md transition">💸 Transacciones Recientes</button>
+          <button @click="institutionalSubtab='alertas'"
+            :class="institutionalSubtab==='alertas' ? 'bg-orange-600 text-white' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-2 text-sm font-medium rounded-md transition flex items-center gap-1.5">
+            🚨 Alertas de Umbral
+            <span x-show="institutionalAlerts.filter(a=>!a.revisado).length > 0"
+              class="text-xs bg-red-600 text-white rounded-full px-1.5 py-0.5 leading-none"
+              x-text="institutionalAlerts.filter(a=>!a.revisado).length"></span>
+          </button>
+        </div>
+
+        <!-- ───────── SUBTAB: CLIENTES (mini-fichas) ───────── -->
+        <div x-show="institutionalSubtab==='clientes'">
+          <div class="flex items-center justify-between mb-5">
+            <p class="text-xs text-slate-500">
+              Última actualización:
+              <span x-text="institutionalClientsComputedAt ? new Date(institutionalClientsComputedAt).toLocaleString('es-CL') : 'nunca — presiona Actualizar'"></span>
+            </p>
+            <button @click="refreshInstitutionalClients()" :disabled="institutionalClientsRefreshing"
+              class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-semibold rounded-lg transition disabled:opacity-50 flex items-center gap-2">
+              <span :class="institutionalClientsRefreshing ? 'spin' : ''">↻</span>
+              <span x-text="institutionalClientsRefreshing ? 'Actualizando...' : 'Actualizar'"></span>
+            </button>
+          </div>
+
+          <div x-show="institutionalClientsLoading" class="text-center py-12 text-slate-400">
+            <span class="spin text-2xl">⏳</span>
+          </div>
+          <div x-show="!institutionalClientsLoading && institutionalClients.length===0" class="text-center py-16 text-slate-500">
+            <div class="text-4xl mb-3">🏛️</div>
+            <p>Sin datos aún — presiona "Actualizar" para calcular la primera foto.</p>
+          </div>
+
+          <template x-for="group in institutionalStatusGroups()" :key="group.status">
+            <div x-show="group.clients.length > 0" class="mb-8">
+              <h2 class="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full" :class="institutionalStatusColor(group.status).dot"></span>
+                <span x-text="institutionalStatusLabel(group.status)"></span>
+                <span class="text-xs text-slate-500 font-normal" x-text="'(' + group.clients.length + ')'"></span>
+              </h2>
+              <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                <template x-for="c in group.clients" :key="c.company_id">
+                  <div class="bg-slate-800 border rounded-xl p-4" :class="institutionalStatusColor(c.compliance_status).border">
+                    <div class="flex items-start justify-between gap-2 mb-2">
+                      <h3 class="text-sm font-semibold text-white line-clamp-2" x-text="c.company_name"></h3>
+                      <span class="text-xs px-2 py-0.5 rounded-full font-medium shrink-0"
+                        :class="institutionalStatusColor(c.compliance_status).badge"
+                        x-text="institutionalStatusLabel(c.compliance_status)"></span>
+                    </div>
+                    <p class="text-xs text-slate-500 mb-1" x-text="(c.identification_type||'ID') + ': ' + (c.identification_number||'—')"></p>
+                    <p class="text-xs text-slate-500 mb-3 line-clamp-1" x-text="(c.economic_activity||'—') + ' · ' + (c.industry||'—')"></p>
+                    <div class="grid grid-cols-3 gap-2 text-center border-t border-slate-700 pt-3">
+                      <div>
+                        <p class="text-sm font-bold text-white" x-text="c.n_beneficiarios ?? 0"></p>
+                        <p class="text-xs text-slate-500">Beneficiarios</p>
+                      </div>
+                      <div>
+                        <p class="text-sm font-bold text-white" x-text="c.n_transacciones ?? 0"></p>
+                        <p class="text-xs text-slate-500">Transacciones</p>
+                      </div>
+                      <div>
+                        <p class="text-sm font-bold text-white" x-text="'$' + Number(c.monto_total_usd||0).toLocaleString('en-US', {maximumFractionDigits:0})"></p>
+                        <p class="text-xs text-slate-500">USD operado</p>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- ───────── SUBTAB: TRANSACCIONES RECIENTES ───────── -->
+        <div x-show="institutionalSubtab==='transacciones'">
+          <p class="text-xs text-slate-500 mb-4">Últimas transacciones de clientes institucionales activos (no bloqueados ni fully blocked).</p>
+          <div class="flex items-center gap-3 mb-4">
+            <button @click="runInstitutionalTransactions()" :disabled="institutionalTxRunning"
+              class="px-6 py-2.5 bg-orange-600 hover:bg-orange-500 text-white text-sm font-semibold rounded-lg transition disabled:opacity-50 flex items-center gap-2">
+              <span x-show="!institutionalTxRunning">▶ Ejecutar</span>
+              <span x-show="institutionalTxRunning" class="flex items-center gap-2"><span class="spin">⏳</span> Ejecutando...</span>
+            </button>
+            <a x-show="institutionalTxResult?.download_url" :href="institutionalTxResult?.download_url"
+              class="px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-lg transition">⬇ Descargar Excel</a>
+          </div>
+
+          <div x-show="institutionalTxError" class="bg-red-900/40 border border-red-700 rounded-xl p-4 mb-4 text-red-300 text-sm" x-text="institutionalTxError"></div>
+
+          <div x-show="institutionalTxResult" class="mb-4 bg-slate-800/50 rounded-lg p-3 text-xs text-slate-400">
+            <span class="text-slate-300 font-medium" x-text="(institutionalTxResult?.row_count ?? 0).toLocaleString()"></span> transacciones encontradas —
+            mostrando las primeras <span x-text="institutionalTxRows.length"></span> (descarga el Excel para el total).
+          </div>
+
+          <div x-show="institutionalTxRows.length > 0" class="overflow-x-auto rounded-xl border border-slate-700">
+            <table class="w-full text-xs">
+              <thead class="bg-slate-800 border-b border-slate-700">
+                <tr>
+                  <th class="text-left px-3 py-2 text-slate-400 font-medium">Empresa</th>
+                  <th class="text-left px-3 py-2 text-slate-400 font-medium">Estado</th>
+                  <th class="text-left px-3 py-2 text-slate-400 font-medium">Fecha</th>
+                  <th class="text-left px-3 py-2 text-slate-400 font-medium">Beneficiario</th>
+                  <th class="text-left px-3 py-2 text-slate-400 font-medium">Monto USD</th>
+                  <th class="text-left px-3 py-2 text-slate-400 font-medium">Estado Tx</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(row, idx) in institutionalTxRows" :key="idx">
+                  <tr class="border-b border-slate-800 hover:bg-slate-800/50">
+                    <td class="px-3 py-2 text-white" x-text="row.company_name"></td>
+                    <td class="px-3 py-2 text-slate-400" x-text="row.compliance_status"></td>
+                    <td class="px-3 py-2 text-slate-400 whitespace-nowrap" x-text="row.start_date"></td>
+                    <td class="px-3 py-2 text-slate-400" x-text="row.beneficiary_name"></td>
+                    <td class="px-3 py-2 text-slate-300" x-text="row.destiny_amount_usd"></td>
+                    <td class="px-3 py-2 text-slate-500" x-text="row.tx_status"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ───────── SUBTAB: ALERTAS DE UMBRAL ───────── -->
+        <div x-show="institutionalSubtab==='alertas'">
+          <!-- Reglas -->
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-white">Reglas de umbral diario (USD)</h2>
+            <button @click="openInstitutionalRuleModal()"
+              class="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition">+ Nueva regla</button>
+          </div>
+          <div class="space-y-2 mb-8">
+            <div x-show="institutionalRules.length===0" class="text-center py-6 text-slate-600 text-sm">Sin reglas configuradas — sin una regla, no se generan alertas.</div>
+            <template x-for="r in institutionalRules" :key="r.rule_id">
+              <div class="bg-slate-800 border border-slate-700 rounded-xl p-3 flex items-center gap-4">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium text-white" x-text="r.company_id ? (r.company_name || ('Cliente ' + r.company_id)) : 'Regla por defecto (todos sin regla propia)'"></p>
+                  <p class="text-xs text-slate-500" x-text="'Umbral: $' + Number(r.umbral_usd||0).toLocaleString('en-US') + ' USD / día'"></p>
+                </div>
+                <span class="text-xs px-2 py-0.5 rounded-full font-medium" :class="r.enabled ? 'bg-green-900/50 text-green-400' : 'bg-slate-700 text-slate-400'"
+                  x-text="r.enabled ? 'Activa' : 'Inactiva'"></span>
+                <div class="flex gap-2 shrink-0">
+                  <button @click="openInstitutionalRuleModal(r)" class="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition">✏️</button>
+                  <button @click="deleteInstitutionalRule(r.rule_id)" class="text-xs px-2 py-1 bg-red-900/40 hover:bg-red-800/60 text-red-400 rounded-lg transition">🗑</button>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Alertas -->
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-white">Alertas generadas</h2>
+            <button @click="runInstitutionalAlertCheck()" :disabled="institutionalAlertCheckRunning"
+              class="text-xs px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg transition disabled:opacity-50 flex items-center gap-2">
+              <span x-show="!institutionalAlertCheckRunning">🔍 Revisar alertas de hoy</span>
+              <span x-show="institutionalAlertCheckRunning" class="flex items-center gap-2"><span class="spin">⏳</span> Revisando...</span>
+            </button>
+          </div>
+          <div class="space-y-2">
+            <div x-show="institutionalAlerts.length===0" class="text-center py-10 text-slate-600 text-sm">Sin alertas — presiona "Revisar alertas de hoy".</div>
+            <template x-for="a in institutionalAlerts" :key="a.alert_id">
+              <div class="bg-slate-800 border rounded-xl p-3 flex items-center gap-4"
+                :class="a.revisado ? 'border-slate-700' : 'border-red-700/60 bg-red-900/10'">
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm font-medium text-white" x-text="a.company_name + ' (' + a.company_id + ')'"></p>
+                  <p class="text-xs text-slate-500">
+                    <span x-text="a.fecha"></span> — operó
+                    <span class="text-red-400 font-semibold" x-text="'$' + Number(a.monto_dia_usd||0).toLocaleString('en-US')"></span>
+                    vs. umbral de <span x-text="'$' + Number(a.umbral_usd||0).toLocaleString('en-US')"></span>
+                  </p>
+                </div>
+                <span class="text-xs px-2 py-0.5 rounded-full font-medium" :class="a.revisado ? 'bg-slate-700 text-slate-400' : 'bg-red-900/60 text-red-300 border border-red-700'"
+                  x-text="a.revisado ? 'Revisada' : 'Sin revisar'"></span>
+                <button x-show="!a.revisado" @click="reviewInstitutionalAlert(a.alert_id)"
+                  class="text-xs px-3 py-1.5 bg-green-700 hover:bg-green-600 text-white rounded-lg transition shrink-0">✓ Marcar revisada</button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- Rule modal (Institucional) -->
+      <div x-show="institutionalRuleModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="institutionalRuleModal.open=false"></div>
+        <div class="relative bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-white font-semibold" x-text="institutionalRuleModal.mode==='create' ? 'Nueva regla de umbral' : 'Editar regla'"></h3>
+            <button @click="institutionalRuleModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none transition">×</button>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1.5">Cliente (company_id) — vacío = regla por defecto</label>
+            <select x-model="institutionalRuleModal.form.company_id"
+              class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="">— Regla por defecto (todos sin regla propia) —</option>
+              <template x-for="c in institutionalClients" :key="c.company_id">
+                <option :value="c.company_id" x-text="c.company_name + ' (' + c.company_id + ')'"
+                  @click="institutionalRuleModal.form.company_name = c.company_name"></option>
+              </template>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1.5">Umbral diario (USD)</label>
+            <input type="number" x-model.number="institutionalRuleModal.form.umbral_usd"
+              class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+          <div class="flex items-center gap-3">
+            <label class="text-xs text-slate-400">Activa</label>
+            <button @click="institutionalRuleModal.form.enabled = !institutionalRuleModal.form.enabled"
+              :class="institutionalRuleModal.form.enabled ? 'bg-green-600' : 'bg-slate-600'"
+              class="relative w-10 h-5 rounded-full transition">
+              <span :class="institutionalRuleModal.form.enabled ? 'translate-x-5' : 'translate-x-1'"
+                class="absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform block"></span>
+            </button>
+          </div>
+          <div class="flex gap-3 pt-2">
+            <button @click="saveInstitutionalRule()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium py-2 rounded-xl transition">Guardar</button>
+            <button @click="institutionalRuleModal.open=false" class="px-4 py-2 text-slate-400 hover:text-white text-sm transition">Cancelar</button>
+          </div>
+        </div>
+      </div>
+
       <div x-show="activeTab==='pendientes' && hasModule('pendientes')" x-cloak class="p-6 max-w-4xl mx-auto">
         <div class="flex items-center justify-between mb-6">
           <div>
@@ -4640,6 +4879,27 @@
       walletSearchStatusMsg: 'Iniciando búsqueda...',
       _txSearchPollTimer: null,
 
+      // Institucional
+      institutionalSubtab: 'clientes',
+      institutionalClients: [],
+      institutionalClientsComputedAt: null,
+      institutionalClientsLoading: false,
+      institutionalClientsRefreshing: false,
+      institutionalClientsRefreshRunId: null,
+      _institutionalRefreshPollTimer: null,
+      institutionalTxRunning: false,
+      institutionalTxRunId: null,
+      institutionalTxResult: null,
+      institutionalTxRows: [],
+      institutionalTxError: null,
+      _institutionalTxPollTimer: null,
+      institutionalRules: [],
+      institutionalRuleModal: { open: false, mode: 'create', form: { company_id: '', company_name: '', umbral_usd: 100000, enabled: true } },
+      institutionalAlerts: [],
+      institutionalAlertCheckRunning: false,
+      institutionalAlertCheckRunId: null,
+      _institutionalAlertCheckPollTimer: null,
+
       // Análisis Individual AML — Paso 4: Conclusión
       paso4TxRows: [],
       paso4TxFileName: '',
@@ -5669,6 +5929,168 @@
           return;
         }
         this._walletSearchPollTimer = setTimeout(() => this._pollWalletSearchRun(), 5000);
+      },
+
+      // -----------------------------------------------
+      // INSTITUCIONAL
+      // -----------------------------------------------
+      institutionalStatusOrder: ['NORMAL', 'PENDING_COMPLIANCE', 'CUSTOMER_REVIEW', 'UNDER_COMPLIANCE_REVIEW', 'BLOCKED', 'FULLY_BLOCKED'],
+      institutionalStatusLabel(status) {
+        const labels = {
+          NORMAL: 'Normal', PENDING_COMPLIANCE: 'Compliance Pendiente', CUSTOMER_REVIEW: 'Revisión de Cliente',
+          UNDER_COMPLIANCE_REVIEW: 'Bajo Revisión de Compliance', BLOCKED: 'Bloqueado', FULLY_BLOCKED: 'Totalmente Bloqueado',
+        };
+        return labels[status] || status || '—';
+      },
+      institutionalStatusColor(status) {
+        const colors = {
+          NORMAL:                   { dot: 'bg-teal-400',   border: 'border-teal-700/50',   badge: 'bg-teal-900/50 text-teal-300 border border-teal-700' },
+          PENDING_COMPLIANCE:        { dot: 'bg-blue-400',   border: 'border-blue-700/50',   badge: 'bg-blue-900/50 text-blue-300 border border-blue-700' },
+          CUSTOMER_REVIEW:           { dot: 'bg-blue-400',   border: 'border-blue-700/50',   badge: 'bg-blue-900/50 text-blue-300 border border-blue-700' },
+          UNDER_COMPLIANCE_REVIEW:   { dot: 'bg-amber-400',  border: 'border-amber-700/50',  badge: 'bg-amber-900/50 text-amber-300 border border-amber-700' },
+          BLOCKED:                   { dot: 'bg-red-400',    border: 'border-red-700/50',    badge: 'bg-red-900/50 text-red-300 border border-red-700' },
+          FULLY_BLOCKED:             { dot: 'bg-red-500',    border: 'border-red-800',       badge: 'bg-red-950/60 text-red-300 border border-red-800' },
+        };
+        return colors[status] || { dot: 'bg-slate-500', border: 'border-slate-700', badge: 'bg-slate-700 text-slate-300' };
+      },
+      institutionalStatusGroups() {
+        return this.institutionalStatusOrder.map(status => ({
+          status,
+          clients: this.institutionalClients.filter(c => (c.compliance_status || '').toUpperCase() === status),
+        }));
+      },
+
+      async loadInstitutionalClients() {
+        this.institutionalClientsLoading = true;
+        const d = await this.api('GET', '/institutional/clients');
+        this.institutionalClients = d?.clients || [];
+        this.institutionalClientsComputedAt = d?.computed_at || null;
+        this.institutionalClientsLoading = false;
+      },
+
+      async refreshInstitutionalClients() {
+        this.institutionalClientsRefreshing = true;
+        const d = await this.api('POST', '/institutional/clients/refresh', { user_email: this.currentUserEmail });
+        if (!d?.run_id) { this.institutionalClientsRefreshing = false; return; }
+        this.institutionalClientsRefreshRunId = d.run_id;
+        this._pollInstitutionalRefresh();
+      },
+
+      async _pollInstitutionalRefresh() {
+        if (!this.institutionalClientsRefreshRunId) return;
+        const run = await this.api('GET', '/runs/' + this.institutionalClientsRefreshRunId);
+        if (!run) { this.institutionalClientsRefreshing = false; return; }
+        if (run.status === 'DONE') {
+          this.institutionalClientsRefreshing = false;
+          await this.loadInstitutionalClients();
+          return;
+        }
+        if (run.status === 'ERROR') {
+          this.institutionalClientsRefreshing = false;
+          alert('No se pudo actualizar: ' + (run.error_message || 'error desconocido'));
+          return;
+        }
+        this._institutionalRefreshPollTimer = setTimeout(() => this._pollInstitutionalRefresh(), 5000);
+      },
+
+      async runInstitutionalTransactions() {
+        this.institutionalTxRunning = true;
+        this.institutionalTxError = null;
+        this.institutionalTxResult = null;
+        this.institutionalTxRows = [];
+        const d = await this.api('POST', '/execute', {
+          report_name: 'institutional_active_transactions',
+          keep_session: false,
+          user_email: this.currentUserEmail,
+        });
+        if (!d?.run_id) {
+          this.institutionalTxRunning = false;
+          this.institutionalTxError = d?.error || 'No se pudo iniciar la ejecución.';
+          return;
+        }
+        this.institutionalTxRunId = d.run_id;
+        this._pollInstitutionalTx();
+      },
+
+      async _pollInstitutionalTx() {
+        if (!this.institutionalTxRunId) return;
+        const run = await this.api('GET', '/runs/' + this.institutionalTxRunId);
+        if (!run) { this.institutionalTxRunning = false; this.institutionalTxError = 'Error al consultar estado.'; return; }
+        if (run.status === 'DONE') {
+          this.institutionalTxRunning = false;
+          this.institutionalTxResult = run;
+          try { this.institutionalTxRows = JSON.parse(run.result_preview || '[]'); } catch (e) { this.institutionalTxRows = []; }
+          return;
+        }
+        if (run.status === 'ERROR') {
+          this.institutionalTxRunning = false;
+          this.institutionalTxError = run.error_message || 'La ejecución falló.';
+          return;
+        }
+        this._institutionalTxPollTimer = setTimeout(() => this._pollInstitutionalTx(), 5000);
+      },
+
+      async loadInstitutionalRules() {
+        const d = await this.api('GET', '/institutional/rules');
+        this.institutionalRules = d?.rules || [];
+      },
+
+      openInstitutionalRuleModal(rule = null) {
+        this.institutionalRuleModal = rule
+          ? { open: true, mode: 'edit', ruleId: rule.rule_id, form: { ...rule } }
+          : { open: true, mode: 'create', form: { company_id: '', company_name: '', umbral_usd: 100000, enabled: true } };
+      },
+
+      async saveInstitutionalRule() {
+        const f = this.institutionalRuleModal.form;
+        if (this.institutionalRuleModal.mode === 'create') {
+          await this.api('POST', '/institutional/rules', f);
+        } else {
+          await this.api('POST', `/institutional/rules/${this.institutionalRuleModal.ruleId}`, f);
+        }
+        this.institutionalRuleModal = { open: false };
+        await this.loadInstitutionalRules();
+      },
+
+      async deleteInstitutionalRule(ruleId) {
+        if (!confirm('¿Eliminar esta regla?')) return;
+        await this.api('DELETE', '/institutional/rules/' + ruleId);
+        await this.loadInstitutionalRules();
+      },
+
+      async loadInstitutionalAlerts() {
+        const d = await this.api('GET', '/institutional/alerts');
+        this.institutionalAlerts = d?.alerts || [];
+      },
+
+      async runInstitutionalAlertCheck() {
+        this.institutionalAlertCheckRunning = true;
+        const d = await this.api('POST', '/institutional/alerts/check', { user_email: this.currentUserEmail });
+        if (!d?.run_id) { this.institutionalAlertCheckRunning = false; return; }
+        this.institutionalAlertCheckRunId = d.run_id;
+        this._pollInstitutionalAlertCheck();
+      },
+
+      async _pollInstitutionalAlertCheck() {
+        if (!this.institutionalAlertCheckRunId) return;
+        const run = await this.api('GET', '/runs/' + this.institutionalAlertCheckRunId);
+        if (!run) { this.institutionalAlertCheckRunning = false; return; }
+        if (run.status === 'DONE') {
+          this.institutionalAlertCheckRunning = false;
+          await this.loadInstitutionalAlerts();
+          return;
+        }
+        if (run.status === 'ERROR') {
+          this.institutionalAlertCheckRunning = false;
+          alert('No se pudo revisar: ' + (run.error_message || 'error desconocido'));
+          return;
+        }
+        this._institutionalAlertCheckPollTimer = setTimeout(() => this._pollInstitutionalAlertCheck(), 5000);
+      },
+
+      async reviewInstitutionalAlert(alertId) {
+        await this.api('POST', `/institutional/alerts/${alertId}`, { reviewed_by: this.currentUserEmail });
+        await this.loadInstitutionalAlerts();
       },
 
       // -----------------------------------------------
