@@ -2919,9 +2919,15 @@
           </div>
         </div>
         <!-- Checklist de documentos solicitados -->
-        <div class="mb-6" x-show="(activeCase.documentos_checklist || []).length > 0">
-          <span class="text-xs text-slate-500 block mb-3">Documentos solicitados</span>
-          <div class="space-y-1.5">
+        <div class="mb-6">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs text-slate-500">Documentos solicitados</span>
+            <button @click="openResendEmailFromCase()"
+              class="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-900/40 hover:bg-indigo-800/60 border border-indigo-800 text-indigo-300 text-xs font-medium rounded-lg transition">
+              ✉️ Reenviar correo
+            </button>
+          </div>
+          <div class="space-y-1.5" x-show="(activeCase.documentos_checklist || []).length > 0">
             <template x-for="item in (activeCase.documentos_checklist || [])" :key="item.categoria">
               <button @click="cycleCaseDocumentChecklist(item.categoria, item.estado || 'pendiente')"
                 class="w-full flex items-center gap-2 cursor-pointer bg-slate-700/50 hover:bg-slate-700 rounded-lg px-3 py-2 transition text-left">
@@ -3204,7 +3210,25 @@
             class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-slate-300 mb-2">Documentos a pedir</label>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Plantilla de correo</label>
+          <select x-model="docRequestModal.template_key"
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+            <template x-for="t in emailTemplates" :key="t.key">
+              <option :value="t.key" x-text="t.label"></option>
+            </template>
+          </select>
+          <p class="text-xs text-slate-500 mt-1"
+            x-show="(emailTemplates.find(t => t.key === docRequestModal.template_key) || {}).has_attachment">
+            📎 Esta plantilla adjunta automáticamente su formulario correspondiente.
+          </p>
+        </div>
+        <div x-show="(emailTemplates.find(t => t.key === docRequestModal.template_key) || {}).requires_custom_text">
+          <label class="block text-sm font-medium text-slate-300 mb-1">Texto del correo</label>
+          <textarea x-model="docRequestModal.texto_libre" rows="4" placeholder="Escribí el contenido del correo..."
+            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"></textarea>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-2">Documentos a pedir (checklist del caso)</label>
           <div class="space-y-2">
             <template x-for="doc in docCategoriesAll" :key="doc">
               <label class="flex items-center gap-2 cursor-pointer">
@@ -4827,7 +4851,13 @@
 
       // Solicitud manual de documentos
       docCategoriesAll: ['Origen de fondo', 'Comprobantes/Soporte', 'Relación/Beneficiario', 'Domicilio', 'Identidad/Datos personales'],
-      docRequestModal: { open: false, entity_type: 'customer', entity_id: '', nombre: '', correo: '', prioridad: 'P3', alerta: '', documentos: [], sending: false, error: '', case_id: '' },
+      docRequestModal: { open: false, entity_type: 'customer', entity_id: '', nombre: '', correo: '', prioridad: 'P3', alerta: '', documentos: [], sending: false, error: '', case_id: '', template_key: 'general_b2c', texto_libre: '' },
+      emailTemplates: [
+        { key: 'texto_libre', label: 'Texto libre', has_attachment: false, requires_custom_text: true },
+        { key: 'general_b2c', label: 'Solicitud de documentos — B2C general', has_attachment: true, requires_custom_text: false },
+        { key: 'argentina_b2c', label: 'Solicitud de documentos — B2C Argentina', has_attachment: true, requires_custom_text: false },
+        { key: 'b2b_generico', label: 'Solicitud de documentos — B2B genérico', has_attachment: true, requires_custom_text: false },
+      ],
 
       // Mantenedor de documentos por alerta
       alertDocConfigList: [],
@@ -5051,6 +5081,7 @@
       activeCaseNotes: [],
       activeCaseAlerts: [],
       activeCaseAttachments: [],
+      activeCaseLastDocRequest: null,
       caseAttachmentUploading: false,
       caseAttachmentError: '',
       newCaseNote: '',
@@ -5158,6 +5189,7 @@
           this.loadCases(),
           this.loadClusterStatus(),
           this.loadPendientes(),
+          this.loadEmailTemplates(),
           ...(this.isAdmin() ? [this.loadAdminUsers()] : []),
         ]);
 
@@ -6323,6 +6355,8 @@
           sending: false,
           error: '',
           case_id: '',
+          template_key: compKey ? 'b2b_generico' : 'general_b2c',
+          texto_libre: '',
         };
       },
 
@@ -6333,6 +6367,11 @@
         }
         if (this.docRequestModal.documentos.length === 0) {
           this.docRequestModal.error = 'Elegí al menos un documento.';
+          return;
+        }
+        const tpl = this.emailTemplates.find(t => t.key === this.docRequestModal.template_key);
+        if (tpl?.requires_custom_text && !this.docRequestModal.texto_libre.trim()) {
+          this.docRequestModal.error = 'Escribí el contenido del correo (plantilla de texto libre).';
           return;
         }
         this.docRequestModal.sending = true;
@@ -6346,10 +6385,13 @@
           alerta: this.docRequestModal.alerta,
           documentos: this.docRequestModal.documentos,
           case_id: this.docRequestModal.case_id,
+          template_key: this.docRequestModal.template_key,
+          texto_libre: this.docRequestModal.texto_libre,
         });
         this.docRequestModal.sending = false;
         if (d?.case_id) {
           this.docRequestModal.open = false;
+          if (this.activeCase.case_id === d.case_id) await this.openCaseDetail(d.case_id);
         } else if (d?.error) {
           this.docRequestModal.error = d.error;
         }
@@ -7153,6 +7195,13 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         this.crmUsers = d?.users || [];
       },
 
+      async loadEmailTemplates() {
+        try {
+          const d = await this.api('GET', '/email-templates');
+          if (d?.templates?.length) this.emailTemplates = d.templates;
+        } catch(_) { /* se queda con el catálogo hardcodeado por defecto */ }
+      },
+
       async deleteAlert(alert_id) {
         if (!confirm('¿Eliminar definitivamente este registro?')) return;
         await this.api('DELETE', '/alerts/' + alert_id);
@@ -7187,6 +7236,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         this.activeCaseNotes = [];
         this.activeCaseAlerts = [];
         this.activeCaseAttachments = [];
+        this.activeCaseLastDocRequest = null;
         this.caseAttachmentError = '';
         this.newCaseNote = '';
         this.activeCaseAI = '';
@@ -7198,7 +7248,30 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           this.activeCaseNotes = d.notes || [];
           this.activeCaseAlerts = d.alerts || [];
           this.activeCaseAttachments = d.case.attachments || [];
+          this.activeCaseLastDocRequest = d.last_document_request || null;
         }
+      },
+
+      openResendEmailFromCase() {
+        const c = this.activeCase;
+        const last = this.activeCaseLastDocRequest;
+        const isCompany = c.entity_type === 'company';
+        this.docRequestModal = {
+          open: true,
+          entity_type: c.entity_type || 'customer',
+          entity_id: c.entity_id ? String(c.entity_id) : '',
+          nombre: (last && last.nombre_completo) || '',
+          correo: (last && last.correo) || '',
+          prioridad: (c.priority === 'high' ? 'P1' : c.priority === 'medium' ? 'P2' : 'P3'),
+          alerta: c.report_name || '',
+          documentos: (c.documentos_checklist || []).map(item => item.categoria).filter(Boolean),
+          sending: false,
+          error: '',
+          case_id: c.case_id || '',
+          template_key: (last && last.template_key) || (isCompany ? 'b2b_generico' : 'general_b2c'),
+          texto_libre: '',
+        };
+        if (this.docRequestModal.documentos.length === 0) this.docRequestModal.documentos = [...this.docCategoriesAll];
       },
 
       async uploadCaseAttachment(event) {

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import datetime as dt
 import decimal
+import html
 import json
 import os
 import re
@@ -126,7 +127,6 @@ PRIORITY_QUEUE_SETTINGS_KEY = "config/priority_queue_settings.json"
 # Remitente "enviar como" — alias configurado en la cuenta de GMAIL_USER, no
 # necesita una app password propia (ver _send_email).
 ALERT_DOCS_FROM_ADDR = "compliance@global66.com"
-_DOCS_EMAIL_FRAGMENTS_PATH = Path(__file__).resolve().parent / "solicitud_documentos_fragments.json"
 
 # Escucha de respuestas del cliente (documentos adjuntos por correo).
 # compliance@global66.com es un GRUPO de Workspace, no una casilla con login
@@ -139,47 +139,99 @@ DOC_REPLY_IMAP_SECRET_ARN = os.environ.get("DOC_REPLY_IMAP_SECRET_ARN", "")
 _ATTACHMENT_EXTS_ALLOWED = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xls", ".xlsx", ".heic", ".webp"}
 _EMAIL_REF_RE = re.compile(r"\[ref:\s*([0-9a-f]{8})\]", re.IGNORECASE)
 
-# Mapeo entre las 5 categorías del mantenedor y los 4 puntos numerados de la
-# plantilla oficial (algunas categorías comparten punto, ej. "Comprobantes/
-# Soporte" ya está cubierto por el punto de origen de fondos). Si se agregan
-# categorías nuevas al mantenedor sin actualizar este mapeo, simplemente no
-# agregan ningún punto extra al correo (no rompe nada).
-_CATEGORY_TO_FRAGMENT = {
-    "Domicilio": "domicilio",
-    "Identidad/Datos personales": "formulario",
-    "Origen de fondo": "origen",
-    "Comprobantes/Soporte": "origen",
-    "Relación/Beneficiario": "motivo",
+# ---------------------------------------------------------------------------
+# Plantillas de correo — solicitud de documentación / comunicación con cliente
+# ---------------------------------------------------------------------------
+# Reemplazan al viejo esquema de fragmentos por categoría (solicitud_documentos_
+# fragments.json, nunca llegó a poblarse). Ahora son 4 plantillas HTML
+# completas, ya diseñadas y aprobadas por Compliance, cada una con su propio
+# formulario adjunto (salvo texto_libre, que es para comunicación ad-hoc).
+EMAIL_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+EMAIL_ATTACHMENTS_DIR = Path(__file__).resolve().parent / "attachments"
+_SF_MERGE_FIELD_NOMBRE = "{!Account.first_name__c}"
+_TEXTO_LIBRE_PLACEHOLDER = "TEXTO LIBRE<br>TEXTO LIBRE<br>TEXTO LIBRE"
+
+EMAIL_TEMPLATE_CATALOG = {
+    "texto_libre": {
+        "label": "Texto libre",
+        "file": "email_texto_libre.html",
+        "attachment": None,
+        "requires_custom_text": True,
+    },
+    "general_b2c": {
+        "label": "Solicitud de documentos — B2C general",
+        "file": "email_general_b2c.html",
+        "attachment": "Formulario_KYC_Individual_Global.pdf",
+        "requires_custom_text": False,
+    },
+    "argentina_b2c": {
+        "label": "Solicitud de documentos — B2C Argentina",
+        "file": "email_argentina_b2c.html",
+        "attachment": "Formulario_KYC_Individual_Global.pdf",
+        "requires_custom_text": False,
+    },
+    "b2b_generico": {
+        "label": "Solicitud de documentos — B2B genérico",
+        "file": "email_b2b_generico.html",
+        "attachment": "Formulario_B2B.pdf",
+        "requires_custom_text": False,
+    },
 }
-_FRAGMENT_ORDER = ["domicilio", "formulario", "origen", "motivo"]
+
+# Códigos de país (compliance.priority_queue_b2c.country_code, ISO2) que usan
+# la plantilla de Argentina en vez de la general. Si Argentina llega a operar
+# bajo otro código en algún origen de datos, agregarlo acá.
+_ARGENTINA_COUNTRY_CODES = {"AR"}
 
 
-def _load_email_fragments() -> dict:
-    try:
-        return json.loads(_DOCS_EMAIL_FRAGMENTS_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+def _pick_b2c_template_key(country_code: str | None) -> str:
+    """Determina automáticamente qué plantilla B2C usar según el país de
+    origen del cliente. Cualquier país que no sea Argentina cae en la
+    plantilla general."""
+    normalized = (country_code or "").strip().upper()
+    return "argentina_b2c" if normalized in _ARGENTINA_COUNTRY_CODES else "general_b2c"
 
 
-def _render_documentos_email(nombre_completo: str, documentos: list[str] | None = None) -> str:
-    """Arma el correo solo con los puntos que corresponden a los documentos
-    pedidos — antes mandaba siempre la plantilla completa sin importar qué
-    se hubiera elegido."""
-    frags = _load_email_fragments()
-    if not frags:
-        return f"<p>Hola {nombre_completo or 'cliente'}, necesitamos que nos envíes documentación adicional.</p>"
+def _load_email_template_html(template_key: str) -> str:
+    meta = EMAIL_TEMPLATE_CATALOG.get(template_key)
+    if not meta:
+        raise ValueError(f"Plantilla de correo desconocida: {template_key}")
+    return (EMAIL_TEMPLATES_DIR / meta["file"]).read_text(encoding="utf-8")
 
-    documentos = documentos or []
-    wanted_fragments = {_CATEGORY_TO_FRAGMENT[d] for d in documentos if d in _CATEGORY_TO_FRAGMENT}
-    if not wanted_fragments:
-        wanted_fragments = set(_FRAGMENT_ORDER)  # sin match conocido -> plantilla completa, por seguridad
 
-    spacer = '<p style="margin: 0px;"><br></p>'
-    body_parts = [frags[key] for key in _FRAGMENT_ORDER if key in wanted_fragments and key in frags]
-    body = spacer.join(body_parts)
+def _render_email_template(template_key: str, nombre_completo: str, texto_libre: str | None = None) -> str:
+    """Renderiza una de las 4 plantillas oficiales, reemplazando el nombre
+    del cliente y, para texto_libre, el contenido escrito a mano por el
+    analista."""
+    html_body = _load_email_template_html(template_key)
+    html_body = html_body.replace(_SF_MERGE_FIELD_NOMBRE, nombre_completo or "cliente")
+    if template_key == "texto_libre":
+        custom = (texto_libre or "").strip()
+        custom_html = html.escape(custom).replace("\n", "<br>") if custom else "TEXTO LIBRE"
+        html_body = html_body.replace(_TEXTO_LIBRE_PLACEHOLDER, custom_html)
+    return html_body
 
-    html = frags.get("header", "") + body + frags.get("footer", "")
-    return html.replace("{{nombre_completo}}", nombre_completo or "cliente")
+
+def _email_template_attachment(template_key: str) -> tuple[str, bytes] | None:
+    """Devuelve (nombre_archivo, contenido) del formulario que corresponde a
+    la plantilla, o None si esa plantilla no lleva adjunto (texto_libre)."""
+    meta = EMAIL_TEMPLATE_CATALOG.get(template_key) or {}
+    filename = meta.get("attachment")
+    if not filename:
+        return None
+    return filename, (EMAIL_ATTACHMENTS_DIR / filename).read_bytes()
+
+
+def list_email_templates(_qs: dict | None = None):
+    """Catálogo de plantillas para el selector manual del frontend (modal de
+    solicitar/reenviar documentos)."""
+    return resp(200, {
+        "templates": [
+            {"key": key, "label": meta["label"], "has_attachment": bool(meta["attachment"]),
+             "requires_custom_text": meta["requires_custom_text"]}
+            for key, meta in EMAIL_TEMPLATE_CATALOG.items()
+        ]
+    })
 
 runs_table = dynamodb.Table(RUNS_TABLE_NAME)
 catalog_table = dynamodb.Table(CATALOG_TABLE_NAME)
@@ -1914,6 +1966,9 @@ def handler(event, context):  # noqa: ARG001
         # POST /alert-prioritization/send-manual — boton manual, documentos a eleccion
         if method == "POST" and parts == ["alert-prioritization", "send-manual"]:
             return send_manual_document_request(body)
+        # GET /email-templates — catálogo de plantillas para el selector manual
+        if method == "GET" and parts == ["email-templates"]:
+            return list_email_templates()
         # POST /cases/{id}/documentos-checklist
         if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "documentos-checklist":
             return update_case_document_checklist(parts[1], body)
@@ -2621,8 +2676,12 @@ def run_alert_prioritization_test(body: dict):
 
         ref = _register_email_ref(case_id) if case_id else ""
         subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
-        html_body = _render_documentos_email(nombre, documentos)
-        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+        # Los datos de prueba no traen país -> siempre plantilla B2C general.
+        template_key = "general_b2c"
+        html_body = _render_email_template(template_key, nombre)
+        attachment = _email_template_attachment(template_key)
+        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
+                    attachments=[attachment] if attachment else None)
 
         req_id = str(uuid.uuid4())
         _crm_put("document_requests", req_id, {
@@ -2634,6 +2693,7 @@ def run_alert_prioritization_test(body: dict):
             "prioridad": prioridad,
             "concepto": concepto,
             "documentos_solicitados": documentos,
+            "template_key": template_key,
             "subject": subject,
             "sent": bool(GMAIL_APP_PASSWORD),
             "created_at": _now_str(),
@@ -2743,9 +2803,14 @@ def run_alert_prioritization_real(body: dict):
         if entity_type == "customer":
             nombre = f"{row.get('name','') or ''} {row.get('last_name','') or ''}".strip()
             correo = row.get("email") or ""
+            # B2C: la plantilla se elige sola según el país de origen del
+            # cliente (compliance.priority_queue_b2c.country_code).
+            template_key = _pick_b2c_template_key(row.get("country_code"))
         else:
             nombre = row.get("rep_name") or row.get("company_name") or ""
             correo = row.get("rep_email") or ""
+            # B2B: una sola plantilla genérica, no varía por país.
+            template_key = "b2b_generico"
 
         documentos = _lookup_alert_documents(alerta, entity_type)
 
@@ -2774,14 +2839,17 @@ def run_alert_prioritization_real(body: dict):
 
         ref = _register_email_ref(case_id) if case_id else ""
         subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
-        html_body = _render_documentos_email(nombre, documentos)
-        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+        html_body = _render_email_template(template_key, nombre)
+        attachment = _email_template_attachment(template_key)
+        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
+                    attachments=[attachment] if attachment else None)
 
         req_id = str(uuid.uuid4())
         _crm_put("document_requests", req_id, {
             "request_id": req_id,
             "entity_type": entity_type,
             "entity_id": entity_id,
+            "template_key": template_key,
             "case_id": case_id,
             "correo": correo,
             "nombre_completo": nombre,
@@ -2865,7 +2933,10 @@ def send_manual_document_request(body: dict):
 
     body: {entity_type, entity_id, nombre, correo, prioridad, alerta,
            documentos: [...], case_id (opcional, para linkear a un caso
-           existente en vez de crear uno nuevo)}
+           existente en vez de crear uno nuevo), template_key (opcional —
+           uno de EMAIL_TEMPLATE_CATALOG; si no se manda, se elige sola
+           igual que en el flujo automático), texto_libre (solo si
+           template_key='texto_libre')}
     """
     entity_type = (body.get("entity_type") or "customer").strip().lower()
     entity_id = body.get("entity_id", "")
@@ -2875,11 +2946,19 @@ def send_manual_document_request(body: dict):
     alerta = body.get("alerta", "").strip()
     documentos = body.get("documentos") or []
     existing_case_id = body.get("case_id", "").strip()
+    template_key = (body.get("template_key") or "").strip()
+    texto_libre = body.get("texto_libre", "")
 
     if not correo:
         return resp(400, {"error": "correo is required"})
     if not documentos:
         return resp(400, {"error": "documentos (lista, al menos 1) is required"})
+    if not template_key:
+        template_key = "b2b_generico" if entity_type == "company" else "general_b2c"
+    if template_key not in EMAIL_TEMPLATE_CATALOG:
+        return resp(400, {"error": f"template_key desconocido: {template_key}"})
+    if EMAIL_TEMPLATE_CATALOG[template_key]["requires_custom_text"] and not texto_libre.strip():
+        return resp(400, {"error": "texto_libre es requerido para la plantilla de texto libre"})
 
     checklist = [{"categoria": d, "estado": "pendiente"} for d in documentos]
 
@@ -2913,8 +2992,10 @@ def send_manual_document_request(body: dict):
         ref = _register_email_ref(case_id) if case_id else ""
 
     subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
-    html_body = _render_documentos_email(nombre, documentos)
-    _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR)
+    html_body = _render_email_template(template_key, nombre, texto_libre)
+    attachment = _email_template_attachment(template_key)
+    _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
+                attachments=[attachment] if attachment else None)
 
     req_id = str(uuid.uuid4())
     _crm_put("document_requests", req_id, {
@@ -2927,6 +3008,7 @@ def send_manual_document_request(body: dict):
         "prioridad": prioridad,
         "alerta": alerta,
         "documentos_solicitados": documentos,
+        "template_key": template_key,
         "subject": subject,
         "sent": bool(GMAIL_APP_PASSWORD),
         "created_at": _now_str(),
@@ -2938,6 +3020,7 @@ def send_manual_document_request(body: dict):
         "email_sent": bool(GMAIL_APP_PASSWORD),
         "email_to": correo,
         "documentos_solicitados": documentos,
+        "template_key": template_key,
     })
 
 
@@ -3212,7 +3295,20 @@ def get_case_detail(case_id: str):
                     "priority": a.get("priority", "medium"),
                 })
         case_out = {k: v for k, v in c.items() if k != "notes"}
-        return resp(200, {"case": case_out, "notes": notes, "alerts": alerts})
+
+        # Última solicitud de documentos de este caso — se usa para prellenar
+        # nombre/correo/plantilla al reenviar un correo desde el detalle del
+        # caso (esos datos no viven en el caso mismo, solo en el audit trail).
+        last_request = None
+        for r in sorted(_crm_list("document_requests"), key=lambda r: r.get("created_at", "")):
+            if r.get("case_id") == case_id:
+                last_request = {
+                    "correo": r.get("correo", ""),
+                    "nombre_completo": r.get("nombre_completo", ""),
+                    "template_key": r.get("template_key", ""),
+                }
+
+        return resp(200, {"case": case_out, "notes": notes, "alerts": alerts, "last_document_request": last_request})
     except Exception as e:
         return resp(500, {"error": str(e)})
 
@@ -4015,7 +4111,10 @@ def get_analytics_result(q0: str = "", q1: str = "", q2: str = "", q3: str = "",
 # Phase 8 — Email notifications
 # ---------------------------------------------------------------------------
 
-def _send_email(to: str, subject: str, html_body: str, from_addr: str | None = None) -> None:
+def _send_email(
+    to: str, subject: str, html_body: str, from_addr: str | None = None,
+    attachments: list[tuple[str, bytes]] | None = None,
+) -> None:
     """Send an email via Gmail SMTP (non-blocking — errors are swallowed).
 
     Always authenticates as GMAIL_USER (the account holding the app password),
@@ -4023,18 +4122,34 @@ def _send_email(to: str, subject: str, html_body: str, from_addr: str | None = N
     mail as" aliases (e.g. compliance@global66.com) without needing a
     separate app password — Gmail allows this as long as the alias is
     configured under Settings → Accounts in that mailbox.
+
+    `attachments` is an optional list of (filename, bytes) — used for the
+    document-request templates, which each carry their own PDF form.
     """
     if not GMAIL_APP_PASSWORD or not to or not to.strip():
         return
     import smtplib
+    from email.mime.application import MIMEApplication
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     sender = from_addr or GMAIL_USER
-    msg = MIMEMultipart("alternative")
+
+    body_part = MIMEMultipart("alternative")
+    body_part.attach(MIMEText(html_body, "html"))
+
+    if attachments:
+        msg = MIMEMultipart("mixed")
+        msg.attach(body_part)
+        for filename, content in attachments:
+            part = MIMEApplication(content, Name=filename)
+            part["Content-Disposition"] = f'attachment; filename="{filename}"'
+            msg.attach(part)
+    else:
+        msg = body_part
+
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = to
-    msg.attach(MIMEText(html_body, "html"))
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as server:
             server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
