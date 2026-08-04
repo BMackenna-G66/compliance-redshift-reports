@@ -96,6 +96,11 @@ def _post_slack(text: str) -> None:
         pass
 
 CLUSTER_ID = os.environ.get("CLUSTER_IDENTIFIER", "compliance-redshift-cluster")
+# Decisión de negocio (2026-08-04): el cluster se deja encendido permanentemente
+# en AWS — ningún proceso, ni siquiera el botón manual de Admin, debe pausarlo.
+# Mismo criterio que AUTO_PAUSE en handler.py (report runner). Volver a poner en
+# True solo si esa decisión cambia.
+CLUSTER_MANUAL_PAUSE_ENABLED = False
 DATABASE_NAME = os.environ.get("DATABASE_NAME", "dev")
 DB_USER = os.environ.get("DB_USER", "awsuser")
 
@@ -2304,6 +2309,11 @@ def _do_pause_with_retry(max_attempts: int = 10, wait_sec: int = 15) -> None:
 
 
 def pause_cluster_api():
+    if not CLUSTER_MANUAL_PAUSE_ENABLED:
+        return resp(409, {
+            "status": "auto_pause_disabled",
+            "error": "La pausa del cluster está bloqueada — se mantiene siempre encendido por decisión de negocio.",
+        })
     try:
         r = redshift.describe_clusters(ClusterIdentifier=CLUSTER_ID)
         status = r["Clusters"][0]["ClusterStatus"]

@@ -60,9 +60,9 @@ variable "schedule_expression" {
 }
 
 variable "auto_pause_cluster" {
-  description = "If true, the Lambda pauses the cluster after a successful run."
+  description = "If true, the Lambda pauses the cluster after a successful run. Set to false (2026-08-04) — the cluster is kept always-on in AWS by explicit business decision; flip back to true only if that decision changes."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "lambda_memory_mb" {

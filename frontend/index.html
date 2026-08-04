@@ -300,22 +300,12 @@
               class="text-xs px-3 py-1.5 rounded-full bg-green-600 hover:bg-green-500 text-white font-medium disabled:opacity-50 transition">
               ▶ Encender
             </button>
-            <button @click="pauseCluster()" x-show="clusterStatus==='available'" :disabled="clusterLoading"
-              class="text-xs px-3 py-1.5 rounded-full bg-slate-700 hover:bg-slate-600 text-white font-medium disabled:opacity-50 transition">
-              ⏸ Apagar
+            <button x-show="clusterStatus==='available'" disabled
+              title="Bloqueado: el cluster se mantiene siempre encendido por decisión de negocio."
+              class="text-xs px-3 py-1.5 rounded-full bg-slate-800 text-slate-500 font-medium opacity-60 cursor-not-allowed transition">
+              🔒 Siempre encendido
             </button>
           </div>
-          <!-- Keep-session toggle -->
-          <label x-show="clusterStatus==='available'" class="flex items-center gap-1.5 cursor-pointer select-none" title="Mantener cluster activo durante la sesión">
-            <div class="relative">
-              <input type="checkbox" x-model="keepSession" class="sr-only">
-              <div :class="keepSession ? 'bg-orange-500' : 'bg-slate-600'" class="w-8 h-4 rounded-full transition-colors duration-200"></div>
-              <div :class="keepSession ? 'translate-x-4' : 'translate-x-0'" class="absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform duration-200"></div>
-            </div>
-            <span class="text-xs" :class="keepSession ? 'text-orange-400 font-medium' : 'text-slate-400'">
-              <span x-text="keepSession ? 'Sesión activa' : 'Auto-apagar'"></span>
-            </span>
-          </label>
           <!-- Theme toggle -->
           <button @click="toggleTheme()" :title="theme==='light' ? 'Cambiar a modo oscuro' : 'Cambiar a modo claro'"
             class="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-300 hover:text-white transition shrink-0 text-sm">
@@ -5537,14 +5527,6 @@
         this.clusterLoading = true;
         const d = await this.api('POST', '/cluster/wake');
         this.clusterStatus = d?.status || 'resuming';
-        this.clusterLoading = false;
-      },
-
-      async pauseCluster() {
-        if (!confirm('¿Pausar el cluster? Los reportes en curso pueden fallar.')) return;
-        this.clusterLoading = true;
-        const d = await this.api('POST', '/cluster/pause');
-        this.clusterStatus = d?.status || 'pausing';
         this.clusterLoading = false;
       },
 
