@@ -1881,6 +1881,10 @@ def handler(event, context):  # noqa: ARG001
         # POST /search/transactions
         if method == "POST" and parts == ["search", "transactions"]:
             return run_transaction_search(body)
+        # POST /remesas/search — versión EN VIVO (sincrónica) de la Búsqueda
+        # de Remesas, pensada para ser llamada desde otro proyecto/sistema.
+        if method == "POST" and parts == ["remesas", "search"]:
+            return search_remesas_sync(body)
         # POST /search/wallet
         if method == "POST" and parts == ["search", "wallet"]:
             return run_wallet_search(body)
@@ -3849,6 +3853,81 @@ def run_transaction_search(body: dict):
         }),
     )
     return resp(202, {"run_id": run_id, "status": "RUNNING", "n_transactions": len(clean_ids)})
+
+
+_SQL_REMESA_SEARCH = """
+SELECT
+    transaction_id,
+    customer_id,
+    beneficiary_country_name,
+    CASE
+        WHEN beneficiary_country_name = 'Chile' THEN 'Envío nacional'
+        ELSE 'Envío internacional'
+    END AS tipo_envio,
+    beneficiary_dni,
+    beneficiary_dni_type,
+    beneficiary_name,
+    beneficiary_first_name,
+    beneficiary_last_name,
+    beneficiary_email,
+    beneficiary_id,
+    origin_country,
+    destiny_country,
+    destiny_amount_usd,
+    tx_status,
+    start_date
+FROM "db_prod"."transaction"."transaction"
+WHERE transaction_id IN ({ids_sql})
+ORDER BY start_date DESC
+"""
+
+# Máximo de remesas por consulta EN VIVO — deliberadamente bajo (a diferencia
+# del límite de 5000 de la búsqueda async/Excel de arriba) porque esta corre
+# sincrónica dentro de la misma invocación HTTP: hay que devolver la respuesta
+# antes de que el otro sistema se canse de esperar.
+_REMESA_SEARCH_SYNC_MAX = 50
+
+
+def search_remesas_sync(body: dict):
+    """Búsqueda de Remesas EN VIVO — misma query y misma tabla que
+    run_transaction_search (Paso 2 del módulo de Análisis Individual), pero
+    sincrónica: pensada para que OTRO proyecto mande el/los número(s) de
+    remesa y reciba el detalle en la misma respuesta HTTP, sin polling de
+    run_id ni generación de Excel.
+
+    body: {transaction_id: 123} o {transaction_ids: [123, 456, ...]}
+          (máx. 50 — para lotes más grandes usar /search/transactions, que
+          es async y genera un Excel).
+    """
+    raw_ids = body.get("transaction_ids")
+    if raw_ids is None:
+        single = body.get("transaction_id")
+        raw_ids = [single] if single is not None else []
+    if not raw_ids:
+        return resp(400, {"error": "transaction_id o transaction_ids es requerido"})
+    if len(raw_ids) > _REMESA_SEARCH_SYNC_MAX:
+        return resp(400, {
+            "error": f"Máximo {_REMESA_SEARCH_SYNC_MAX} transaction_ids por consulta en vivo "
+                     f"(para lotes más grandes usar /search/transactions, que es async)."
+        })
+
+    clean_ids = []
+    for tid in raw_ids:
+        try:
+            clean_ids.append(int(str(tid).strip()))
+        except (ValueError, TypeError):
+            return resp(400, {"error": f"transaction_id inválido: {tid!r}"})
+
+    ids_sql = ", ".join(str(i) for i in clean_ids)
+    sql = _SQL_REMESA_SEARCH.format(ids_sql=ids_sql)
+    try:
+        rows = _rs_exec(sql)
+    except RuntimeError as e:
+        return resp(200, {"error": "cluster_unavailable", "message": str(e)})
+
+    found_ids = {r.get("transaction_id") for r in rows}
+    not_found = [tid for tid in clean_ids if tid not in found_ids]
+    return resp(200, {"rows": rows, "count": len(rows), "not_found": not_found})
 
 
 def run_wallet_search(body: dict):
