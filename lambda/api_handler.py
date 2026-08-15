@@ -1991,6 +1991,10 @@ def handler(event, context):  # noqa: ARG001
         # POST /alerts
         if method == "POST" and parts == ["alerts"]:
             return add_alert(body)
+        # POST /alerts/bulk-distribute — repartir filas de un reporte como
+        # alertas ya asignadas entre analistas (admin)
+        if method == "POST" and parts == ["alerts", "bulk-distribute"]:
+            return bulk_distribute_alerts(body)
         # PUT /alerts/{id}/review
         if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "review":
             return review_alert(parts[1], body)
@@ -3493,13 +3497,17 @@ def delete_case(case_id: str, body: dict):
 _BULK_ASSIGN_MAX = 500
 
 
-def _case_bulk_assignment_email(to_email: str, items: list[dict], assigned_by: str) -> None:
-    """Un solo correo con todos los casos que le tocaron al analista — en una
-    asignación masiva mandar un correo por caso sería spam."""
+def _bulk_assignment_email(to_email: str, items: list[dict], assigned_by: str,
+                           kind: str = "casos") -> None:
+    """Un solo correo con todo lo que le tocó al analista en un reparto masivo
+    — mandar un correo por caso/alerta sería spam.
+
+    `items` son dicts {id, title}; `kind` es solo el sustantivo que se muestra
+    ("casos" o "alertas")."""
     rows = "".join(
         '<tr>'
-        f'<td style="padding:6px 10px;border-bottom:1px solid #1e293b;font-family:monospace;font-size:12px;color:#64748b">{html.escape(i.get("case_id", "")[:8])}</td>'
-        f'<td style="padding:6px 10px;border-bottom:1px solid #1e293b;font-size:13px;color:#e2e8f0">{html.escape(i.get("title", ""))}</td>'
+        f'<td style="padding:6px 10px;border-bottom:1px solid #1e293b;font-family:monospace;font-size:12px;color:#64748b">{html.escape(str(i.get("id", ""))[:8])}</td>'
+        f'<td style="padding:6px 10px;border-bottom:1px solid #1e293b;font-size:13px;color:#e2e8f0">{html.escape(str(i.get("title", "")))}</td>'
         '</tr>'
         for i in items
     )
@@ -3507,13 +3515,119 @@ def _case_bulk_assignment_email(to_email: str, items: list[dict], assigned_by: s
 <div style="font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;border-radius:12px;max-width:640px">
   <div style="background:#1e293b;border-radius:8px;padding:16px 20px;margin-bottom:16px">
     <p style="margin:0;font-size:13px;color:#94a3b8">WatchTower AML &middot; Global66 Compliance</p>
-    <h2 style="margin:8px 0 0;font-size:18px;color:#fff">Se te asignaron {len(items)} casos</h2>
+    <h2 style="margin:8px 0 0;font-size:18px;color:#fff">Se te asignaron {len(items)} {kind}</h2>
   </div>
   <table style="width:100%;border-collapse:collapse">{rows}</table>
   <p style="font-size:12px;color:#475569;margin-top:16px">Asignado por: <strong style="color:#94a3b8">{html.escape(assigned_by or "—")}</strong></p>
 </div>
 """
-    _send_email(to_email, f"[WatchTower] Se te asignaron {len(items)} casos", body_html)
+    _send_email(to_email, f"[WatchTower] Se te asignaron {len(items)} {kind}", body_html)
+
+
+# Orden de preferencia para identificar a quién apunta una fila de un reporte.
+# Es el mismo criterio que usa el botón individual "Marcar como Alertado" en
+# el frontend, extendido con company_id para los reportes B2B.
+_ROW_ENTITY_PATTERNS = [
+    ("customer_id", re.compile(r"^(customer_id|client_id)$", re.I)),
+    ("company_id", re.compile(r"^company_id$", re.I)),
+    ("beneficiary_id", re.compile(r"^beneficiary_id$", re.I)),
+    ("email", re.compile(r"email", re.I)),
+]
+
+
+def _extract_entity_from_row(row: dict) -> tuple[str, str]:
+    """Devuelve (entity_field, entity_value) de una fila de reporte, o
+    ("", "") si la fila no identifica a ningún cliente/empresa."""
+    for field, pattern in _ROW_ENTITY_PATTERNS:
+        for key in row:
+            if pattern.match(str(key)) or (field == "email" and pattern.search(str(key))):
+                value = str(row[key] if row[key] is not None else "").strip()
+                if value and value.lower() not in ("none", "nan", "—"):
+                    return field, value
+    return "", ""
+
+
+def bulk_distribute_alerts(body: dict):
+    """Reparte filas de un reporte como alertas ya asignadas entre analistas.
+
+    Es el flujo real de trabajo: se corre un reporte (ej. Patrones AML) y
+    desde la misma tabla de resultados se seleccionan las filas y se reparten
+    entre el equipo — cada fila queda como una alerta asignada, sin tener que
+    marcarlas y asignarlas una por una.
+
+    body: {rows: [...], report_name, assignees: [...], actor_email,
+           priority, reason, notify}
+    """
+    denied = _require_admin(body)
+    if denied:
+        return denied
+
+    rows = body.get("rows") or []
+    if not rows:
+        return resp(400, {"error": "rows es requerido (lista de al menos 1)"})
+    if len(rows) > _BULK_ASSIGN_MAX:
+        return resp(400, {"error": f"Máximo {_BULK_ASSIGN_MAX} filas por operación"})
+
+    assignees = [str(a).strip() for a in (body.get("assignees") or []) if str(a).strip()]
+    if not assignees:
+        return resp(400, {"error": "assignees es requerido (lista de analistas)"})
+
+    report_name = (body.get("report_name") or "").strip()
+    actor = (body.get("actor_email") or "").strip()
+    priority = (body.get("priority") or "medium").strip()
+    if priority not in ("high", "medium", "low"):
+        priority = "medium"
+    reason = (body.get("reason") or "").strip() or f"Repartido desde: {report_name or 'reporte'}"
+    notify = bool(body.get("notify", True))
+
+    per_assignee: dict[str, list[dict]] = {a: [] for a in assignees}
+    created, skipped = [], []
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            skipped.append({"index": idx, "motivo": "fila inválida"})
+            continue
+        field, value = _extract_entity_from_row(row)
+        if not value:
+            skipped.append({"index": idx, "motivo": "la fila no identifica cliente/empresa"})
+            continue
+        # El round-robin va sobre las filas efectivamente creadas, no sobre el
+        # índice original — así las filas descartadas no dejan huecos en el
+        # reparto (si no, alguien podría recibir menos por pura casualidad).
+        target = assignees[len(created) % len(assignees)]
+        aid = str(uuid.uuid4())
+        _crm_put("alerts", aid, {
+            "alert_id": aid,
+            "entity_field": field,
+            "entity_value": value,
+            "reason": reason,
+            "report_name": report_name,
+            "row_data": json.dumps(row, default=str),
+            "status": "active",
+            "priority": priority,
+            "assigned_to": target,
+            "reviewed_by": "",
+            "reviewed_at": "",
+            "notes": "",
+            "created_at": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        per_assignee[target].append({"id": aid, "title": f"{field} {value}"})
+        created.append({"alert_id": aid, "assigned_to": target, "entity_value": value})
+
+    _safe_audit(user_email=actor or "unknown", action="alert.bulk_distribute",
+                entity_type="alert", entity_id=f"{len(created)} alertas",
+                new_value={"report_name": report_name, "assignees": assignees,
+                           "created": len(created), "skipped": len(skipped)})
+
+    if notify:
+        for email, items in per_assignee.items():
+            if items and "@" in email:
+                _bulk_assignment_email(email, items, actor, kind="alertas")
+
+    return resp(200, {
+        "created": len(created),
+        "skipped": skipped,
+        "por_analista": {k: len(v) for k, v in per_assignee.items()},
+    })
 
 
 def bulk_assign_cases(body: dict):
@@ -3559,7 +3673,7 @@ def bulk_assign_cases(body: dict):
         if updated is None:
             not_found.append(cid)
             continue
-        per_assignee[target].append({"case_id": cid, "title": updated.get("title", "")})
+        per_assignee[target].append({"id": cid, "title": updated.get("title", "")})
         assigned.append({"case_id": cid, "assigned_to": target})
 
     _safe_audit(user_email=actor or "unknown", action="case.bulk_assign", entity_type="case",
@@ -3570,7 +3684,7 @@ def bulk_assign_cases(body: dict):
     if notify:
         for email, items in per_assignee.items():
             if items and "@" in email:
-                _case_bulk_assignment_email(email, items, actor)
+                _bulk_assignment_email(email, items, actor, kind="casos")
 
     return resp(200, {
         "assigned": len(assigned),
