@@ -1342,11 +1342,38 @@
                 :class="casesViewMode==='kanban' ? 'bg-slate-500 text-white' : 'text-slate-400 hover:text-white'"
                 class="px-3 py-1.5 rounded-md transition">⊟ Kanban</button>
             </div>
+            <button x-show="isAdmin() && casesViewMode==='cards'" @click="toggleCaseSelectMode()"
+              :class="caseSelectMode ? 'bg-slate-600 text-white' : 'bg-slate-700 text-slate-300 hover:text-white'"
+              class="px-4 py-2 text-sm font-medium rounded-lg transition">
+              <span x-text="caseSelectMode ? '✕ Salir de selección' : '☑ Seleccionar'"></span>
+            </button>
             <button @click="openCreateCaseModal()"
               class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg transition">
               + Nuevo Caso
             </button>
           </div>
+        </div>
+
+        <!-- Barra de acciones masivas (admin, modo selección) -->
+        <div x-show="caseSelectMode" x-cloak
+          class="flex flex-wrap items-center gap-3 mb-4 bg-slate-800 border border-slate-600 rounded-xl px-4 py-3">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" :checked="allVisibleCasesSelected()" @change="toggleSelectAllCases()"
+              class="accent-orange-500 w-4 h-4">
+            <span class="text-sm text-slate-300">Seleccionar todos</span>
+          </label>
+          <span class="text-sm font-medium text-orange-400">
+            <span x-text="selectedCaseIds.length"></span> seleccionado(s)
+          </span>
+          <div class="flex-1"></div>
+          <button @click="openBulkAssignModal()" :disabled="selectedCaseIds.length===0"
+            class="px-4 py-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition">
+            👥 Asignar
+          </button>
+          <button @click="deleteSelectedCases()" :disabled="selectedCaseIds.length===0"
+            class="px-4 py-2 bg-red-900/60 hover:bg-red-800 border border-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-red-200 text-sm font-medium rounded-lg transition">
+            🗑 Eliminar
+          </button>
         </div>
 
         <!-- Status filter tabs -->
@@ -1393,11 +1420,17 @@
         <!-- ── CARDS VIEW ── -->
         <div x-show="!casesLoading && casesViewMode==='cards'" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           <template x-for="c in filteredCases()" :key="c.case_id">
-            <div @click="openCaseDetail(c.case_id)"
-              class="bg-slate-800 border border-slate-700 rounded-xl p-4 cursor-pointer hover:border-orange-500 transition group">
+            <div @click="caseSelectMode ? toggleCaseSelection(c.case_id) : openCaseDetail(c.case_id)"
+              :class="caseSelectMode && isCaseSelected(c.case_id) ? 'border-orange-500 ring-2 ring-orange-500/40' : 'border-slate-700'"
+              class="bg-slate-800 border rounded-xl p-4 cursor-pointer hover:border-orange-500 transition group">
               <div class="flex items-start justify-between gap-2 mb-2">
-                <span class="text-xs font-mono text-slate-500" x-text="c.case_id.slice(0,8)+'…'"></span>
-                <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                <div class="flex items-center gap-2 min-w-0">
+                  <input x-show="caseSelectMode" type="checkbox" @click.stop
+                    :checked="isCaseSelected(c.case_id)" @change="toggleCaseSelection(c.case_id)"
+                    class="accent-orange-500 w-4 h-4 flex-shrink-0">
+                  <span class="text-xs font-mono text-slate-500 truncate" x-text="c.case_id.slice(0,8)+'…'"></span>
+                </div>
+                <span class="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
                   :class="caseStatusColor(c.status)" x-text="caseStatusLabel(c.status)"></span>
               </div>
               <h3 class="text-sm font-semibold text-white mb-1 line-clamp-2 group-hover:text-orange-300 transition"
@@ -1414,8 +1447,19 @@
                   class="truncate max-w-[100px]"
                   :class="c.assigned_to ? 'text-slate-300' : 'text-slate-600'"></span>
               </div>
-              <div class="mt-2 text-xs text-slate-600"
-                x-text="'Actualizado ' + new Date(c.updated_at).toLocaleDateString('es-CL')"></div>
+              <div class="mt-2 flex items-center justify-between gap-2">
+                <span class="text-xs text-slate-600"
+                  x-text="'Actualizado ' + new Date(c.updated_at).toLocaleDateString('es-CL')"></span>
+                <button x-show="!caseSelectMode && c.assigned_to !== currentUserEmail"
+                  @click.stop="takeCase(c.case_id)"
+                  class="text-xs px-2.5 py-1 rounded-lg bg-teal-900/40 hover:bg-teal-800/60 border border-teal-800 text-teal-300 font-medium transition whitespace-nowrap">
+                  ✋ Tomar
+                </button>
+                <span x-show="c.assigned_to === currentUserEmail"
+                  class="text-xs px-2 py-0.5 rounded bg-teal-900/40 text-teal-300 border border-teal-800 whitespace-nowrap">
+                  Mío
+                </span>
+              </div>
             </div>
           </template>
         </div>
@@ -2851,11 +2895,19 @@
           <p class="text-sm text-slate-400 mt-1" x-text="activeCase.description"></p>
         </div>
         <div class="flex items-center gap-2 shrink-0">
+          <button x-show="activeCase.assigned_to !== currentUserEmail" @click="takeCase(activeCase.case_id)"
+            class="flex items-center gap-1.5 px-3 py-1.5 bg-teal-900/40 hover:bg-teal-800/60 border border-teal-800 text-teal-300 text-xs font-medium rounded-lg transition">
+            ✋ Tomar caso
+          </button>
           <button @click="exportCase(activeCase.case_id)"
             :disabled="caseExportLoading"
             class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 text-xs font-medium rounded-lg transition disabled:opacity-50">
             <span :class="caseExportLoading ? 'animate-spin inline-block' : ''">📥</span>
             <span x-text="caseExportLoading ? 'Generando...' : 'Excel'"></span>
+          </button>
+          <button x-show="isAdmin()" @click="deleteActiveCase()" title="Eliminar caso (solo admin)"
+            class="flex items-center gap-1.5 px-3 py-1.5 bg-red-900/40 hover:bg-red-800/60 border border-red-800 text-red-300 text-xs font-medium rounded-lg transition">
+            🗑
           </button>
           <button @click="caseDetailModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
         </div>
@@ -3030,6 +3082,95 @@
           class="flex-1 py-2 text-sm text-slate-400 hover:text-white border border-slate-600 rounded-lg transition">Cancelar</button>
         <button @click="confirmCaseAssign()"
           class="flex-1 py-2 text-sm font-semibold text-white bg-orange-600 hover:bg-orange-500 rounded-lg transition">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: ASIGNACIÓN MASIVA ===== -->
+  <div x-show="bulkAssignModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="bulkAssignModal.open=false"></div>
+    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg mx-auto p-6 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between mb-1">
+        <h2 class="text-base font-bold text-white">Asignar casos</h2>
+        <button @click="bulkAssignModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+      </div>
+      <p class="text-xs text-slate-400 mb-5">
+        <span x-text="selectedCaseIds.length"></span> caso(s) seleccionado(s)
+      </p>
+
+      <!-- Resultado -->
+      <div x-show="bulkAssignModal.result" class="bg-teal-900/30 border border-teal-700 rounded-xl p-4 mb-4">
+        <p class="text-teal-300 font-semibold text-sm mb-2">
+          ✅ <span x-text="bulkAssignModal.result?.assigned"></span> caso(s) asignados
+        </p>
+        <template x-for="(n, email) in (bulkAssignModal.result?.por_analista || {})" :key="email">
+          <div class="flex justify-between text-xs text-slate-300 py-0.5">
+            <span x-text="email"></span><span class="font-semibold" x-text="n + ' casos'"></span>
+          </div>
+        </template>
+      </div>
+
+      <div x-show="!bulkAssignModal.result">
+        <!-- Modo -->
+        <div class="flex gap-1.5 mb-4">
+          <button @click="bulkAssignModal.mode='single'"
+            :class="bulkAssignModal.mode==='single' ? 'bg-teal-600 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700 border border-slate-700'"
+            class="flex-1 text-xs px-3 py-2 rounded-lg transition font-medium">👤 A un analista</button>
+          <button @click="bulkAssignModal.mode='split'"
+            :class="bulkAssignModal.mode==='split' ? 'bg-teal-600 text-white' : 'bg-slate-900 text-slate-400 hover:bg-slate-700 border border-slate-700'"
+            class="flex-1 text-xs px-3 py-2 rounded-lg transition font-medium">👥 Repartir equitativamente</button>
+        </div>
+
+        <!-- Modo: un analista -->
+        <div x-show="bulkAssignModal.mode==='single'">
+          <label class="block text-xs font-medium text-slate-400 mb-1.5">Analista</label>
+          <select x-model="bulkAssignModal.assigned_to"
+            class="w-full bg-slate-900 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-teal-400">
+            <option value="">Elegí un analista...</option>
+            <template x-for="u in crmUsers" :key="u.email">
+              <option :value="u.email" x-text="u.full_name + ' (' + u.email + ')'"></option>
+            </template>
+          </select>
+        </div>
+
+        <!-- Modo: repartir -->
+        <div x-show="bulkAssignModal.mode==='split'">
+          <label class="block text-xs font-medium text-slate-400 mb-2">
+            Analistas entre los que repartir
+          </label>
+          <div class="space-y-1.5 max-h-52 overflow-y-auto bg-slate-900 border border-slate-700 rounded-lg p-3">
+            <template x-for="u in crmUsers" :key="u.email">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" :checked="bulkAssignModal.assignees.includes(u.email)"
+                  @change="toggleBulkAssignee(u.email)" class="accent-teal-500">
+                <span class="text-sm text-slate-300" x-text="u.full_name"></span>
+              </label>
+            </template>
+          </div>
+          <div x-show="bulkAssignPreview().length > 0" class="mt-3 bg-slate-900/60 border border-slate-700 rounded-lg p-3">
+            <p class="text-xs text-slate-500 mb-1.5">Va a quedar así:</p>
+            <template x-for="p in bulkAssignPreview()" :key="p.email">
+              <div class="flex justify-between text-xs py-0.5">
+                <span class="text-slate-300" x-text="p.email.split('@')[0]"></span>
+                <span class="text-teal-400 font-semibold" x-text="p.count + ' casos'"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <p class="text-xs text-slate-500 mt-3">
+          Cada analista recibe un solo correo con el resumen de los casos que le tocaron.
+        </p>
+        <p x-show="bulkAssignModal.error" class="text-xs text-red-400 mt-3" x-text="bulkAssignModal.error"></p>
+
+        <div class="flex gap-3 mt-5">
+          <button @click="bulkAssignModal.open=false"
+            class="flex-1 py-2 text-sm text-slate-400 hover:text-white border border-slate-600 rounded-lg transition">Cancelar</button>
+          <button @click="submitBulkAssign()" :disabled="bulkAssignModal.sending"
+            class="flex-1 py-2 text-sm font-semibold text-white bg-teal-600 hover:bg-teal-500 disabled:opacity-50 rounded-lg transition">
+            <span x-text="bulkAssignModal.sending ? 'Asignando...' : 'Asignar'"></span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -5080,6 +5221,11 @@
       createCaseModal: { open: false },
       caseDetailModal: { open: false },
       caseAssignModal: { open: false, case_id: null, assigned_to: '' },
+
+      // Selección múltiple de casos (acciones masivas de admin)
+      caseSelectMode: false,
+      selectedCaseIds: [],
+      bulkAssignModal: { open: false, mode: 'single', assigned_to: '', assignees: [], sending: false, error: '', result: null },
       newCaseForm: { title: '', description: '', priority: 'medium', assigned_to: '', entity_type: '', entity_id: '', report_name: '', from_alert_id: null },
       kanbanColumns: [
         { key: 'open',         label: 'Abierto',           dot: 'bg-blue-400',   nextStatuses: [{k:'in_progress', l:'→ Investigar'}] },
@@ -5417,6 +5563,21 @@
         } catch(e) {
           this.globalError = 'Error de red al conectar con la API.';
           return null;
+        }
+      },
+
+      // Igual que api(), pero devuelve {ok, status, data} sin tragarse los
+      // errores — necesario cuando el caller quiere reaccionar a un status
+      // puntual (ej. 409 "el caso ya está tomado") en vez de solo mostrarlo.
+      async apiRaw(method, path, body = null) {
+        try {
+          const opts = { method, credentials: 'omit', headers: { 'Content-Type': 'application/json' } };
+          if (body) opts.body = JSON.stringify(body);
+          const r = await fetch(this.apiBase + path, opts);
+          const data = await r.json().catch(() => ({}));
+          return { ok: r.ok, status: r.status, data };
+        } catch(e) {
+          return { ok: false, status: 0, data: { error: 'Error de red al conectar con la API.' } };
         }
       },
 
@@ -7377,6 +7538,130 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         const d = await this.api('GET', '/cases/' + this.caseAssignModal.case_id);
         if (d?.case) this.activeCase = d.case;
         await this.loadCases();
+      },
+
+      // -----------------------------------------------
+      // SELECCIÓN MÚLTIPLE + ACCIONES MASIVAS (admin)
+      // -----------------------------------------------
+      toggleCaseSelectMode() {
+        this.caseSelectMode = !this.caseSelectMode;
+        if (!this.caseSelectMode) this.selectedCaseIds = [];
+      },
+      isCaseSelected(case_id) {
+        return this.selectedCaseIds.includes(case_id);
+      },
+      toggleCaseSelection(case_id) {
+        this.selectedCaseIds = this.isCaseSelected(case_id)
+          ? this.selectedCaseIds.filter(id => id !== case_id)
+          : [...this.selectedCaseIds, case_id];
+      },
+      allVisibleCasesSelected() {
+        const visible = this.filteredCases();
+        return visible.length > 0 && visible.every(c => this.isCaseSelected(c.case_id));
+      },
+      toggleSelectAllCases() {
+        this.selectedCaseIds = this.allVisibleCasesSelected()
+          ? []
+          : this.filteredCases().map(c => c.case_id);
+      },
+
+      openBulkAssignModal() {
+        this.bulkAssignModal = {
+          open: true, mode: 'single', assigned_to: '', assignees: [],
+          sending: false, error: '', result: null,
+        };
+      },
+      toggleBulkAssignee(email) {
+        this.bulkAssignModal.assignees = this.bulkAssignModal.assignees.includes(email)
+          ? this.bulkAssignModal.assignees.filter(e => e !== email)
+          : [...this.bulkAssignModal.assignees, email];
+      },
+      // Vista previa de cuántos casos le tocan a cada analista en el reparto
+      // equitativo — el backend usa el mismo criterio (round-robin).
+      bulkAssignPreview() {
+        const n = this.selectedCaseIds.length;
+        const people = this.bulkAssignModal.assignees;
+        if (!n || people.length === 0) return [];
+        return people.map((email, i) => ({
+          email,
+          count: Math.floor(n / people.length) + (i < (n % people.length) ? 1 : 0),
+        }));
+      },
+      async submitBulkAssign() {
+        const m = this.bulkAssignModal;
+        if (m.mode === 'single' && !m.assigned_to) {
+          m.error = 'Elegí un analista.'; return;
+        }
+        if (m.mode === 'split' && m.assignees.length === 0) {
+          m.error = 'Elegí al menos un analista para repartir.'; return;
+        }
+        m.sending = true; m.error = '';
+        const payload = {
+          case_ids: this.selectedCaseIds,
+          actor_email: this.currentUserEmail,
+        };
+        if (m.mode === 'single') payload.assigned_to = m.assigned_to;
+        else payload.assignees = m.assignees;
+
+        const d = await this.api('POST', '/cases/bulk-assign', payload);
+        m.sending = false;
+        if (d?.assigned !== undefined) {
+          m.result = d;
+          this.selectedCaseIds = [];
+          this.caseSelectMode = false;
+          await this.loadCases();
+          setTimeout(() => { this.bulkAssignModal.open = false; }, 2200);
+        } else if (d?.error) {
+          m.error = d.error;
+        }
+      },
+
+      async deleteSelectedCases() {
+        const n = this.selectedCaseIds.length;
+        if (!n) return;
+        if (!confirm(`¿Eliminar definitivamente ${n} caso(s)?\n\nSe borran también sus documentos adjuntos. Las alertas vinculadas NO se borran: vuelven a quedar sin caso.\n\nEsta acción no se puede deshacer.`)) return;
+        let ok = 0, failed = 0;
+        for (const id of [...this.selectedCaseIds]) {
+          const d = await this.api('DELETE', '/cases/' + id, { actor_email: this.currentUserEmail });
+          if (d?.case_id) ok++; else failed++;
+        }
+        this.selectedCaseIds = [];
+        this.caseSelectMode = false;
+        await this.loadCases();
+        if (failed) this.globalError = `${ok} caso(s) eliminados, ${failed} fallaron.`;
+      },
+
+      // -----------------------------------------------
+      // TOMAR CASO / ELIMINAR CASO (individual)
+      // -----------------------------------------------
+      async takeCase(case_id, force = false) {
+        const r = await this.apiRaw('POST', `/cases/${case_id}/take`, {
+          actor_email: this.currentUserEmail, force,
+        });
+        if (r.ok && r.data?.assigned_to) {
+          if (this.activeCase.case_id === case_id) this.activeCase.assigned_to = r.data.assigned_to;
+          await this.loadCases();
+          return;
+        }
+        // 409 → ya lo tiene otra persona; se pregunta antes de quitárselo.
+        if (r.status === 409) {
+          if (confirm(`${r.data?.error || 'El caso ya está asignado.'}\n\n¿Tomarlo igual?`)) {
+            await this.takeCase(case_id, true);
+          }
+          return;
+        }
+        this.globalError = r.data?.error || 'No se pudo tomar el caso.';
+      },
+
+      async deleteActiveCase() {
+        const c = this.activeCase;
+        if (!c.case_id) return;
+        if (!confirm(`¿Eliminar definitivamente el caso "${c.title}"?\n\nSe borran también sus documentos adjuntos. Las alertas vinculadas NO se borran: vuelven a quedar sin caso.\n\nEsta acción no se puede deshacer.`)) return;
+        const d = await this.api('DELETE', '/cases/' + c.case_id, { actor_email: this.currentUserEmail });
+        if (d?.case_id) {
+          this.caseDetailModal.open = false;
+          await this.loadCases();
+        }
       },
 
       caseStatusLabel(status) {

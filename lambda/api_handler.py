@@ -2018,12 +2018,23 @@ def handler(event, context):  # noqa: ARG001
         # POST /cases
         if method == "POST" and parts == ["cases"]:
             return create_case(body)
+        # POST /cases/bulk-assign — asignación masiva (admin).
+        # OJO: tiene que ir ANTES de la ruta genérica POST /cases/{id}, que
+        # también matchea 2 segmentos y se lo comería tratándolo como un id.
+        if method == "POST" and parts == ["cases", "bulk-assign"]:
+            return bulk_assign_cases(body)
         # GET /cases/{id}
         if method == "GET" and len(parts) == 2 and parts[0] == "cases":
             return get_case_detail(parts[1])
+        # DELETE /cases/{id} — eliminar caso (admin)
+        if method == "DELETE" and len(parts) == 2 and parts[0] == "cases":
+            return delete_case(parts[1], body)
         # PUT /cases/{id}  (update title / description / priority)
         if method in ("PUT", "POST") and len(parts) == 2 and parts[0] == "cases":
             return update_case(parts[1], body)
+        # POST /cases/{id}/take — el analista se auto-asigna el caso
+        if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "take":
+            return take_case(parts[1], body)
         # PUT /cases/{id}/status
         if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "cases" and parts[2] == "status":
             return update_case_status(parts[1], body)
@@ -3384,6 +3395,217 @@ def update_case_assign(case_id: str, body: dict):
         _case_assignment_email(assigned_to, case_id, updated.get("title", ""),
                                updated.get("priority", "medium"), actor)
     return resp(200, {"message": f"Case assigned to {assigned_to}"})
+
+
+# ---------------------------------------------------------------------------
+# Permisos de administrador
+# ---------------------------------------------------------------------------
+# El frontend ya esconde las acciones de admin según el rol, pero eso es solo
+# cosmético: la API no valida tokens (el header Authorization se omite a
+# propósito por la config de CORS — ver api() en el frontend). Este guard
+# agrega una barrera real del lado del servidor usando el store de usuarios en
+# S3 (crm/users), que es el mismo que administra el panel Admin.
+# Falla CERRADO: si el usuario no existe, está inactivo, o no se puede leer el
+# store, no es admin.
+_ADMIN_ROLE_NAMES = {"ADMIN", "SUPER_ADMIN", "SUPERADMIN"}
+
+
+def _is_admin_email(email: str) -> bool:
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    try:
+        for u in _crm_list("users"):
+            if (u.get("email") or "").strip().lower() != email:
+                continue
+            if not u.get("is_active", True):
+                return False
+            role = (u.get("role_name") or "").strip().upper().replace("-", "_")
+            return role in _ADMIN_ROLE_NAMES
+    except Exception:
+        return False
+    return False
+
+
+def _require_admin(body: dict):
+    """Devuelve una respuesta 403 si el actor no es admin, o None si puede seguir."""
+    actor = (body.get("actor_email") or "").strip()
+    if not _is_admin_email(actor):
+        return resp(403, {
+            "error": "Esta acción está reservada para administradores.",
+            "actor_email": actor,
+        })
+    return None
+
+
+def delete_case(case_id: str, body: dict):
+    """Elimina un caso definitivamente — reservado para administradores.
+
+    Borra también los adjuntos del caso en S3 y desvincula las alertas que
+    apuntaban a él (vuelven a quedar sin caso), para no dejar referencias
+    colgando a un caso que ya no existe.
+    """
+    denied = _require_admin(body)
+    if denied:
+        return denied
+
+    case = _crm_get("cases", case_id)
+    if case is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+
+    actor = (body.get("actor_email") or "").strip()
+
+    # Adjuntos: se borran del bucket (best-effort, uno por uno).
+    deleted_files = 0
+    for att in case.get("attachments", []) or []:
+        key = att.get("s3_key")
+        if not key:
+            continue
+        try:
+            s3.delete_object(Bucket=S3_BUCKET, Key=key)
+            deleted_files += 1
+        except Exception:
+            pass
+
+    # Alertas vinculadas: vuelven a quedar sin caso, no se borran.
+    unlinked = 0
+    try:
+        for a in _crm_list("alerts"):
+            if a.get("case_id") == case_id and a.get("alert_id"):
+                _crm_update("alerts", a["alert_id"], {"case_id": ""})
+                unlinked += 1
+    except Exception:
+        pass
+
+    _crm_delete("cases", case_id)
+    _safe_audit(user_email=actor or "unknown", action="case.delete", entity_type="case",
+                entity_id=case_id,
+                new_value={"title": case.get("title", ""), "status": case.get("status", ""),
+                           "attachments_deleted": deleted_files, "alerts_unlinked": unlinked})
+    return resp(200, {
+        "message": "Caso eliminado",
+        "case_id": case_id,
+        "attachments_deleted": deleted_files,
+        "alerts_unlinked": unlinked,
+    })
+
+
+_BULK_ASSIGN_MAX = 500
+
+
+def _case_bulk_assignment_email(to_email: str, items: list[dict], assigned_by: str) -> None:
+    """Un solo correo con todos los casos que le tocaron al analista — en una
+    asignación masiva mandar un correo por caso sería spam."""
+    rows = "".join(
+        '<tr>'
+        f'<td style="padding:6px 10px;border-bottom:1px solid #1e293b;font-family:monospace;font-size:12px;color:#64748b">{html.escape(i.get("case_id", "")[:8])}</td>'
+        f'<td style="padding:6px 10px;border-bottom:1px solid #1e293b;font-size:13px;color:#e2e8f0">{html.escape(i.get("title", ""))}</td>'
+        '</tr>'
+        for i in items
+    )
+    body_html = f"""
+<div style="font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;border-radius:12px;max-width:640px">
+  <div style="background:#1e293b;border-radius:8px;padding:16px 20px;margin-bottom:16px">
+    <p style="margin:0;font-size:13px;color:#94a3b8">WatchTower AML &middot; Global66 Compliance</p>
+    <h2 style="margin:8px 0 0;font-size:18px;color:#fff">Se te asignaron {len(items)} casos</h2>
+  </div>
+  <table style="width:100%;border-collapse:collapse">{rows}</table>
+  <p style="font-size:12px;color:#475569;margin-top:16px">Asignado por: <strong style="color:#94a3b8">{html.escape(assigned_by or "—")}</strong></p>
+</div>
+"""
+    _send_email(to_email, f"[WatchTower] Se te asignaron {len(items)} casos", body_html)
+
+
+def bulk_assign_cases(body: dict):
+    """Asignación masiva de casos — reservado para administradores.
+
+    Dos modos:
+      - directo:    {"case_ids": [...], "assigned_to": "ana@global66.com"}
+                    todos los casos seleccionados van al mismo analista.
+      - equitativo: {"case_ids": [...], "assignees": ["ana@...", "luis@..."]}
+                    los casos se reparten en round-robin entre la lista — es
+                    el modo pensado para repartir N alertas por persona.
+
+    Manda UN correo resumen por analista, no uno por caso.
+    """
+    denied = _require_admin(body)
+    if denied:
+        return denied
+
+    case_ids = body.get("case_ids") or []
+    if not case_ids:
+        return resp(400, {"error": "case_ids es requerido (lista de al menos 1)"})
+    if len(case_ids) > _BULK_ASSIGN_MAX:
+        return resp(400, {"error": f"Máximo {_BULK_ASSIGN_MAX} casos por operación"})
+
+    assigned_to = (body.get("assigned_to") or "").strip()
+    assignees = [str(a).strip() for a in (body.get("assignees") or []) if str(a).strip()]
+    if assigned_to:
+        assignees = [assigned_to]
+    if not assignees:
+        return resp(400, {"error": "Indicá assigned_to (un analista) o assignees (lista para repartir)"})
+
+    actor = (body.get("actor_email") or "").strip()
+    notify = bool(body.get("notify", True))
+
+    # Round-robin: el caso i va al analista i % len(assignees). Con un solo
+    # analista en la lista es equivalente al modo directo.
+    per_assignee: dict[str, list[dict]] = {a: [] for a in assignees}
+    assigned, not_found = [], []
+    for idx, cid in enumerate(case_ids):
+        cid = str(cid).strip()
+        target = assignees[idx % len(assignees)]
+        updated = _crm_update("cases", cid, {"assigned_to": target, "updated_at": _now_str()})
+        if updated is None:
+            not_found.append(cid)
+            continue
+        per_assignee[target].append({"case_id": cid, "title": updated.get("title", "")})
+        assigned.append({"case_id": cid, "assigned_to": target})
+
+    _safe_audit(user_email=actor or "unknown", action="case.bulk_assign", entity_type="case",
+                entity_id=f"{len(assigned)} casos",
+                new_value={"assignees": assignees, "assigned": len(assigned),
+                           "not_found": len(not_found)})
+
+    if notify:
+        for email, items in per_assignee.items():
+            if items and "@" in email:
+                _case_bulk_assignment_email(email, items, actor)
+
+    return resp(200, {
+        "assigned": len(assigned),
+        "not_found": not_found,
+        "por_analista": {k: len(v) for k, v in per_assignee.items()},
+    })
+
+
+def take_case(case_id: str, body: dict):
+    """"Tomar caso" — el analista se auto-asigna el caso.
+
+    NO es admin-only a propósito: es justamente la vía para que cada analista
+    levante trabajo por su cuenta. Si el caso ya está tomado por otra persona
+    no lo pisa (409), salvo que se mande force=true — así nadie le saca un
+    caso a un compañero sin querer.
+    """
+    actor = (body.get("actor_email") or "").strip()
+    if not actor:
+        return resp(400, {"error": "actor_email es requerido"})
+
+    case = _crm_get("cases", case_id)
+    if case is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+
+    current = (case.get("assigned_to") or "").strip()
+    if current and current.lower() != actor.lower() and not body.get("force"):
+        return resp(409, {
+            "error": f"El caso ya está asignado a {current}.",
+            "assigned_to": current,
+        })
+
+    _crm_update("cases", case_id, {"assigned_to": actor, "updated_at": _now_str()})
+    _safe_audit(user_email=actor, action="case.take", entity_type="case",
+                entity_id=case_id, new_value={"assigned_to": actor, "previous": current})
+    return resp(200, {"message": f"Caso tomado por {actor}", "assigned_to": actor})
 
 
 def add_case_note(case_id: str, body: dict):
