@@ -1941,6 +1941,10 @@ def handler(event, context):  # noqa: ARG001
         # POST /whitelist
         if method == "POST" and parts == ["whitelist"]:
             return add_to_whitelist(body)
+        # POST /whitelist/bulk — alta masiva desde la tabla de resultados (admin).
+        # Va ANTES de cualquier ruta genérica /whitelist/{id}.
+        if method == "POST" and parts == ["whitelist", "bulk"]:
+            return bulk_add_to_whitelist(body)
         # DELETE /whitelist/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "whitelist":
             return remove_from_whitelist(parts[1])
@@ -2513,6 +2517,103 @@ def add_to_whitelist(body: dict):
         "expires_at_str": expires.strftime("%Y-%m-%d %H:%M:%S"),
     })
     return resp(201, {"whitelist_id": wid})
+
+
+def bulk_add_to_whitelist(body: dict):
+    """Alta masiva a whitelist desde la tabla de resultados de un reporte.
+
+    Mismo criterio que el reparto de alertas: se seleccionan filas y se
+    mandan todas juntas. Es admin-only porque poner clientes en whitelist
+    silencia sus alertas — es una acción de control, no operativa.
+
+    Salta las filas que no identifican a nadie y las que YA están en
+    whitelist vigente, así se puede correr dos veces sin duplicar.
+
+    body: {rows: [...], duration_days, reason, scope, report_name,
+           actor_email}
+    """
+    denied = _require_admin(body)
+    if denied:
+        return denied
+
+    rows = body.get("rows") or []
+    if not rows:
+        return resp(400, {"error": "rows es requerido (lista de al menos 1)"})
+    if len(rows) > _BULK_ASSIGN_MAX:
+        return resp(400, {"error": f"Máximo {_BULK_ASSIGN_MAX} filas por operación"})
+
+    try:
+        duration_days = int(body.get("duration_days", 30))
+    except (TypeError, ValueError):
+        duration_days = 30
+    if duration_days not in (30, 60, 90):
+        return resp(400, {"error": "duration_days debe ser 30, 60 o 90"})
+
+    actor = (body.get("actor_email") or "").strip()
+    reason = (body.get("reason") or "").strip()
+    scope = (body.get("scope") or "global").strip()
+    report_name = (body.get("report_name") or "").strip()
+    if not reason:
+        return resp(400, {"error": "reason es requerido — queda como justificación de por qué se silencian estas alertas"})
+
+    # Whitelist vigente, para no duplicar entradas al repetir la operación.
+    now = dt.datetime.utcnow()
+    now_ts = int(now.timestamp())
+    ya_vigentes = set()
+    try:
+        for w in _crm_list("whitelist"):
+            if int(w.get("expires_at") or 0) > now_ts:
+                ya_vigentes.add(((w.get("entity_field") or ""), str(w.get("entity_value") or "")))
+    except Exception:
+        pass
+
+    expires = now + dt.timedelta(days=duration_days)
+    added, skipped = [], []
+    vistos = set()
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            skipped.append({"index": idx, "motivo": "fila inválida"})
+            continue
+        field, value = _extract_entity_from_row(row)
+        if not value:
+            skipped.append({"index": idx, "motivo": "la fila no identifica cliente/empresa"})
+            continue
+        clave = (field, value)
+        if clave in ya_vigentes:
+            skipped.append({"index": idx, "motivo": f"{field} {value} ya está en whitelist vigente"})
+            continue
+        if clave in vistos:
+            skipped.append({"index": idx, "motivo": f"{field} {value} repetido en la misma selección"})
+            continue
+        vistos.add(clave)
+
+        wid = str(uuid.uuid4())
+        _crm_put("whitelist", wid, {
+            "whitelist_id": wid,
+            "entity_field": field,
+            "entity_value": value,
+            "duration_days": duration_days,
+            "reason": reason,
+            "scope": scope,
+            "report_name": report_name if scope == "report" else "",
+            "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "expires_at": int(expires.timestamp()),
+            "expires_at_str": expires.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        added.append({"whitelist_id": wid, "entity_field": field, "entity_value": value})
+
+    _safe_audit(user_email=actor or "unknown", action="whitelist.bulk_add",
+                entity_type="whitelist", entity_id=f"{len(added)} entradas",
+                new_value={"added": len(added), "skipped": len(skipped),
+                           "duration_days": duration_days, "scope": scope,
+                           "report_name": report_name, "reason": reason})
+
+    return resp(200, {
+        "added": len(added),
+        "skipped": skipped,
+        "expires_at": expires.strftime("%Y-%m-%d %H:%M:%S"),
+        "detalle": added,
+    })
 
 
 def remove_from_whitelist(whitelist_id: str):
