@@ -2709,8 +2709,8 @@ def run_alert_prioritization_test(body: dict):
         template_key = "general_b2c"
         html_body = _render_email_template(template_key, nombre)
         attachment = _email_template_attachment(template_key)
-        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
-                    attachments=[attachment] if attachment else None)
+        envio = _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
+                            attachments=[attachment] if attachment else None)
 
         req_id = str(uuid.uuid4())
         _crm_put("document_requests", req_id, {
@@ -2724,7 +2724,8 @@ def run_alert_prioritization_test(body: dict):
             "documentos_solicitados": documentos,
             "template_key": template_key,
             "subject": subject,
-            "sent": bool(GMAIL_APP_PASSWORD),
+            "sent": envio["sent"],
+            "send_error": envio["error"],
             "created_at": _now_str(),
             "test_mode": True,
         })
@@ -2734,7 +2735,8 @@ def run_alert_prioritization_test(body: dict):
             "prioridad": prioridad,
             "concepto": concepto,
             "case_id": case_id,
-            "email_sent": bool(GMAIL_APP_PASSWORD),
+            "email_sent": envio["sent"],
+            "email_error": envio["error"],
             "email_to": correo,
             "documentos_solicitados": documentos,
         })
@@ -2870,8 +2872,8 @@ def run_alert_prioritization_real(body: dict):
         subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
         html_body = _render_email_template(template_key, nombre)
         attachment = _email_template_attachment(template_key)
-        _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
-                    attachments=[attachment] if attachment else None)
+        envio = _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
+                            attachments=[attachment] if attachment else None)
 
         req_id = str(uuid.uuid4())
         _crm_put("document_requests", req_id, {
@@ -2888,7 +2890,8 @@ def run_alert_prioritization_real(body: dict):
             "concepto": concepto,
             "documentos_solicitados": documentos,
             "subject": subject,
-            "sent": bool(GMAIL_APP_PASSWORD),
+            "sent": envio["sent"],
+            "send_error": envio["error"],
             "created_at": _now_str(),
             "test_mode": False,
         })
@@ -2900,7 +2903,8 @@ def run_alert_prioritization_real(body: dict):
             "risk_score": score,
             "prioridad": prioridad,
             "case_id": case_id,
-            "email_sent": bool(GMAIL_APP_PASSWORD),
+            "email_sent": envio["sent"],
+            "email_error": envio["error"],
             "email_to": correo,
             "documentos_solicitados": documentos,
         })
@@ -3023,8 +3027,8 @@ def send_manual_document_request(body: dict):
     subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
     html_body = _render_email_template(template_key, nombre, texto_libre)
     attachment = _email_template_attachment(template_key)
-    _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
-                attachments=[attachment] if attachment else None)
+    envio = _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
+                        attachments=[attachment] if attachment else None)
 
     req_id = str(uuid.uuid4())
     _crm_put("document_requests", req_id, {
@@ -3039,14 +3043,16 @@ def send_manual_document_request(body: dict):
         "documentos_solicitados": documentos,
         "template_key": template_key,
         "subject": subject,
-        "sent": bool(GMAIL_APP_PASSWORD),
+        "sent": envio["sent"],
+        "send_error": envio["error"],
         "created_at": _now_str(),
         "manual": True,
     })
 
     return resp(200, {
         "case_id": case_id,
-        "email_sent": bool(GMAIL_APP_PASSWORD),
+        "email_sent": envio["sent"],
+        "email_error": envio["error"],
         "email_to": correo,
         "documentos_solicitados": documentos,
         "template_key": template_key,
@@ -3498,7 +3504,7 @@ _BULK_ASSIGN_MAX = 500
 
 
 def _bulk_assignment_email(to_email: str, items: list[dict], assigned_by: str,
-                           kind: str = "casos") -> None:
+                           kind: str = "casos") -> dict:
     """Un solo correo con todo lo que le tocó al analista en un reparto masivo
     — mandar un correo por caso/alerta sería spam.
 
@@ -3521,7 +3527,7 @@ def _bulk_assignment_email(to_email: str, items: list[dict], assigned_by: str,
   <p style="font-size:12px;color:#475569;margin-top:16px">Asignado por: <strong style="color:#94a3b8">{html.escape(assigned_by or "—")}</strong></p>
 </div>
 """
-    _send_email(to_email, f"[WatchTower] Se te asignaron {len(items)} {kind}", body_html)
+    return _send_email(to_email, f"[WatchTower] Se te asignaron {len(items)} {kind}", body_html)
 
 
 # Orden de preferencia para identificar a quién apunta una fila de un reporte.
@@ -3613,20 +3619,28 @@ def bulk_distribute_alerts(body: dict):
         per_assignee[target].append({"id": aid, "title": f"{field} {value}"})
         created.append({"alert_id": aid, "assigned_to": target, "entity_value": value})
 
-    _safe_audit(user_email=actor or "unknown", action="alert.bulk_distribute",
-                entity_type="alert", entity_id=f"{len(created)} alertas",
-                new_value={"report_name": report_name, "assignees": assignees,
-                           "created": len(created), "skipped": len(skipped)})
-
+    # Notificaciones: se reporta el resultado real por destinatario, para que
+    # el analista que reparte sepa si el correo salió o no (antes fallaba en
+    # silencio y nadie se enteraba).
+    notificaciones = []
     if notify:
         for email, items in per_assignee.items():
             if items and "@" in email:
-                _bulk_assignment_email(email, items, actor, kind="alertas")
+                r = _bulk_assignment_email(email, items, actor, kind="alertas")
+                notificaciones.append({"email": email, **r})
+
+    _safe_audit(user_email=actor or "unknown", action="alert.bulk_distribute",
+                entity_type="alert", entity_id=f"{len(created)} alertas",
+                new_value={"report_name": report_name, "assignees": assignees,
+                           "created": len(created), "skipped": len(skipped),
+                           "notificaciones": notificaciones})
 
     return resp(200, {
         "created": len(created),
         "skipped": skipped,
         "por_analista": {k: len(v) for k, v in per_assignee.items()},
+        "notificaciones": notificaciones,
+        "correos_fallidos": [n for n in notificaciones if not n["sent"]],
     })
 
 
@@ -3676,20 +3690,25 @@ def bulk_assign_cases(body: dict):
         per_assignee[target].append({"id": cid, "title": updated.get("title", "")})
         assigned.append({"case_id": cid, "assigned_to": target})
 
-    _safe_audit(user_email=actor or "unknown", action="case.bulk_assign", entity_type="case",
-                entity_id=f"{len(assigned)} casos",
-                new_value={"assignees": assignees, "assigned": len(assigned),
-                           "not_found": len(not_found)})
-
+    notificaciones = []
     if notify:
         for email, items in per_assignee.items():
             if items and "@" in email:
-                _bulk_assignment_email(email, items, actor, kind="casos")
+                r = _bulk_assignment_email(email, items, actor, kind="casos")
+                notificaciones.append({"email": email, **r})
+
+    _safe_audit(user_email=actor or "unknown", action="case.bulk_assign", entity_type="case",
+                entity_id=f"{len(assigned)} casos",
+                new_value={"assignees": assignees, "assigned": len(assigned),
+                           "not_found": len(not_found),
+                           "notificaciones": notificaciones})
 
     return resp(200, {
         "assigned": len(assigned),
         "not_found": not_found,
         "por_analista": {k: len(v) for k, v in per_assignee.items()},
+        "notificaciones": notificaciones,
+        "correos_fallidos": [n for n in notificaciones if not n["sent"]],
     })
 
 
@@ -4539,20 +4558,28 @@ def get_analytics_result(q0: str = "", q1: str = "", q2: str = "", q3: str = "",
 def _send_email(
     to: str, subject: str, html_body: str, from_addr: str | None = None,
     attachments: list[tuple[str, bytes]] | None = None,
-) -> None:
-    """Send an email via Gmail SMTP (non-blocking — errors are swallowed).
+) -> dict:
+    """Manda un correo por SMTP de Gmail. NO lanza excepciones (para no tumbar
+    la operación que lo llamó), pero SÍ devuelve qué pasó:
 
-    Always authenticates as GMAIL_USER (the account holding the app password),
-    but `from_addr` lets the message go out as one of that account's "send
-    mail as" aliases (e.g. compliance@global66.com) without needing a
-    separate app password — Gmail allows this as long as the alias is
-    configured under Settings → Accounts in that mailbox.
+        {"sent": bool, "error": str | None}
 
-    `attachments` is an optional list of (filename, bytes) — used for the
-    document-request templates, which each carry their own PDF form.
+    Antes se tragaba los errores en silencio y no quedaba rastro: si el correo
+    no salía, nadie se enteraba. Ahora además queda registrado en CloudWatch.
+
+    Siempre se autentica como GMAIL_USER (la cuenta que tiene la app password),
+    pero `from_addr` permite salir como uno de sus alias "enviar como"
+    (ej. compliance@global66.com) sin necesitar una app password propia.
+
+    `attachments` es una lista opcional de (nombre, bytes).
     """
-    if not GMAIL_APP_PASSWORD or not to or not to.strip():
-        return
+    if not to or not to.strip():
+        return {"sent": False, "error": "destinatario vacío"}
+    if not GMAIL_APP_PASSWORD:
+        msg_err = "GMAIL_APP_PASSWORD no está configurada en la Lambda"
+        print(f"[email] NO ENVIADO a {to}: {msg_err}")
+        return {"sent": False, "error": msg_err}
+
     import smtplib
     from email.mime.application import MIMEApplication
     from email.mime.multipart import MIMEMultipart
@@ -4576,11 +4603,17 @@ def _send_email(
     msg["From"] = sender
     msg["To"] = to
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as server:
+        # 8s era muy justo: el handshake TLS + login contra Gmail desde una
+        # Lambda fría se pasaba del límite y el correo se perdía sin aviso.
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
             server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
             server.sendmail(sender, [to], msg.as_string())
-    except Exception:
-        pass
+        print(f"[email] enviado a {to} (asunto: {subject!r})")
+        return {"sent": True, "error": None}
+    except Exception as e:
+        detalle = f"{type(e).__name__}: {e}"
+        print(f"[email] FALLÓ el envío a {to}: {detalle}")
+        return {"sent": False, "error": detalle}
 
 
 def _case_assignment_email(to_email: str, case_id: str, title: str, priority: str, assigned_by: str) -> None:
