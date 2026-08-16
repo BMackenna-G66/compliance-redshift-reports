@@ -4227,18 +4227,33 @@ def poll_document_replies() -> dict:
         return {"status": "skipped", "reason": "DOC_REPLY_IMAP_SECRET_ARN no configurado"}
 
     try:
-        imap = imaplib.IMAP4_SSL(DOC_REPLY_IMAP_HOST)
+        # timeout explícito: sin esto, un stall de red deja la Lambda colgada
+        # hasta su límite de 900s y las corridas programadas se apilan.
+        imap = imaplib.IMAP4_SSL(DOC_REPLY_IMAP_HOST, timeout=30)
         imap.login(DOC_REPLY_IMAP_USER, password)
     except Exception as e:
         return {"status": "error", "error": f"No se pudo conectar/autenticar por IMAP: {e}"}
 
     processed = matched = matched_no_doc = unmatched = errors = 0
+    pendientes = 0
+    # Topes por corrida: la casilla puede tener un backlog grande (correo del
+    # grupo que nadie procesó), y recorrerlo entero en una sola invocación
+    # colgaba la Lambda. Se procesa de a tandas: lo que sobra queda para la
+    # corrida siguiente, que es cada 10 minutos.
+    MAX_POR_CARPETA = 40
+    deadline = time.time() + 240  # 4 min, muy por debajo del límite de 900s
+
     try:
         # ── INBOX: todo lo no matcheado se marca leído (comportamiento normal) ──
         status, _ = imap.select("INBOX")
         if status == "OK":
             status, data = imap.search(None, "UNSEEN")
-            for num in (data[0].split() if status == "OK" else []):
+            nums = data[0].split() if status == "OK" else []
+            pendientes += max(0, len(nums) - MAX_POR_CARPETA)
+            for num in nums[:MAX_POR_CARPETA]:
+                if time.time() > deadline:
+                    pendientes += 1
+                    continue
                 try:
                     outcome = _process_reply_message(imap, num, email_lib)
                     if outcome == "error":
@@ -4257,7 +4272,12 @@ def poll_document_replies() -> dict:
         status, _ = imap.select('"[Gmail]/Spam"')
         if status == "OK":
             status, data = imap.search(None, "UNSEEN")
-            for num in (data[0].split() if status == "OK" else []):
+            nums = data[0].split() if status == "OK" else []
+            pendientes += max(0, len(nums) - MAX_POR_CARPETA)
+            for num in nums[:MAX_POR_CARPETA]:
+                if time.time() > deadline:
+                    pendientes += 1
+                    continue
                 try:
                     outcome = _process_reply_message(imap, num, email_lib, move_matched_from_spam=True)
                     if outcome in ("matched", "matched_no_attachment"):
@@ -4275,8 +4295,11 @@ def poll_document_replies() -> dict:
         except Exception:
             pass
 
-    return {"status": "ok", "processed": processed, "matched": matched,
-            "matched_no_attachment": matched_no_doc, "unmatched": unmatched, "errors": errors}
+    resultado = {"status": "ok", "processed": processed, "matched": matched,
+                 "matched_no_attachment": matched_no_doc, "unmatched": unmatched,
+                 "errors": errors, "pendientes": pendientes}
+    print(f"poll_document_replies: {resultado}")
+    return resultado
 
 
 # ---------------------------------------------------------------------------
