@@ -111,7 +111,45 @@ S3_BUCKET = os.environ["S3_BUCKET"]
 
 # Phase 8 — Email notifications
 GMAIL_USER = os.environ.get("GMAIL_USER", "benjamin.mackenna@global66.com")
+# Fallback heredado: la app password como variable de entorno en texto plano.
+# La fuente preferida es Secrets Manager (ver _get_gmail_password).
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+GMAIL_PASSWORD_SECRET_NAME = os.environ.get(
+    "GMAIL_PASSWORD_SECRET_NAME", "compliance-redshift-reports/gmail-app-password"
+)
+_gmail_password_cache: str | None = None
+
+
+def _get_gmail_password() -> str:
+    """App password de Gmail, priorizando Secrets Manager sobre la variable de
+    entorno en texto plano.
+
+    Google muestra la clave en 4 grupos de 4 ("abcd efgh ijkl mnop") y es muy
+    fácil guardarla tal cual, pero SMTP la rechaza con los espacios — así que
+    se limpian acá en vez de depender de que se haya guardado bien.
+
+    Se cachea por contenedor: si se rota el secreto, el valor nuevo entra
+    cuando Lambda recicle el contenedor (o con un redeploy).
+    """
+    global _gmail_password_cache
+    if _gmail_password_cache is not None:
+        return _gmail_password_cache
+
+    pw = ""
+    try:
+        sm = boto3.client("secretsmanager")
+        raw = sm.get_secret_value(SecretId=GMAIL_PASSWORD_SECRET_NAME).get("SecretString", "")
+        pw = "".join((raw or "").split())
+        if pw:
+            print(f"[email] app password leída de Secrets Manager ({len(pw)} chars)")
+    except Exception as e:
+        print(f"[email] no se pudo leer el secreto ({type(e).__name__}) — se usa la variable de entorno")
+
+    if not pw:
+        pw = "".join((GMAIL_APP_PASSWORD or "").split())
+
+    _gmail_password_cache = pw
+    return pw
 
 # Phase 10 — Auto-case rules S3 key
 AUTO_RULES_KEY = "config/auto_case_rules.json"
@@ -800,10 +838,13 @@ def notify_alert(body: dict):
     if not to_email or "@" not in to_email:
         return resp(400, {"error": "to_email is required"})
 
-    gmail_user = os.environ.get("GMAIL_USER", "")
-    gmail_app_password = os.environ.get("GMAIL_APP_PASSWORD", "")
+    # Misma fuente de credencial que _send_email (Secrets Manager con fallback
+    # a la variable de entorno) — antes leía la env var por su cuenta y se
+    # quedaba afuera cuando se rotaba la clave.
+    gmail_user = GMAIL_USER
+    gmail_app_password = _get_gmail_password()
     if not gmail_user or not gmail_app_password:
-        return resp(500, {"error": "GMAIL_USER or GMAIL_APP_PASSWORD not configured"})
+        return resp(500, {"error": "No hay credencial de Gmail configurada (Secrets Manager / GMAIL_APP_PASSWORD)"})
 
     subject = f"[WatchTower AML] Nueva alerta asignada: {entity_value}"
     note_row = (
@@ -4676,8 +4717,10 @@ def _send_email(
     """
     if not to or not to.strip():
         return {"sent": False, "error": "destinatario vacío"}
-    if not GMAIL_APP_PASSWORD:
-        msg_err = "GMAIL_APP_PASSWORD no está configurada en la Lambda"
+    gmail_password = _get_gmail_password()
+    if not gmail_password:
+        msg_err = ("No hay app password de Gmail configurada (ni en Secrets Manager "
+                   f"'{GMAIL_PASSWORD_SECRET_NAME}' ni en la variable GMAIL_APP_PASSWORD)")
         print(f"[email] NO ENVIADO a {to}: {msg_err}")
         return {"sent": False, "error": msg_err}
 
@@ -4707,7 +4750,7 @@ def _send_email(
         # 8s era muy justo: el handshake TLS + login contra Gmail desde una
         # Lambda fría se pasaba del límite y el correo se perdía sin aviso.
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
-            server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+            server.login(GMAIL_USER, gmail_password)
             server.sendmail(sender, [to], msg.as_string())
         print(f"[email] enviado a {to} (asunto: {subject!r})")
         return {"sent": True, "error": None}
