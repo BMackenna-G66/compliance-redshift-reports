@@ -180,6 +180,10 @@ DOC_REPLY_IMAP_HOST = "imap.gmail.com"
 DOC_REPLY_IMAP_USER = os.environ.get("DOC_REPLY_IMAP_USER", "compliance.masivo@global66.com")
 DOC_REPLY_IMAP_SECRET_ARN = os.environ.get("DOC_REPLY_IMAP_SECRET_ARN", "")
 _ATTACHMENT_EXTS_ALLOWED = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xls", ".xlsx", ".heic", ".webp"}
+# Ventana hacia atrás del poller de respuestas. Acota la búsqueda a correo
+# reciente: la casilla arrastra miles de mensajes viejos del grupo que no son
+# respuestas a solicitudes, y no tiene sentido tocarlos.
+DOC_REPLY_LOOKBACK_DAYS = int(os.environ.get("DOC_REPLY_LOOKBACK_DAYS", "10"))
 _EMAIL_REF_RE = re.compile(r"\[ref:\s*([0-9a-f]{8})\]", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
@@ -4236,18 +4240,25 @@ def poll_document_replies() -> dict:
 
     processed = matched = matched_no_doc = unmatched = errors = 0
     pendientes = 0
-    # Topes por corrida: la casilla puede tener un backlog grande (correo del
-    # grupo que nadie procesó), y recorrerlo entero en una sola invocación
-    # colgaba la Lambda. Se procesa de a tandas: lo que sobra queda para la
-    # corrida siguiente, que es cada 10 minutos.
+    # Topes por corrida: recorrer toda la casilla en una sola invocación
+    # colgaba la Lambda. Se procesa de a tandas; lo que sobra queda para la
+    # corrida siguiente (cada 10 minutos).
     MAX_POR_CARPETA = 40
     deadline = time.time() + 240  # 4 min, muy por debajo del límite de 900s
+
+    # Solo se miran los mensajes de los últimos días. compliance.masivo es un
+    # espejo del grupo y arrastra miles de correos viejos sin leer que no
+    # tienen nada que ver con solicitudes de documentos; procesarlos los
+    # marcaría como leídos sin motivo. Una respuesta de un cliente a una
+    # solicitud siempre es reciente.
+    desde = (dt.datetime.utcnow() - dt.timedelta(days=DOC_REPLY_LOOKBACK_DAYS)).strftime("%d-%b-%Y")
+    criterio = f'(UNSEEN SINCE {desde})'
 
     try:
         # ── INBOX: todo lo no matcheado se marca leído (comportamiento normal) ──
         status, _ = imap.select("INBOX")
         if status == "OK":
-            status, data = imap.search(None, "UNSEEN")
+            status, data = imap.search(None, criterio)
             nums = data[0].split() if status == "OK" else []
             pendientes += max(0, len(nums) - MAX_POR_CARPETA)
             for num in nums[:MAX_POR_CARPETA]:
@@ -4271,7 +4282,7 @@ def poll_document_replies() -> dict:
         # ── Spam: solo se toca lo que matchea un token real; el resto ni se mira ──
         status, _ = imap.select('"[Gmail]/Spam"')
         if status == "OK":
-            status, data = imap.search(None, "UNSEEN")
+            status, data = imap.search(None, criterio)
             nums = data[0].split() if status == "OK" else []
             pendientes += max(0, len(nums) - MAX_POR_CARPETA)
             for num in nums[:MAX_POR_CARPETA]:
