@@ -78,6 +78,15 @@ except Exception:
     def _apply_institutional_alert_rules(*args, **kwargs):  # noqa: ANN001
         return 0
 
+# Envío por Gmail SMTP, compartido con la API (lee la app password de Secrets
+# Manager). Se usa como camino principal para los avisos de reporte porque SES
+# está en sandbox y sin identidades verificadas — ver send_email().
+try:
+    from api_handler import _send_email as _send_email_gmail
+except Exception:
+    def _send_email_gmail(*args, **kwargs):  # noqa: ANN001
+        return {"sent": False, "error": "api_handler no importable"}
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -1034,25 +1043,53 @@ def render_email_html(summary: dict, params: dict, s3_url: str) -> str:
 # Delivery
 # ---------------------------------------------------------------------------
 def send_email(html_body: str, xlsx_bytes: bytes, xlsx_filename: str, subject: str) -> None:
+    """Manda el aviso de reporte terminado (con el Excel adjunto) al equipo.
+
+    Va por Gmail SMTP, no por SES: la cuenta tiene SES en sandbox y sin
+    ninguna identidad verificada, así que todo send_raw_email fallaba — y como
+    el llamador captura la excepción y solo la loguea, los avisos se perdían
+    sin que nadie lo notara.
+
+    SES queda como respaldo por si en algún momento se verifica el dominio y
+    se pide la salida del sandbox; si Gmail falla, se intenta igual.
+    """
+    destinatarios = [e for e in SES_TO if e and e.strip()]
+    if not destinatarios:
+        logger.warning("No hay destinatarios configurados (SES_TO_ADDRESSES) — no se manda el aviso")
+        return
+
+    adjuntos = [(xlsx_filename, xlsx_bytes)]
+    enviados, fallidos = [], []
+    for destino in destinatarios:
+        r = _send_email_gmail(destino, subject, html_body, attachments=adjuntos)
+        (enviados if r.get("sent") else fallidos).append((destino, r.get("error")))
+
+    if enviados:
+        logger.info("Aviso de reporte enviado por Gmail a %s", [d for d, _ in enviados])
+    if not fallidos:
+        return
+
+    logger.warning("Gmail falló para %s — se intenta SES como respaldo", [d for d, _ in fallidos])
     msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"] = SES_FROM
-    msg["To"] = ", ".join(SES_TO)
-
+    msg["To"] = ", ".join(d for d, _ in fallidos)
     body = MIMEMultipart("alternative")
     body.attach(MIMEText(html_body, "html", "utf-8"))
     msg.attach(body)
-
     att = MIMEApplication(xlsx_bytes)
     att.add_header("Content-Disposition", "attachment", filename=xlsx_filename)
     msg.attach(att)
-
-    ses.send_raw_email(
-        Source=SES_FROM,
-        Destinations=SES_TO,
-        RawMessage={"Data": msg.as_string()},
-    )
-    logger.info("Email sent to %s", SES_TO)
+    try:
+        ses.send_raw_email(
+            Source=SES_FROM,
+            Destinations=[d for d, _ in fallidos],
+            RawMessage={"Data": msg.as_string()},
+        )
+        logger.info("Aviso enviado por SES (respaldo)")
+    except Exception as e:  # noqa: BLE001
+        detalle = "; ".join(f"{d}: {err}" for d, err in fallidos)
+        logger.error("El aviso de reporte NO se pudo enviar. Gmail: %s | SES: %s", detalle, e)
 
 
 def post_slack(summary: dict, params: dict, s3_url: str, report_name: str) -> None:
