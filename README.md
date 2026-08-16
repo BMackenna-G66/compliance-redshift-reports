@@ -1,115 +1,186 @@
-# compliance-redshift-reports
+# WatchTower — Plataforma de Monitoreo AML
 
-Automated AML/sanctions screening reports over Redshift. Pulls transactions to high-risk
-jurisdictions on a schedule, generates an Excel + HTML report, and delivers it via
-email (SES) and Slack.
+Plataforma interna de Compliance de Global66 para detección, priorización, investigación
+y cierre de alertas de lavado de activos y financiamiento del terrorismo.
 
-Built to run cheap, only resuming the Redshift cluster while the query runs.
+Unifica en un solo lugar lo que antes vivía repartido entre consultas SQL sueltas,
+planillas y correos: el catálogo de reportes de detección, la bandeja de alertas, los
+casos de investigación, la solicitud de documentación al cliente y su seguimiento.
 
-## Architecture (MVP)
+---
+
+## Qué resuelve
+
+| Antes | Con WatchTower |
+|---|---|
+| Consultas SQL corridas a mano, una por una | Catálogo de 31 reportes ejecutables desde el navegador |
+| Priorización por criterio individual del analista | Puntaje de riesgo y prioridad (P1/P2/P3) calculados por el sistema |
+| Reparto de alertas por planilla o mensaje | Asignación masiva con reparto equitativo entre analistas |
+| Correos al cliente redactados a mano | Plantillas oficiales con el formulario adjunto automáticamente |
+| Documentos recibidos rastreados por memoria | Checklist por caso, actualizado solo al recibir la respuesta |
+| Sin trazabilidad de quién hizo qué | Bitácora de auditoría de toda acción relevante |
+
+---
+
+## Módulos
+
+| Módulo | Para qué sirve |
+|---|---|
+| **Dashboard** | Vista general: volumen transaccional, alertas y casos en curso |
+| **Alertas** | Catálogo de reportes de detección. Se ejecutan bajo demanda o programados |
+| **Alertados** | Bandeja de alertas marcadas para revisión, con su analista asignado |
+| **Casos** | Casos de investigación: estados, notas, adjuntos y checklist de documentos |
+| **Pendientes** | Lo que espera acción del analista |
+| **Whitelist** | Clientes cuyas alertas se silencian por un período justificado |
+| **Historial** | Corridas anteriores de reportes, con su Excel descargable |
+| **Análisis Individual** | Perfil AML completo de un cliente o empresa, y búsqueda de remesas |
+| **Búsqueda** | Consulta puntual de clientes, empresas y transacciones |
+| **Institucional** | Monitoreo dedicado de clientes institucionales y reglas de umbral |
+| **Queries** | Consultas SQL propias guardadas por el equipo |
+| **Admin** | Usuarios y roles, automatizaciones, mantenedores y auditoría |
+
+---
+
+## Catálogo de detección
+
+31 reportes agrupados por tipo de riesgo:
+
+| Categoría | Reportes | Ejemplos |
+|---|---|---|
+| **Patrones AML** | 8 | Estructuración, smurfing, circularidad, beneficiario compartido |
+| **Comportamiento Clientes** | 7 | Concentración de beneficiarios, cambios de banco, volumen atípico |
+| **AML Transaccional** | 5 | Países de alto riesgo, régimen fiscal preferencial, rangos por país |
+| **KYC / Jumio** | 5 | Duplicidad documental, representantes cruzados, anomalías de edad |
+| **Crypto / Bridge** | 4 | Operaciones y fondeos asociados a criptoactivos |
+| **Institucional** | 1 | Transacciones recientes de clientes institucionales activos |
+| **Priorización** | 1 | Datos de prueba para calibrar el modelo de riesgo |
+
+---
+
+## Cómo funciona
 
 ```
-EventBridge (cron 08:00 UTC Mon-Fri)
-        │
-        ▼
-   Lambda  ──► Redshift Data API
-   handler                    │
-        │   1. Resume cluster (if paused)
-        │   2. Wait until available
-        │   3. Execute parameterized SQL
-        │   4. Fetch results
-        │   5. Build Excel (.xlsx) + HTML body
-        │   6. Upload .xlsx to S3 (SSE-encrypted)
-        │   7. Send SES email with attachment + presigned link
-        │   8. POST summary to Slack webhook
-        │   9. Pause cluster
-        ▼
-   CloudWatch Logs (audit trail)
+        Reporte de detección
+   (bajo demanda o programado)
+                │
+                ▼
+      Puntaje de riesgo + prioridad          ── P1 / P2 / P3
+                │
+                ▼
+        Bandeja de Alertados  ──────────►  Whitelist
+                │                          (silenciar con justificación)
+                ▼
+      Reparto entre analistas
+   (uno por uno o equitativo)
+                │
+                ▼
+      Caso de Investigación
+                │
+                ▼
+   Solicitud de documentos al cliente
+      (plantilla + formulario adjunto)
+                │
+                ▼
+      El cliente responde por correo
+                │
+                ▼
+   El adjunto se vincula solo al caso
+      y el checklist pasa a "Recibido"
+                │
+                ▼
+      El analista valida y cierra
 ```
 
-Single Lambda for the MVP. When you outgrow the 15-minute Lambda timeout or want
-parallel reports, we split it into Step Functions (already designed, just not yet
-implemented).
+### Priorización
 
-## Repo layout
+Cada fila que identifica a un cliente o empresa recibe un puntaje de riesgo que combina
+país de residencia, nacionalidad, condición de PEP, profesión o actividad, y cantidad de
+beneficiarios. De ese puntaje sale la prioridad:
 
-```
-.
-├── README.md               this file
-├── DEPLOY.md               step-by-step deployment guide — read this next
-├── .gitignore
-├── queries/
-│   └── high_risk_countries_transactions.sql
-├── config/
-│   └── high_risk_countries.yaml
-├── lambda/
-│   ├── handler.py
-│   ├── email_template.html
-│   └── requirements.txt
-└── infra/
-    ├── main.tf
-    ├── variables.tf
-    ├── outputs.tf
-    └── terraform.tfvars.example
-```
+- **P1** — riesgo alto, atención el mismo día
+- **P2** — riesgo medio
+- **P3** — riesgo bajo
+
+> Los pesos de cada componente y los umbrales están en calibración por parte de
+> Compliance. Hasta su validación, la prioridad es apoyo a la revisión del analista,
+> no criterio único de decisión.
+
+### Solicitud de documentos
+
+Cuatro plantillas oficiales, cada una con su formulario adjunto automáticamente:
+
+| Plantilla | Uso | Adjunto |
+|---|---|---|
+| B2C general | Personas, cualquier país salvo Argentina | Formulario KYC Individual |
+| B2C Argentina | Personas con origen Argentina | Formulario KYC Individual |
+| B2B genérico | Empresas | Formulario B2B |
+| Texto libre | Comunicación puntual fuera de lo estándar | — |
+
+En el flujo automático la plantilla se elige sola según el país del cliente. En el manual
+la elige el analista.
+
+### Seguimiento de lo recibido
+
+Cada documento solicitado tiene tres estados:
+
+- **Pendiente** — se pidió, no llegó
+- **Recibido** — el cliente respondió con un archivo (lo marca el sistema)
+- **Entregado** — el analista abrió el documento y lo dio por válido
+
+El sistema **nunca** marca "Entregado" por su cuenta: esa confirmación es siempre humana.
+
+### Escucha de respuestas
+
+Cada solicitud lleva un código de referencia en el asunto. Cuando el cliente responde, el
+sistema lo reconoce, vincula los adjuntos al caso correcto y actualiza el checklist. Si la
+respuesta no trae archivos, igual queda registrada como nota en el caso.
+
+---
+
+## Automatizaciones
+
+| Automatización | Qué hace |
+|---|---|
+| Programación de reportes | Ejecuta reportes del catálogo de forma periódica |
+| Reglas de creación de casos | Abre casos solos según volumen o umbral de un campo |
+| Disparo automático para P1 | Solicita documentos y abre el caso sin intervención manual |
+| Escucha de respuestas | Vincula al caso los documentos que manda el cliente |
+| Alertas institucionales | Avisa cuando un cliente supera un umbral configurado |
+
+> El disparo automático de solicitudes está **apagado por defecto** hasta que el modelo de
+> priorización quede validado.
+
+---
+
+## Roles y trazabilidad
+
+Acceso restringido a cuentas corporativas mediante autenticación de Google. Cada usuario
+tiene un rol y un conjunto de módulos habilitados.
+
+Las acciones de control —asignación masiva, eliminación de casos y whitelist en lote—
+están reservadas a administradores y validadas del lado del servidor. Toda acción
+relevante queda en la bitácora de auditoría con usuario, fecha y detalle.
+
+---
+
+## Documentación relacionada
+
+| Documento | Contenido |
+|---|---|
+| `RESUMEN_APP.md` | Resumen funcional: módulos, qué hace cada uno y cómo |
+| `DEPLOY.md` | Guía de despliegue |
+| `WATCHTOWER_AML_DOCS.md` | Documentación técnica ampliada |
+
+La metodología de negocio detrás de las alertas está en el documento corporativo
+*Metodología de Perfilamiento de Clientes y Alertas Transaccionales* (MET-G81-001).
+
+---
 
 ## Stack
 
-- **AWS Lambda** (Python 3.12) — orchestration + report generation
-- **Redshift Data API** — async SQL execution, no VPC required
-- **EventBridge Scheduler** — cron trigger
-- **S3** — report storage (SSE-S3 encryption, 90-day lifecycle)
-- **SES** — email delivery
-- **Secrets Manager** — Slack webhook URL
-- **CloudWatch Logs** — execution logs
-- **Terraform** — IaC
+Frontend estático (HTML + Alpine.js + Tailwind) sobre GitHub Pages, autenticado con
+Firebase. Backend serverless en AWS Lambda (Python) contra Redshift vía Data API, con
+almacenamiento operativo en S3 y notificaciones por correo y Slack.
 
-## What runs today
-
-One report: **High-risk countries transactions** (FATF + sanctions watchlist).
-Pulls outbound transactions to ~50 jurisdictions since a configurable start date.
-
-Default schedule: every Monday at 08:00 UTC. Parameters can be overridden via manual
-Lambda invocation.
-
-## Quickstart
-
-Read [DEPLOY.md](./DEPLOY.md). Roughly:
-
-```bash
-# 1. Configure terraform.tfvars from the example
-cd infra
-cp terraform.tfvars.example terraform.tfvars
-# edit terraform.tfvars with your account-specific values
-
-# 2. Deploy
-terraform init
-terraform plan
-terraform apply
-
-# 3. Test
-aws lambda invoke \
-  --function-name compliance-redshift-reports \
-  --payload '{"since_date": "2026-04-25"}' \
-  --cli-binary-format raw-in-base64-out \
-  response.json
-```
-
-## Roadmap
-
-- [x] **Phase 1** — Single-report Lambda, EventBridge schedule, SES + Slack
-- [ ] **Phase 2** — Multi-report catalog, SQL files with YAML metadata, dynamic params
-- [ ] **Phase 3** — Static frontend (Amplify) with form-based triggering
-- [ ] **Phase 4** — Redshift ML for anomaly detection + Bedrock Claude for narrative analysis
-- [ ] **Phase 5** — Step Functions orchestration, multi-tenant reports
-
-## Cost estimate
-
-- Lambda: <$2/mo
-- S3: <$1/mo
-- SES: $0.10 per 1000 emails
-- Secrets Manager: $0.40/mo per secret
-- CloudWatch Logs: <$1/mo
-- Redshift: no extra cost beyond what you already pay (cluster only resumes during runs)
-
-**Total new infra: ~$5/mo.**
+> La configuración de infraestructura, credenciales y endpoints no se documenta en este
+> repositorio público. Está en el gestor de secretos de la cuenta AWS correspondiente.
