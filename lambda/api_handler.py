@@ -4246,13 +4246,17 @@ def poll_document_replies() -> dict:
     MAX_POR_CARPETA = 40
     deadline = time.time() + 240  # 4 min, muy por debajo del límite de 900s
 
-    # Solo se miran los mensajes de los últimos días. compliance.masivo es un
-    # espejo del grupo y arrastra miles de correos viejos sin leer que no
-    # tienen nada que ver con solicitudes de documentos; procesarlos los
-    # marcaría como leídos sin motivo. Una respuesta de un cliente a una
-    # solicitud siempre es reciente.
+    # Se busca SOLO lo que trae nuestro token de referencia en el asunto
+    # ("[ref: xxxxxxxx]", que el cliente conserva al responder), acotado a los
+    # últimos días.
+    #
+    # Es clave que el filtro sea así de específico: compliance.masivo espeja al
+    # grupo compliance@ y tiene ~1.500 mensajes sin leer que no tienen nada que
+    # ver con esto. Filtrando por asunto no se los toca — antes se los abría y
+    # se los marcaba como leídos solo para descartarlos, ensuciando una casilla
+    # corporativa real.
     desde = (dt.datetime.utcnow() - dt.timedelta(days=DOC_REPLY_LOOKBACK_DAYS)).strftime("%d-%b-%Y")
-    criterio = f'(UNSEEN SINCE {desde})'
+    criterio = f'(UNSEEN SINCE {desde} SUBJECT "ref:")'
 
     try:
         # ── INBOX: todo lo no matcheado se marca leído (comportamiento normal) ──
