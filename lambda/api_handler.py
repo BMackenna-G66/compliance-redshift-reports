@@ -1897,6 +1897,10 @@ def handler(event, context):  # noqa: ARG001
             qs = event.get("queryStringParameters") or {}
             return get_runs(qs.get("user_email", ""))
 
+        # GET /runs/{run_id}/rows — todas las filas navegables de la corrida.
+        # Va ANTES de GET /runs/{run_id} por especificidad.
+        if method == "GET" and len(parts) == 3 and parts[0] == "runs" and parts[2] == "rows":
+            return get_run_rows(parts[1])
         # GET /runs/{run_id}
         if method == "GET" and len(parts) == 2 and parts[0] == "runs":
             return get_run(parts[1])
@@ -2318,6 +2322,50 @@ def get_run(run_id: str):
                 item[fld] = fallback
 
     return resp(200, item)
+
+
+def get_run_rows(run_id: str):
+    """Todas las filas navegables de una corrida.
+
+    El registro de la corrida en DynamoDB solo guarda 10 filas de muestra (por
+    el límite de tamaño de item), por eso la tabla en pantalla mostraba "10 de
+    N" sin forma de ver el resto. El runner deja el resultado completo en S3 y
+    este endpoint lo sirve para que la tabla pueda paginarlo entero."""
+    result = runs_table.get_item(Key={"run_id": run_id})
+    item = result.get("Item")
+    if not item:
+        return resp(404, {"error": "Run not found"})
+
+    key = item.get("rows_json_key")
+    if not key:
+        # Corrida vieja, anterior a este cambio: solo existe la muestra.
+        preview = item.get("result_preview")
+        if isinstance(preview, str):
+            try:
+                preview = json.loads(preview)
+            except Exception:
+                preview = []
+        return resp(200, {
+            "rows": preview or [],
+            "count": len(preview or []),
+            "total": int(item.get("row_count") or 0),
+            "truncated": True,
+            "reason": "corrida anterior a la vista completa — volvé a ejecutar el reporte para verlo todo",
+        })
+
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=key)
+        rows = json.loads(obj["Body"].read())
+    except Exception as e:
+        return resp(200, {"rows": [], "count": 0, "error": f"No se pudieron leer las filas: {e}"})
+
+    total = int(item.get("row_count") or len(rows))
+    return resp(200, {
+        "rows": rows,
+        "count": len(rows),
+        "total": total,
+        "truncated": len(rows) < total,
+    })
 
 
 def save_query(body: dict, created_by: str):
@@ -2839,6 +2887,8 @@ def run_alert_prioritization_test(body: dict):
             "entity_type": "customer_test",
             "entity_id": str(customer_id),
             "report_name": "alert_prioritization_test",
+            "alert_data": r,
+            "alert_priority": prioridad,
             "assigned_to": "",
             "created_by": "alert_prioritization_test",
         })
@@ -3004,6 +3054,8 @@ def run_alert_prioritization_real(body: dict):
             "entity_type": entity_type,
             "entity_id": str(entity_id),
             "report_name": alerta,
+            "alert_data": row,
+            "alert_priority": prioridad,
             "assigned_to": "",
             "created_by": "alert_prioritization_real",
         })
@@ -3161,6 +3213,8 @@ def send_manual_document_request(body: dict):
             "entity_type": entity_type,
             "entity_id": str(entity_id),
             "report_name": alerta,
+            "alert_data": body.get("alert_data") or {},
+            "alert_priority": prioridad,
             "assigned_to": "",
             "created_by": "manual_document_request",
         })
@@ -3424,6 +3478,18 @@ def create_case(body: dict):
     assigned_to = body.get("assigned_to", "").strip()
     created_by = body.get("created_by", "unknown").strip()
 
+    # Datos de la alerta que originó el caso. Se guardan tal cual la fila del
+    # reporte para que el analista vea en el caso los mismos números que
+    # gatillaron la alerta, sin tener que volver a correr la consulta.
+    alert_data = body.get("alert_data") or {}
+    if isinstance(alert_data, str):
+        try:
+            alert_data = json.loads(alert_data)
+        except Exception:
+            alert_data = {}
+    if not isinstance(alert_data, dict):
+        alert_data = {}
+
     cid = str(uuid.uuid4())
     now = _now_str()
     _crm_put("cases", cid, {
@@ -3435,6 +3501,8 @@ def create_case(body: dict):
         "entity_type": body.get("entity_type", "").strip(),
         "entity_id": body.get("entity_id", "").strip(),
         "report_name": body.get("report_name", "").strip(),
+        "alert_data": alert_data,
+        "alert_priority": (body.get("alert_priority") or "").strip(),
         "assigned_to": assigned_to,
         "created_by": created_by,
         "created_at": now,
@@ -3915,9 +3983,25 @@ def link_alert_to_case(alert_id: str, body: dict):
     case_id = body.get("case_id", "").strip()
     if not case_id:
         return resp(400, {"error": "case_id is required"})
-    if _crm_update("alerts", alert_id, {"case_id": case_id}) is None:
+    alerta = _crm_update("alerts", alert_id, {"case_id": case_id})
+    if alerta is None:
         return resp(404, {"error": f"Alert '{alert_id}' not found"})
-    _crm_update("cases", case_id, {"updated_at": _now_str()})
+
+    cambios = {"updated_at": _now_str()}
+    # Si el caso todavía no tiene los datos de una alerta, se copian los de
+    # esta — así al abrir el caso se ven los números que la gatillaron.
+    caso = _crm_get("cases", case_id) or {}
+    if not caso.get("alert_data"):
+        row = alerta.get("row_data")
+        if isinstance(row, str):
+            try:
+                row = json.loads(row)
+            except Exception:
+                row = None
+        if isinstance(row, dict) and row:
+            cambios["alert_data"] = row
+            cambios["alert_priority"] = alerta.get("priority", "")
+    _crm_update("cases", case_id, cambios)
     return resp(200, {"message": f"Alert '{alert_id}' linked to case '{case_id}'"})
 
 

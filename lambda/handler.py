@@ -1009,6 +1009,32 @@ def _build_transaction_search_excel(rows: list[dict], n_requested: int) -> bytes
     return buf.getvalue()
 
 
+# Tope de filas que se dejan disponibles para ver en el navegador. El Excel
+# siempre lleva el total; esto es solo para que la tabla en pantalla sea
+# navegable sin colgar el browser en reportes de cientos de miles de filas.
+BROWSABLE_ROWS_MAX = 5000
+
+
+def upload_rows_json(rows: list[dict], run_id: str) -> tuple[str, int]:
+    """Deja las filas del reporte en S3 como JSON para que la tabla del
+    navegador pueda paginarlas todas.
+
+    Antes solo se guardaban 10 filas en el registro de la corrida (para no
+    pasarse del límite de tamaño de item de DynamoDB), así que la tabla en
+    pantalla mostraba 10 de N y no había forma de ver el resto sin bajar el
+    Excel. Devuelve (key, cantidad_disponible)."""
+    subset = rows[:BROWSABLE_ROWS_MAX]
+    key = f"run-rows/{run_id}.json"
+    body = json.dumps(subset, default=str).encode("utf-8")
+    s3.put_object(
+        Bucket=S3_BUCKET, Key=key, Body=body,
+        ContentType="application/json", ServerSideEncryption="AES256",
+    )
+    logger.info("Filas navegables en S3: %s (%d de %d filas, %d KB)",
+                key, len(subset), len(rows), len(body) // 1024)
+    return key, len(subset)
+
+
 def upload_to_s3(content: bytes, key: str, content_type: str) -> str:
     s3.put_object(
         Bucket=S3_BUCKET,
@@ -1407,12 +1433,20 @@ ORDER BY
             upload_to_s3(xlsx_bytes, key,
                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+            rows_key, rows_available = "", 0
+            try:
+                rows_key, rows_available = upload_rows_json(rows, run_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("No se pudieron subir las filas navegables: %s", e)
+
             _update_run(
                 run_id,
                 status="DONE",
                 completed_at=dt.datetime.utcnow().isoformat(),
                 s3_key=key,
                 row_count=len(rows),
+                rows_json_key=rows_key,
+                rows_available=rows_available,
                 result_preview=json.dumps(rows[:10], default=str),
             )
             return {"status": "ok", "report_name": report_name, "rows": len(rows), "s3_key": key}
@@ -1678,14 +1712,25 @@ GROUP BY t.customer_id, co.name, DATE(t.start_date)
         except Exception as e:  # noqa: BLE001
             logger.warning("Slack notification failed (non-blocking): %s", e)
 
+        # Filas navegables: van a S3 aparte del Excel para que la tabla del
+        # navegador pueda paginar todo el resultado (el registro de la corrida
+        # en DynamoDB solo aguanta un puñado de filas).
+        rows_key, rows_available = "", 0
+        try:
+            rows_key, rows_available = upload_rows_json(rows, run_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("No se pudieron subir las filas navegables: %s", e)
+
         # Update DynamoDB run record to DONE (best-effort)
-        result_preview = rows[:10]  # first 10 rows for in-browser preview
+        result_preview = rows[:10]  # fallback inmediato mientras carga el resto
         _update_run(
             run_id,
             status="DONE",
             completed_at=dt.datetime.utcnow().isoformat(),
             s3_key=key,
             row_count=total_rows,
+            rows_json_key=rows_key,
+            rows_available=rows_available,
             result_preview=json.dumps(result_preview, default=str),
             # Agregados sobre TODAS las filas + las más extremas → la IA analiza el dataset completo
             ai_summary=json.dumps(_build_ai_summary(rows), default=str),

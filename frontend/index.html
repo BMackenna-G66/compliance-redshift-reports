@@ -912,7 +912,10 @@
             </button>
             <h2 class="text-lg font-semibold text-white" x-text="resultsView?.display_name"></h2>
             <span class="text-xs text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full"
-              x-text="(resultsView?.row_count??0)+' filas totales · preview '+(resultsView?.rows?.length??0)"></span>
+              x-text="(resultsView?.row_count??0).toLocaleString()+' filas totales · '+(resultsView?.rows?.length??0).toLocaleString()+' en pantalla'"></span>
+            <span x-show="resultRowsLoading" class="text-xs text-teal-400 flex items-center gap-1">
+              <span class="spin">⏳</span> cargando todas las filas...
+            </span>
             <div class="ml-auto flex items-center gap-2 flex-wrap">
               <a x-show="resultsView?.download_url" :href="resultsView?.download_url" target="_blank"
                 class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white transition">
@@ -969,6 +972,11 @@
             <div x-show="aiAnalysis.error" class="text-sm text-red-400" x-text="aiAnalysis.error"></div>
             <div x-show="aiAnalysis.text" class="text-sm text-slate-300 ai-prose" x-text="aiAnalysis.text"></div>
           </div>
+
+          <!-- Aviso de truncado -->
+          <div x-show="resultRowsNotice" x-cloak
+            class="mb-3 bg-amber-900/25 border border-amber-800 rounded-xl px-4 py-2.5 text-xs text-amber-200"
+            x-text="resultRowsNotice"></div>
 
           <!-- Filter row -->
           <div class="bg-slate-800 rounded-t-xl border border-b-0 border-slate-700 px-3 pt-3 pb-2">
@@ -2997,6 +3005,36 @@
               </div>
             </template>
           </div>
+        </div>
+        <!-- Datos de la alerta que originó el caso -->
+        <div x-show="caseAlertFields().length > 0" class="mb-6">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs text-slate-500">Alerta que originó el caso</span>
+            <div class="flex items-center gap-2">
+              <span x-show="activeCase.alert_priority"
+                class="text-xs px-2 py-0.5 rounded-full font-semibold"
+                :class="{
+                  'bg-red-900/50 text-red-300 border border-red-700': activeCase.alert_priority==='P1',
+                  'bg-yellow-900/50 text-yellow-300 border border-yellow-700': activeCase.alert_priority==='P2',
+                  'bg-slate-700 text-slate-300 border border-slate-600': !['P1','P2'].includes(activeCase.alert_priority)
+                }"
+                x-text="activeCase.alert_priority"></span>
+              <span x-show="activeCase.report_name" class="text-xs text-slate-500" x-text="activeCase.report_name"></span>
+            </div>
+          </div>
+          <div class="bg-slate-900/60 border border-slate-700 rounded-lg overflow-hidden">
+            <div class="grid grid-cols-2 gap-px bg-slate-700/40">
+              <template x-for="f in caseAlertFields()" :key="f.key">
+                <div class="bg-slate-800/80 px-3 py-1.5">
+                  <div class="text-xs text-slate-500 truncate" x-text="f.label"></div>
+                  <div class="text-xs text-slate-200 font-medium break-words" x-text="f.value"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+          <p class="text-xs text-slate-600 mt-1.5">
+            Son los valores de la fila del reporte que gatilló esta alerta, tal como estaban al detectarla.
+          </p>
         </div>
         <!-- Checklist de documentos solicitados -->
         <div class="mb-6">
@@ -5186,6 +5224,8 @@
       sortDir: 'asc',
       currentPage: 1,
       pageSize: 50,
+      resultRowsLoading: false,
+      resultRowsNotice: '',
       aiAnalysis: { loading: false, text: '', error: '' },
       rowAI: { open: false, loading: false, text: '', error: '', row: null, reportName: '' },
 
@@ -5213,7 +5253,7 @@
 
       // Solicitud manual de documentos
       docCategoriesAll: ['Origen de fondo', 'Comprobantes/Soporte', 'Relación/Beneficiario', 'Domicilio', 'Identidad/Datos personales'],
-      docRequestModal: { open: false, entity_type: 'customer', entity_id: '', nombre: '', correo: '', prioridad: 'P3', alerta: '', documentos: [], sending: false, error: '', case_id: '', template_key: 'general_b2c', texto_libre: '' },
+      docRequestModal: { open: false, entity_type: 'customer', entity_id: '', nombre: '', correo: '', prioridad: 'P3', alerta: '', documentos: [], sending: false, error: '', case_id: '', template_key: 'general_b2c', texto_libre: '', alert_data: {} },
       emailTemplates: [
         { key: 'texto_libre', label: 'Texto libre', has_attachment: false, requires_custom_text: true },
         { key: 'general_b2c', label: 'Solicitud de documentos — B2C general', has_attachment: true, requires_custom_text: false },
@@ -5877,6 +5917,15 @@
             status: d.status,
             error_message: d.error_message,
           };
+          // Igual que en la vista de resultados: la muestra se pinta ya y el
+          // resultado completo se trae aparte para poder paginarlo todo.
+          try {
+            const full = await this.api('GET', `/runs/${run_id}/rows`);
+            if (full?.rows?.length && this.historyView?.run_id === run_id) {
+              this.historyView.rows = full.rows;
+              this.historyView.columns = Object.keys(full.rows[0]);
+            }
+          } catch(_) { /* se queda con la muestra */ }
         }
         this.historyLoading = false;
       },
@@ -6012,7 +6061,9 @@
       openResultsView() {
         const preview = this.currentRun?.result_preview || [];
         const cols = preview.length ? Object.keys(preview[0]) : [];
+        const run_id = this.currentRun?.run_id;
         this.resultsView = {
+          run_id,
           display_name: this.selectedReport?.display_name || this.currentRun?.report_name,
           report_name: this.currentRun?.report_name,
           rows: preview, columns: cols,
@@ -6024,6 +6075,31 @@
         this.aiAnalysis = { loading: false, text: '', error: '' };
         this.closeRunModal();
         this.activeTab = 'alertas';
+        // La muestra de 10 filas se pinta al instante; el resultado completo
+        // se trae aparte para poder paginar todo.
+        this.loadAllResultRows(run_id);
+      },
+
+      // Trae el resultado completo de la corrida (el registro en la base solo
+      // guarda 10 filas de muestra) para que la tabla pueda paginarlo entero.
+      async loadAllResultRows(run_id) {
+        if (!run_id) return;
+        this.resultRowsLoading = true;
+        this.resultRowsNotice = '';
+        try {
+          const d = await this.api('GET', `/runs/${run_id}/rows`);
+          if (d?.rows?.length && this.resultsView && this.resultsView.run_id === run_id) {
+            this.resultsView.rows = d.rows;
+            this.resultsView.columns = Object.keys(d.rows[0]);
+            this.selectedResultRows = [];
+            if (d.truncated) {
+              this.resultRowsNotice = d.reason
+                ? `Mostrando ${d.count.toLocaleString()} de ${(d.total||0).toLocaleString()} filas — ${d.reason}.`
+                : `Mostrando las primeras ${d.count.toLocaleString()} de ${(d.total||0).toLocaleString()} filas. Para el total, descargá el Excel.`;
+            }
+          }
+        } catch(_) { /* se queda con la muestra */ }
+        this.resultRowsLoading = false;
       },
 
       // Results computed
@@ -6731,6 +6807,7 @@
           case_id: '',
           template_key: compKey ? 'b2b_generico' : 'general_b2c',
           texto_libre: '',
+          alert_data: { ...row },
         };
       },
 
@@ -6761,6 +6838,7 @@
           case_id: this.docRequestModal.case_id,
           template_key: this.docRequestModal.template_key,
           texto_libre: this.docRequestModal.texto_libre,
+          alert_data: this.docRequestModal.alert_data || {},
         });
         this.docRequestModal.sending = false;
         if (d?.case_id) {
@@ -7626,6 +7704,21 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         }
       },
 
+      // Campos de la alerta que originó el caso, listos para mostrar.
+      // Se omiten los vacíos y se dejan legibles los nombres de columna.
+      caseAlertFields() {
+        const d = this.activeCase?.alert_data;
+        if (!d || typeof d !== 'object') return [];
+        const out = [];
+        for (const [k, v] of Object.entries(d)) {
+          if (v === null || v === undefined || v === '' || v === '—') continue;
+          let val = v;
+          if (typeof v === 'number') val = v.toLocaleString('es-CL');
+          out.push({ key: k, label: k.replace(/_/g, ' '), value: String(val) });
+        }
+        return out;
+      },
+
       openResendEmailFromCase() {
         const c = this.activeCase;
         const last = this.activeCaseLastDocRequest;
@@ -7644,6 +7737,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           case_id: c.case_id || '',
           template_key: (last && last.template_key) || (isCompany ? 'b2b_generico' : 'general_b2c'),
           texto_libre: '',
+          alert_data: c.alert_data || {},
         };
         if (this.docRequestModal.documentos.length === 0) this.docRequestModal.documentos = [...this.docCategoriesAll];
       },
