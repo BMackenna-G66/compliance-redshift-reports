@@ -1481,6 +1481,7 @@
               </div>
               <h3 class="text-sm font-semibold text-white mb-1 line-clamp-2 group-hover:text-orange-300 transition"
                 x-text="c.title"></h3>
+              <p x-show="c.entity_name" class="text-xs text-teal-300/90 mb-1 truncate" x-text="c.entity_name"></p>
               <p class="text-xs text-slate-400 mb-3 line-clamp-2" x-text="c.description || '—'"></p>
               <div class="flex items-center justify-between text-xs text-slate-500">
                 <div class="flex items-center gap-2">
@@ -2894,18 +2895,32 @@
           </template>
         </select>
       </div>
-      <!-- Entidad (pre-filled from alert if linking) -->
-      <div class="grid grid-cols-2 gap-3 mb-5" x-show="newCaseForm.entity_id">
-        <div>
-          <label class="block text-xs text-slate-400 mb-1">Entidad</label>
-          <input x-model="newCaseForm.entity_type" type="text" readonly
-            class="w-full bg-slate-700/50 border border-slate-700 text-slate-400 text-sm rounded-lg px-3 py-2">
+      <!-- Cliente asociado -->
+      <div class="mb-5 bg-slate-900/50 border border-slate-700 rounded-lg p-3">
+        <label class="block text-xs text-slate-400 mb-2">Cliente asociado</label>
+        <div class="grid grid-cols-3 gap-2">
+          <select x-model="newCaseForm.entity_type" @change="newCaseForm.entity_name=''"
+            class="bg-slate-900 border border-slate-600 text-slate-200 text-sm rounded-lg px-2 py-2">
+            <option value="customer">Cliente (B2C)</option>
+            <option value="company">Empresa (B2B)</option>
+          </select>
+          <input x-model="newCaseForm.entity_id" type="text" placeholder="customer_id / company_id"
+            @keydown.enter.prevent="lookupCaseEntityName()"
+            class="bg-slate-900 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2">
+          <button @click="lookupCaseEntityName()"
+            :disabled="!newCaseForm.entity_id.trim() || newCaseLookupLoading"
+            class="text-sm font-medium text-white bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg px-3 py-2 transition">
+            <span x-text="newCaseLookupLoading ? 'Buscando...' : '🔎 Traer datos'"></span>
+          </button>
         </div>
-        <div>
-          <label class="block text-xs text-slate-400 mb-1">ID Entidad</label>
-          <input x-model="newCaseForm.entity_id" type="text" readonly
-            class="w-full bg-slate-700/50 border border-slate-700 text-slate-400 text-sm rounded-lg px-3 py-2">
+        <div x-show="newCaseForm.entity_name" class="mt-2 flex items-center gap-2">
+          <span class="text-xs text-slate-500">Nombre:</span>
+          <span class="text-sm font-medium text-teal-300" x-text="newCaseForm.entity_name"></span>
         </div>
+        <p x-show="newCaseLookupError" class="text-xs text-amber-400 mt-2" x-text="newCaseLookupError"></p>
+        <p x-show="!newCaseForm.entity_name && !newCaseLookupError" class="text-xs text-slate-600 mt-2">
+          Poné el ID y presioná “Traer datos” — el nombre se completa solo.
+        </p>
       </div>
       <div class="flex gap-3">
         <button @click="createCaseModal.open=false"
@@ -2924,7 +2939,7 @@
   <!-- ===== MODAL: DETALLE CASO ===== -->
   <div x-show="caseDetailModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
     <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="caseDetailModal.open=false"></div>
-    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-2xl mx-auto flex flex-col max-h-[90vh]">
+    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-6xl mx-auto flex flex-col max-h-[90vh]">
       <!-- Modal header -->
       <div class="flex items-start justify-between p-6 border-b border-slate-700 shrink-0">
         <div class="flex-1 pr-4">
@@ -2938,6 +2953,11 @@
               x-text="activeCase.priority==='high'?'Alta':activeCase.priority==='medium'?'Media':'Baja'"></span>
           </div>
           <h2 class="text-lg font-bold text-white" x-text="activeCase.title"></h2>
+          <div x-show="activeCase.entity_name || activeCase.entity_id" class="flex items-center gap-2 mt-1">
+            <span x-show="activeCase.entity_name" class="text-sm font-medium text-teal-300" x-text="activeCase.entity_name"></span>
+            <span x-show="activeCase.entity_id" class="text-xs font-mono text-slate-500"
+              x-text="(activeCase.entity_type==='company' ? 'company_id ' : 'customer_id ') + activeCase.entity_id"></span>
+          </div>
           <p class="text-sm text-slate-400 mt-1" x-text="activeCase.description"></p>
         </div>
         <div class="flex items-center gap-2 shrink-0">
@@ -3006,6 +3026,49 @@
             </template>
           </div>
         </div>
+        <!-- Ficha KYC / compliance del cliente -->
+        <div class="mb-6" x-show="activeCase.entity_id">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-slate-500">Ficha del cliente</span>
+              <span x-show="activeCase.client_profile_at"
+                class="text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-400"
+                x-text="'consultada ' + activeCase.client_profile_at"></span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button x-show="!activeCase.client_profile" @click="loadCaseClientProfile()"
+                :disabled="caseProfileLoading"
+                class="flex items-center gap-1.5 px-3 py-1.5 bg-blue-900/40 hover:bg-blue-800/60 border border-blue-800 text-blue-300 text-xs font-medium rounded-lg transition disabled:opacity-50">
+                <span :class="caseProfileLoading ? 'spin inline-block' : ''">🔎</span>
+                <span x-text="caseProfileLoading ? 'Consultando...' : 'Traer datos KYC / compliance'"></span>
+              </button>
+              <button x-show="activeCase.client_profile" @click="caseProfileOpen = !caseProfileOpen"
+                class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 text-xs font-medium rounded-lg transition">
+                <span x-text="caseProfileOpen ? '▲ Ocultar ficha' : '▼ Ver ficha'"></span>
+              </button>
+              <button x-show="activeCase.client_profile" @click="loadCaseClientProfile(true)"
+                :disabled="caseProfileLoading" title="Volver a consultar (vuelve a pegarle al cluster)"
+                class="px-2.5 py-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-400 text-xs rounded-lg transition disabled:opacity-50">↻</button>
+            </div>
+          </div>
+          <p x-show="!activeCase.client_profile && !caseProfileError" class="text-xs text-slate-600">
+            Trae la misma información de Análisis Individual para <span class="font-mono text-slate-500" x-text="activeCase.entity_id"></span>.
+            Se consulta una sola vez y queda guardada en el caso.
+          </p>
+          <p x-show="caseProfileError" class="text-xs text-amber-400" x-text="caseProfileError"></p>
+          <div x-show="activeCase.client_profile && caseProfileOpen" x-cloak
+            class="bg-slate-900/60 border border-slate-700 rounded-lg overflow-hidden mt-1">
+            <div class="grid grid-cols-3 gap-px bg-slate-700/40">
+              <template x-for="f in caseProfileFields()" :key="f.key">
+                <div class="bg-slate-800/80 px-3 py-1.5">
+                  <div class="text-xs text-slate-500 truncate" x-text="f.label"></div>
+                  <div class="text-xs text-slate-200 font-medium break-words" x-text="f.value"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
         <!-- Datos de la alerta que originó el caso -->
         <div x-show="caseAlertFields().length > 0" class="mb-6">
           <div class="flex items-center justify-between mb-2">
@@ -5490,6 +5553,12 @@
       activeCaseAI: '',
       activeCaseAILoading: false,
       createCaseModal: { open: false },
+      newCaseLookupLoading: false,
+      newCaseLookupError: '',
+      // Ficha KYC/compliance del cliente dentro del caso
+      caseProfileLoading: false,
+      caseProfileError: '',
+      caseProfileOpen: false,
       caseDetailModal: { open: false },
       caseAssignModal: { open: false, case_id: null, assigned_to: '' },
 
@@ -7689,6 +7758,8 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         this.activeCaseAlerts = [];
         this.activeCaseAttachments = [];
         this.activeCaseLastDocRequest = null;
+        this.caseProfileError = '';
+        this.caseProfileOpen = false;
         this.caseAttachmentError = '';
         this.newCaseNote = '';
         this.activeCaseAI = '';
@@ -7702,6 +7773,43 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           this.activeCaseAttachments = d.case.attachments || [];
           this.activeCaseLastDocRequest = d.last_document_request || null;
         }
+      },
+
+      // Ficha KYC/compliance del cliente. Se consulta una sola vez: queda
+      // guardada en el caso y las siguientes aperturas la leen de ahí.
+      async loadCaseClientProfile(refresh = false) {
+        const cid = this.activeCase?.case_id;
+        if (!cid) return;
+        this.caseProfileLoading = true;
+        this.caseProfileError = '';
+        const d = await this.api('POST', `/cases/${cid}/client-profile`, {
+          refresh: !!refresh, actor_email: this.currentUserEmail,
+        });
+        this.caseProfileLoading = false;
+        if (d?.profile) {
+          this.activeCase.client_profile = d.profile;
+          this.activeCase.client_profile_at = d.consultado_at || '';
+          this.activeCase.client_profile_kind = d.kind || 'b2c';
+          if (d.entity_name) this.activeCase.entity_name = d.entity_name;
+          this.caseProfileOpen = true;
+          await this.loadCases();
+        } else {
+          this.caseProfileError = d?.error || 'No se pudo traer la ficha del cliente.';
+        }
+      },
+
+      caseProfileFields() {
+        const d = this.activeCase?.client_profile;
+        if (!d || typeof d !== 'object') return [];
+        const out = [];
+        for (const [k, v] of Object.entries(d)) {
+          if (v === null || v === undefined || v === '' || v === '—') continue;
+          let val = v;
+          if (typeof v === 'number') val = v.toLocaleString('es-CL');
+          if (typeof v === 'boolean') val = v ? 'Sí' : 'No';
+          out.push({ key: k, label: k.replace(/_/g, ' '), value: String(val) });
+        }
+        return out;
       },
 
       // Campos de la alerta que originó el caso, listos para mostrar.
@@ -7795,17 +7903,47 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       },
 
       openCreateCaseModal(fromAlert = null) {
+        // entity_field de una alerta puede venir como 'customer_id'/'email';
+        // el caso solo distingue cliente vs empresa.
+        const ef = String(fromAlert?.entity_field || '').toLowerCase();
         this.newCaseForm = {
           title: fromAlert ? ('Caso: ' + (fromAlert.reason || fromAlert.entity_value || '')) : '',
           description: '',
           priority: 'medium',
           assigned_to: '',
-          entity_type: fromAlert ? (fromAlert.entity_field || '') : '',
+          entity_type: ef.includes('company') ? 'company' : 'customer',
           entity_id: fromAlert ? (fromAlert.entity_value || '') : '',
+          entity_name: '',
           report_name: fromAlert ? (fromAlert.report_name || '') : '',
           from_alert_id: fromAlert ? fromAlert.alert_id : null,
         };
+        this.newCaseLookupError = '';
+        this.newCaseLookupLoading = false;
         this.createCaseModal.open = true;
+        // Si vino de una alerta ya tenemos el ID: se resuelve el nombre solo.
+        if (this.newCaseForm.entity_id) this.lookupCaseEntityName();
+      },
+
+      // Resuelve el nombre del cliente desde su ID para no tipearlo a mano.
+      async lookupCaseEntityName() {
+        const id = String(this.newCaseForm.entity_id || '').trim();
+        if (!id) return;
+        this.newCaseLookupLoading = true;
+        this.newCaseLookupError = '';
+        const d = await this.api('POST', '/analyze/entity-name', {
+          entity_id: id, entity_type: this.newCaseForm.entity_type,
+        });
+        this.newCaseLookupLoading = false;
+        if (d?.found && d.entity_name) {
+          this.newCaseForm.entity_name = d.entity_name;
+          // Si el título está vacío, se arma con el nombre recién traído.
+          if (!this.newCaseForm.title.trim()) {
+            this.newCaseForm.title = `Caso: ${d.entity_name} (${id})`;
+          }
+        } else {
+          this.newCaseForm.entity_name = '';
+          this.newCaseLookupError = d?.error || 'No se encontró ese ID.';
+        }
       },
 
       async submitCreateCase() {
@@ -7817,6 +7955,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           assigned_to: this.newCaseForm.assigned_to,
           entity_type: this.newCaseForm.entity_type,
           entity_id: this.newCaseForm.entity_id,
+          entity_name: this.newCaseForm.entity_name,
           report_name: this.newCaseForm.report_name,
           created_by: this.currentUserEmail || this.userEmail || 'unknown',
         };

@@ -982,38 +982,97 @@ LIMIT 5
 """
 
 
-def search_customer_b2c(body: dict):
-    identifier = str(body.get("identifier", "")).strip()
+def _lookup_customer_rows(identifier: str, kind: str = "b2c") -> list[dict]:
+    """Ficha KYC/compliance de un cliente (b2c) o empresa (b2b).
+
+    Es el mismo motor que usa la búsqueda de Análisis Individual; se extrajo
+    a función aparte para poder reutilizarlo desde la ficha del caso sin
+    duplicar las queries."""
+    identifier = str(identifier or "").strip()
     if not identifier:
-        return resp(400, {"error": "identifier is required"})
+        raise ValueError("identifier vacío")
     if any(c in identifier for c in ("'", ";", "--", "\\")):
-        return resp(400, {"error": "Invalid identifier"})
+        raise ValueError("identifier inválido")
     safe = identifier.replace("'", "''")
-    if identifier.isdigit():
-        extra = f"AND c.customer_id = {int(identifier)}"
-    elif "@" in identifier:
-        extra = f"AND LOWER(c.email) = LOWER('{safe}')"
+
+    if kind == "b2b":
+        if identifier.isdigit():
+            where = f"WHERE co.company_id = {int(identifier)}"
+        else:
+            where = f"WHERE co.identification_number = '{safe}' OR co.username = '{safe}'"
+        sql = _B2B_QUERY.replace("__WHERE__", where)
     else:
-        extra = f"AND kd.document_number = '{safe}'"
-    sql = _B2C_QUERY.replace("__FILTER__", extra)
-    rows = _rs_exec_multi([sql], timeout_s=90)[0]
+        if identifier.isdigit():
+            extra = f"AND c.customer_id = {int(identifier)}"
+        elif "@" in identifier:
+            extra = f"AND LOWER(c.email) = LOWER('{safe}')"
+        else:
+            extra = f"AND kd.document_number = '{safe}'"
+        sql = _B2C_QUERY.replace("__FILTER__", extra)
+
+    return _rs_exec_multi([sql], timeout_s=90)[0]
+
+
+def _display_name_from_profile(profile: dict, kind: str) -> str:
+    """Nombre legible del cliente/empresa a partir de su ficha.
+
+    Los alias de las queries están en español (nombre/apellido, razon_social),
+    así que se prueban esos primero y los nombres crudos de columna después.
+    El correo queda como último recurso, no como nombre."""
+    if not isinstance(profile, dict):
+        return ""
+
+    def _v(*claves):
+        for k in claves:
+            v = str(profile.get(k) or "").strip()
+            if v and v.lower() not in ("none", "null"):
+                return v
+        return ""
+
+    if kind == "b2b":
+        return _v("razon_social", "company_name", "nombre_empresa", "nombre",
+                  "name", "rep_name", "username")
+
+    nombre = " ".join(x for x in (_v("nombre", "name", "first_name"),
+                                  _v("apellido", "last_name")) if x).strip()
+    return nombre or _v("nombre_completo", "email")
+
+
+def search_customer_b2c(body: dict):
+    try:
+        rows = _lookup_customer_rows(body.get("identifier", ""), "b2c")
+    except ValueError as e:
+        return resp(400, {"error": str(e)})
     return resp(200, {"rows": rows, "count": len(rows)})
 
 
 def search_customer_b2b(body: dict):
-    identifier = str(body.get("identifier", "")).strip()
-    if not identifier:
-        return resp(400, {"error": "identifier is required"})
-    if any(c in identifier for c in ("'", ";", "--", "\\")):
-        return resp(400, {"error": "Invalid identifier"})
-    safe = identifier.replace("'", "''")
-    if identifier.isdigit():
-        where = f"WHERE co.company_id = {int(identifier)}"
-    else:
-        where = f"WHERE co.identification_number = '{safe}' OR co.username = '{safe}'"
-    sql = _B2B_QUERY.replace("__WHERE__", where)
-    rows = _rs_exec_multi([sql], timeout_s=90)[0]
+    try:
+        rows = _lookup_customer_rows(body.get("identifier", ""), "b2b")
+    except ValueError as e:
+        return resp(400, {"error": str(e)})
     return resp(200, {"rows": rows, "count": len(rows)})
+
+
+def lookup_case_entity(body: dict):
+    """Resuelve el nombre de un cliente/empresa desde su ID, para no tener
+    que tipearlo a mano al crear un caso."""
+    kind = "b2b" if str(body.get("entity_type", "")).lower().startswith("comp") else "b2c"
+    try:
+        rows = _lookup_customer_rows(body.get("entity_id", ""), kind)
+    except ValueError as e:
+        return resp(400, {"error": str(e)})
+    except Exception as e:
+        return resp(200, {"found": False, "error": f"No se pudo consultar: {e}"})
+    if not rows:
+        return resp(200, {"found": False, "error": "No se encontró el cliente con ese ID"})
+    profile = rows[0]
+    return resp(200, {
+        "found": True,
+        "entity_name": _display_name_from_profile(profile, kind),
+        "profile": profile,
+        "kind": kind,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1926,6 +1985,9 @@ def handler(event, context):  # noqa: ARG001
         # POST /analyze/customer/b2b
         if method == "POST" and parts == ["analyze", "customer", "b2b"]:
             return search_customer_b2b(body)
+        # POST /analyze/entity-name — resuelve el nombre desde el ID
+        if method == "POST" and parts == ["analyze", "entity-name"]:
+            return lookup_case_entity(body)
 
         # POST /search/transactions
         if method == "POST" and parts == ["search", "transactions"]:
@@ -2092,6 +2154,9 @@ def handler(event, context):  # noqa: ARG001
         # POST /cases/{id}/take — el analista se auto-asigna el caso
         if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "take":
             return take_case(parts[1], body)
+        # POST /cases/{id}/client-profile — ficha KYC del cliente (se cachea)
+        if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "client-profile":
+            return get_case_client_profile(parts[1], body)
         # PUT /cases/{id}/status
         if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "cases" and parts[2] == "status":
             return update_case_status(parts[1], body)
@@ -3451,6 +3516,7 @@ def get_cases(status_filter=None, priority_filter=None, assigned_filter=None):
                 "priority": c.get("priority", "medium"),
                 "entity_type": c.get("entity_type", ""),
                 "entity_id": c.get("entity_id", ""),
+                "entity_name": c.get("entity_name", ""),
                 "report_name": c.get("report_name", ""),
                 "assigned_to": c.get("assigned_to", ""),
                 "created_by": c.get("created_by", ""),
@@ -3500,6 +3566,7 @@ def create_case(body: dict):
         "priority": priority,
         "entity_type": body.get("entity_type", "").strip(),
         "entity_id": body.get("entity_id", "").strip(),
+        "entity_name": body.get("entity_name", "").strip(),
         "report_name": body.get("report_name", "").strip(),
         "alert_data": alert_data,
         "alert_priority": (body.get("alert_priority") or "").strip(),
@@ -3923,6 +3990,70 @@ def bulk_assign_cases(body: dict):
         "por_analista": {k: len(v) for k, v in per_assignee.items()},
         "notificaciones": notificaciones,
         "correos_fallidos": [n for n in notificaciones if not n["sent"]],
+    })
+
+
+def get_case_client_profile(case_id: str, body: dict):
+    """Trae la ficha KYC/compliance del cliente del caso y la deja GUARDADA.
+
+    Se consulta una sola vez: queda dentro del caso y las siguientes aperturas
+    la leen de ahí sin volver a pegarle al cluster. Con refresh=true se fuerza
+    una consulta nueva (por ejemplo si el cliente actualizó sus datos).
+    """
+    case = _crm_get("cases", case_id)
+    if case is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+
+    if case.get("client_profile") and not body.get("refresh"):
+        return resp(200, {
+            "profile": case["client_profile"],
+            "cached": True,
+            "consultado_at": case.get("client_profile_at", ""),
+            "kind": case.get("client_profile_kind", "b2c"),
+        })
+
+    entity_id = str(case.get("entity_id") or "").strip()
+    if not entity_id:
+        return resp(400, {"error": "El caso no tiene un ID de cliente asociado."})
+
+    entity_type = str(case.get("entity_type") or "").lower()
+    kind = "b2b" if entity_type.startswith("comp") else "b2c"
+
+    try:
+        rows = _lookup_customer_rows(entity_id, kind)
+    except ValueError as e:
+        return resp(400, {"error": str(e)})
+    except Exception as e:
+        return resp(200, {"error": f"No se pudo consultar la ficha: {e}"})
+
+    if not rows:
+        return resp(200, {"error": f"No se encontró información para el ID {entity_id}."})
+
+    profile = rows[0]
+    ahora = _now_str()
+    cambios = {
+        "client_profile": profile,
+        "client_profile_at": ahora,
+        "client_profile_kind": kind,
+        "updated_at": ahora,
+    }
+    # Si el caso no tenía nombre de cliente, se aprovecha para completarlo.
+    if not case.get("entity_name"):
+        nombre = _display_name_from_profile(profile, kind)
+        if nombre:
+            cambios["entity_name"] = nombre
+    _crm_update("cases", case_id, cambios)
+
+    _safe_audit(user_email=(body.get("actor_email") or "unknown"),
+                action="case.client_profile", entity_type="case", entity_id=case_id,
+                new_value={"entity_id": entity_id, "kind": kind})
+
+    return resp(200, {
+        "profile": profile,
+        "cached": False,
+        "consultado_at": ahora,
+        "kind": kind,
+        "entity_name": cambios.get("entity_name", case.get("entity_name", "")),
     })
 
 
