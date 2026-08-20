@@ -3442,6 +3442,9 @@ def get_alerts(status: str = "active"):
                 "assigned_to": i.get("assigned_to", ""),
                 "reviewed_by": i.get("reviewed_by", ""),
                 "notes": i.get("notes", ""),
+                # Permite marcar en la tabla del reporte qué filas ya tienen
+                # caso abierto, además de quién las tiene asignadas.
+                "case_id": i.get("case_id", ""),
             })
         # Stable sort: first by created_at DESC, then by priority → within a
         # priority, newest first (matches the old SQL ORDER BY).

@@ -945,7 +945,7 @@
               <input type="checkbox" :checked="allFilteredRowsSelected()" @change="toggleSelectAllResultRows()"
                 class="accent-teal-500 w-4 h-4">
               <span class="text-sm text-slate-300">
-                Seleccionar todo <span class="text-slate-500">(<span x-text="filteredRows.length"></span> filas filtradas)</span>
+                Seleccionar todo <span class="text-slate-500">(<span x-text="trackedFilteredRows.length"></span> filas)</span>
               </span>
             </label>
             <span class="text-sm font-medium text-teal-400">
@@ -980,9 +980,16 @@
 
           <!-- Filter row -->
           <div class="bg-slate-800 rounded-t-xl border border-b-0 border-slate-700 px-3 pt-3 pb-2">
-            <div class="flex items-center gap-2 mb-2">
+            <div class="flex items-center gap-3 mb-2 flex-wrap">
               <span class="text-xs font-medium text-slate-400">Filtros:</span>
               <button @click="tableFilters={}; currentPage=1" class="text-xs text-slate-500 hover:text-white transition">Limpiar</button>
+              <label class="flex items-center gap-1.5 cursor-pointer select-none ml-auto">
+                <input type="checkbox" x-model="hideTrackedRows" @change="currentPage=1"
+                  class="accent-teal-500">
+                <span class="text-xs" :class="hideTrackedRows ? 'text-teal-400 font-medium' : 'text-slate-400'">
+                  Ocultar las que ya están alertadas o asignadas
+                </span>
+              </label>
             </div>
             <div class="flex flex-wrap gap-2 col-filter">
               <template x-for="col in (resultsView?.columns||[])" :key="col">
@@ -1005,6 +1012,7 @@
                       class="accent-teal-500">
                   </th>
                   <th class="px-3 py-2 text-left text-slate-400 font-medium border-b border-r border-slate-700 w-8"></th>
+                  <th class="px-3 py-2 text-left text-slate-300 font-medium border-b border-r border-slate-700 whitespace-nowrap">Seguimiento</th>
                   <template x-for="col in (resultsView?.columns||[])" :key="col">
                     <th class="px-3 py-2 text-left text-slate-300 font-medium whitespace-nowrap border-b border-r border-slate-700 cursor-pointer hover:bg-slate-700 transition"
                       @click="sortTable(col); currentPage=1">
@@ -1017,7 +1025,7 @@
               <tbody>
                 <template x-for="(row,i) in paginatedRows" :key="i">
                   <tr class="border-b border-slate-800 hover:bg-slate-800 transition"
-                    :class="resultSelectMode && isResultRowSelected(row) ? 'bg-teal-900/20' : ''">
+                    :class="resultSelectMode && isResultRowSelected(row) ? 'bg-teal-900/20' : (rowTracking(row) ? 'bg-slate-800/40' : '')">
                     <td x-show="resultSelectMode" class="px-2 py-1.5 border-r border-slate-800 text-center">
                       <input type="checkbox" :checked="isResultRowSelected(row)" @change="toggleResultRow(row)"
                         class="accent-teal-500">
@@ -1036,13 +1044,23 @@
                           class="text-slate-500 hover:text-teal-400 transition text-base" title="Solicitar documentos">📄</button>
                       </div>
                     </td>
+                    <td class="px-3 py-1.5 border-r border-slate-800 whitespace-nowrap">
+                      <template x-if="rowTracking(row)">
+                        <span class="text-xs px-2 py-0.5 rounded-full font-medium border"
+                          :class="rowTracking(row).cls" :title="rowTracking(row).title"
+                          x-text="rowTracking(row).label"></span>
+                      </template>
+                      <template x-if="!rowTracking(row)">
+                        <span class="text-xs text-slate-600">—</span>
+                      </template>
+                    </td>
                     <template x-for="col in (resultsView?.columns||[])" :key="col">
                       <td class="px-3 py-1.5 text-slate-300 whitespace-nowrap border-r border-slate-800" x-text="row[col]??'—'"></td>
                     </template>
                   </tr>
                 </template>
-                <tr x-show="filteredRows.length===0">
-                  <td :colspan="(resultsView?.columns?.length||0)+(resultSelectMode?2:1)" class="text-center py-8 text-slate-500">Sin resultados.</td>
+                <tr x-show="trackedFilteredRows.length===0">
+                  <td :colspan="(resultsView?.columns?.length||0)+(resultSelectMode?3:2)" class="text-center py-8 text-slate-500">Sin resultados.</td>
                 </tr>
               </tbody>
             </table>
@@ -1056,7 +1074,7 @@
                 class="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs text-white">
                 <option value="25">25</option><option value="50">50</option><option value="100">100</option>
               </select>
-              <span x-text="`${filteredRows.length===0?0:(currentPage-1)*pageSize+1}–${Math.min(currentPage*pageSize,filteredRows.length)} de ${filteredRows.length}`"></span>
+              <span x-text="`${trackedFilteredRows.length===0?0:(currentPage-1)*pageSize+1}–${Math.min(currentPage*pageSize,trackedFilteredRows.length)} de ${trackedFilteredRows.length}`"></span>
             </div>
             <div class="flex items-center gap-1">
               <button @click="currentPage=1" :disabled="currentPage===1" class="px-2 py-1 text-xs bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 disabled:opacity-40 transition">«</button>
@@ -5288,6 +5306,8 @@
       currentPage: 1,
       pageSize: 50,
       resultRowsLoading: false,
+      hideTrackedRows: false,
+      trackingIdx: {},
       resultRowsNotice: '',
       aiAnalysis: { loading: false, text: '', error: '' },
       rowAI: { open: false, loading: false, text: '', error: '', row: null, reportName: '' },
@@ -6184,8 +6204,8 @@
         }
         return rows;
       },
-      get paginatedRows() { const s = (this.currentPage-1)*this.pageSize; return this.filteredRows.slice(s, s+this.pageSize); },
-      get totalResultsPages() { return Math.max(1, Math.ceil(this.filteredRows.length / this.pageSize)); },
+      get paginatedRows() { const s = (this.currentPage-1)*this.pageSize; return this.trackedFilteredRows.slice(s, s+this.pageSize); },
+      get totalResultsPages() { return Math.max(1, Math.ceil(this.trackedFilteredRows.length / this.pageSize)); },
       sortTable(col) {
         if (this.sortCol===col) this.sortDir = this.sortDir==='asc'?'desc':'asc';
         else { this.sortCol=col; this.sortDir='asc'; }
@@ -7645,6 +7665,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         ]);
         this.alerts = activeRes?.alerts || [];
         this.reviewedItems = reviewedRes?.alerts || [];
+        this.rebuildTrackingIndex();
         this.alertsLoading = false;
       },
 
@@ -8005,6 +8026,95 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       },
 
       // -----------------------------------------------
+      // MARCAS DE SEGUIMIENTO EN LA TABLA DEL REPORTE
+      // -----------------------------------------------
+      // Identifica a quién apunta una fila. Mismo criterio que el backend
+      // (_extract_entity_from_row): customer_id, company_id, beneficiary_id
+      // y por último cualquier columna de email.
+      rowEntityValue(row) {
+        if (!row || typeof row !== 'object') return '';
+        const keys = Object.keys(row);
+        const exact = [/^(customer_id|client_id)$/i, /^company_id$/i, /^beneficiary_id$/i];
+        for (const re of exact) {
+          const k = keys.find(k => re.test(k));
+          if (k != null) {
+            const v = String(row[k] ?? '').trim();
+            if (v && !['none','nan','—'].includes(v.toLowerCase())) return v;
+          }
+        }
+        const ek = keys.find(k => /email/i.test(k));
+        if (ek) {
+          const v = String(row[ek] ?? '').trim();
+          if (v && !['none','nan','—'].includes(v.toLowerCase())) return v;
+        }
+        return '';
+      },
+
+      // Índice entity_value -> estado de seguimiento, armado con las alertas
+      // ya cargadas (activas + revisadas).
+      //
+      // Se construye UNA vez al cargar las alertas y se guarda en estado: como
+      // getter se reconstruía en cada acceso, y la tabla lo consulta varias
+      // veces por fila (cientos de veces por render).
+      rebuildTrackingIndex() {
+        const idx = {};
+        const add = (a, revisada) => {
+          const v = String(a.entity_value ?? '').trim();
+          if (!v) return;
+          const prev = idx[v];
+          const entry = {
+            assigned_to: a.assigned_to || '',
+            revisada,
+            case_id: a.case_id || '',
+            report_name: a.report_name || '',
+          };
+          // Se prioriza lo activo sobre lo revisado, y con asignado sobre sin.
+          if (!prev) { idx[v] = entry; return; }
+          if (prev.revisada && !revisada) { idx[v] = entry; return; }
+          if (prev.revisada === revisada && !prev.assigned_to && entry.assigned_to) idx[v] = entry;
+        };
+        (this.alerts || []).forEach(a => add(a, false));
+        (this.reviewedItems || []).forEach(a => add(a, true));
+        this.trackingIdx = idx;
+      },
+
+      // Estado de seguimiento de una fila, o null si no tiene nada.
+      rowTracking(row) {
+        const v = this.rowEntityValue(row);
+        if (!v) return null;
+        const t = this.trackingIdx[v];
+        if (!t) return null;
+        const mismoReporte = !t.report_name
+          || !this.resultsView?.display_name
+          || t.report_name === this.resultsView.display_name
+          || t.report_name === this.resultsView.report_name;
+        if (t.revisada) {
+          return { label: '✓ Revisado', cls: 'bg-slate-700 text-slate-400 border-slate-600',
+                   title: 'Ya fue revisado' + (t.assigned_to ? ' — ' + t.assigned_to : '') };
+        }
+        if (t.assigned_to) {
+          const corto = t.assigned_to.split('@')[0];
+          return mismoReporte
+            ? { label: '👤 ' + corto, cls: 'bg-teal-900/50 text-teal-300 border-teal-700',
+                title: 'Asignado a ' + t.assigned_to + (t.case_id ? ' · con caso abierto' : '') }
+            : { label: '👤 ' + corto, cls: 'bg-slate-700/60 text-slate-400 border-slate-600',
+                title: 'Asignado a ' + t.assigned_to + ' en otro reporte: ' + t.report_name };
+        }
+        return mismoReporte
+          ? { label: '⚠ Alertado', cls: 'bg-orange-900/50 text-orange-300 border-orange-700',
+              title: 'Marcado como alertado, sin analista asignado' }
+          : { label: '⚠ otro rep.', cls: 'bg-slate-700/60 text-slate-400 border-slate-600',
+              title: 'Alertado en otro reporte: ' + t.report_name };
+      },
+
+      // Filas visibles según el filtro de seguimiento.
+      get trackedFilteredRows() {
+        const rows = this.filteredRows;
+        if (!this.hideTrackedRows) return rows;
+        return rows.filter(r => !this.rowTracking(r));
+      },
+
+      // -----------------------------------------------
       // REPARTIR FILAS DEL REPORTE ENTRE ANALISTAS (admin)
       // -----------------------------------------------
       toggleResultSelectMode() {
@@ -8023,11 +8133,11 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       // página visible — si el analista filtró por un patrón, quiere repartir
       // todo ese conjunto, no solo los 50 que ve.
       allFilteredRowsSelected() {
-        const rows = this.filteredRows;
+        const rows = this.trackedFilteredRows;
         return rows.length > 0 && rows.every(r => this.isResultRowSelected(r));
       },
       toggleSelectAllResultRows() {
-        this.selectedResultRows = this.allFilteredRowsSelected() ? [] : [...this.filteredRows];
+        this.selectedResultRows = this.allFilteredRowsSelected() ? [] : [...this.trackedFilteredRows];
       },
       openDistributeModal() {
         this.distributeModal = {
