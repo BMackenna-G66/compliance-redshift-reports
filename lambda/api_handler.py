@@ -95,6 +95,61 @@ def _post_slack(text: str) -> None:
     except Exception:
         pass
 
+WATCHTOWER_URL = os.environ.get(
+    "WATCHTOWER_URL", "https://bmackenna-g66.github.io/compliance-redshift-reports"
+)
+_PRIORITY_LABEL_ES = {"high": "🔴 Alta", "medium": "🟡 Media", "low": "🟢 Baja"}
+_CASE_STATUS_LABEL_ES = {
+    "open": "Abierto", "in_progress": "En Investigación",
+    "under_review": "Bajo Revisión", "closed": "Cerrado", "archived": "Archivado",
+}
+# Campos que ya se muestran aparte en el mensaje o que no aportan como métrica.
+_SLACK_SKIP_FIELDS = {
+    "customer_id", "company_id", "client_id", "beneficiary_id", "email",
+    "nombre", "apellido", "nombre_completo", "correo", "name", "last_name",
+    "prioridad", "concepto", "risk_score",
+}
+
+
+def _slack_alert_metrics(alert_data: dict, limite: int = 4) -> str:
+    """Resumen corto de los números de la alerta, para que el mensaje de Slack
+    diga POR QUÉ se abrió el caso y no solo que se abrió."""
+    if not isinstance(alert_data, dict):
+        return ""
+    partes = []
+    for k, v in alert_data.items():
+        if k.lower() in _SLACK_SKIP_FIELDS:
+            continue
+        if v is None or v == "" or v == "—":
+            continue
+        val = f"{v:,.2f}".rstrip("0").rstrip(".") if isinstance(v, float) else (
+            f"{v:,}" if isinstance(v, int) else str(v)
+        )
+        partes.append(f"`{k.replace('_', ' ')}`: {val}")
+        if len(partes) >= limite:
+            break
+    return " · ".join(partes)
+
+
+def _slack_client_line(case: dict) -> str:
+    """Línea de identificación del cliente/empresa del caso."""
+    nombre = str(case.get("entity_name") or "").strip()
+    eid = str(case.get("entity_id") or "").strip()
+    if not nombre and not eid:
+        return ""
+    etype = str(case.get("entity_type") or "").lower()
+    campo = "company_id" if etype.startswith("comp") else "customer_id"
+    if nombre and eid:
+        return f"👤 Cliente: *{nombre}* (`{campo} {eid}`)"
+    if nombre:
+        return f"👤 Cliente: *{nombre}*"
+    return f"👤 Cliente: `{campo} {eid}`"
+
+
+def _slack_case_link(case_id: str) -> str:
+    return f"🔗 <{WATCHTOWER_URL}|Abrir en WatchTower> · caso `{case_id[:8]}…`"
+
+
 CLUSTER_ID = os.environ.get("CLUSTER_IDENTIFIER", "compliance-redshift-cluster")
 # Decisión de negocio (2026-08-04): el cluster se deja encendido permanentemente
 # en AWS — ningún proceso, ni siquiera el botón manual de Admin, debe pausarlo.
@@ -3579,11 +3634,36 @@ def create_case(body: dict):
     })
     _safe_audit(user_email=created_by, action="case.create", entity_type="case",
                 entity_id=cid, new_value={"title": title, "priority": priority})
-    _post_slack(
-        f"📁 *Nuevo caso creado* — {title}\n"
-        f"Prioridad: {priority} | Asignado a: {assigned_to or 'Sin asignar'}\n"
-        f"Creado por: {created_by}"
+    # Mensaje a Slack con el contexto completo: quién es el cliente, qué
+    # alerta lo originó y con qué números — para poder triar sin abrir la app.
+    caso_slack = {
+        "entity_name": body.get("entity_name", "").strip(),
+        "entity_id": body.get("entity_id", "").strip(),
+        "entity_type": body.get("entity_type", "").strip(),
+    }
+    lineas = [f"📁 *Nuevo caso creado*", f"*{title}*"]
+    cliente = _slack_client_line(caso_slack)
+    if cliente:
+        lineas.append(cliente)
+
+    reporte = body.get("report_name", "").strip()
+    alert_prio = (body.get("alert_priority") or "").strip()
+    if reporte or alert_prio:
+        alerta_txt = " · ".join(x for x in (reporte, alert_prio) if x)
+        lineas.append(f"🔔 Alerta: {alerta_txt}")
+
+    metricas = _slack_alert_metrics(alert_data)
+    if metricas:
+        lineas.append(f"📊 {metricas}")
+
+    lineas.append(
+        f"⚡ Prioridad: {_PRIORITY_LABEL_ES.get(priority, priority)}  ·  "
+        f"Asignado a: {assigned_to or '_sin asignar_'}"
     )
+    lineas.append(f"✍️ Creado por: {created_by}")
+    lineas.append(_slack_case_link(cid))
+    _post_slack("\n".join(lineas))
+
     if assigned_to and "@" in assigned_to:
         _case_assignment_email(assigned_to, cid, title, priority, created_by)
     return resp(201, {"case_id": cid})
@@ -3682,6 +3762,21 @@ def update_case_assign(case_id: str, body: dict):
         return resp(404, {"error": f"Case '{case_id}' not found"})
     _safe_audit(user_email=actor, action="case.assign", entity_type="case",
                 entity_id=case_id, new_value={"assigned_to": assigned_to})
+
+    lineas = ["👤 *Caso asignado*", f"*{updated.get('title', '')}*"]
+    cliente = _slack_client_line(updated)
+    if cliente:
+        lineas.append(cliente)
+    if updated.get("report_name"):
+        lineas.append(f"🔔 Alerta: {updated['report_name']}")
+    lineas.append(
+        f"⚡ Prioridad: {_PRIORITY_LABEL_ES.get(updated.get('priority', ''), updated.get('priority', ''))}"
+        f"  ·  Estado: {_CASE_STATUS_LABEL_ES.get(updated.get('status', ''), updated.get('status', ''))}"
+    )
+    lineas.append(f"➡️ Asignado a: *{assigned_to or '_sin asignar_'}*  ·  por {actor}")
+    lineas.append(_slack_case_link(case_id))
+    _post_slack("\n".join(lineas))
+
     if assigned_to and "@" in assigned_to:
         _case_assignment_email(assigned_to, case_id, updated.get("title", ""),
                                updated.get("priority", "medium"), actor)
@@ -3984,6 +4079,23 @@ def bulk_assign_cases(body: dict):
                            "not_found": len(not_found),
                            "notificaciones": notificaciones})
 
+    if assigned:
+        modo = "a un analista" if len(assignees) == 1 else f"entre {len(assignees)} analistas"
+        lineas = [
+            "👥 *Reparto masivo de casos*",
+            f"*{len(assigned)} caso(s)* repartidos {modo} por {actor or 'desconocido'}",
+        ]
+        for email, items in per_assignee.items():
+            if items:
+                lineas.append(f"   • {email} — *{len(items)}* caso(s)")
+        if not_found:
+            lineas.append(f"⚠️ {len(not_found)} no encontrado(s)")
+        fallidos = [n["email"] for n in notificaciones if not n.get("sent")]
+        if fallidos:
+            lineas.append(f"📭 No se pudo avisar por correo a: {', '.join(fallidos)}")
+        lineas.append(f"🔗 <{WATCHTOWER_URL}|Abrir en WatchTower>")
+        _post_slack("\n".join(lineas))
+
     return resp(200, {
         "assigned": len(assigned),
         "not_found": not_found,
@@ -4083,6 +4195,15 @@ def take_case(case_id: str, body: dict):
     _crm_update("cases", case_id, {"assigned_to": actor, "updated_at": _now_str()})
     _safe_audit(user_email=actor, action="case.take", entity_type="case",
                 entity_id=case_id, new_value={"assigned_to": actor, "previous": current})
+
+    lineas = ["✋ *Caso tomado*", f"*{case.get('title', '')}*"]
+    cliente = _slack_client_line(case)
+    if cliente:
+        lineas.append(cliente)
+    lineas.append(f"➡️ Lo tomó: *{actor}*" + (f"  ·  antes: {current}" if current else ""))
+    lineas.append(_slack_case_link(case_id))
+    _post_slack("\n".join(lineas))
+
     return resp(200, {"message": f"Caso tomado por {actor}", "assigned_to": actor})
 
 
