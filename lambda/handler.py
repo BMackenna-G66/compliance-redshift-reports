@@ -1118,36 +1118,19 @@ def send_email(html_body: str, xlsx_bytes: bytes, xlsx_filename: str, subject: s
         logger.error("El aviso de reporte NO se pudo enviar. Gmail: %s | SES: %s", detalle, e)
 
 
-# Webhook del canal único de WatchTower (#watchtower_alertas). Mismo secreto
-# que usa la API; si no existe se cae al webhook general para no perder avisos.
-SLACK_ALERTS_SECRET_NAME = os.environ.get(
-    "SLACK_ALERTS_SECRET_NAME", "compliance-redshift-reports/slack-webhook-alertas"
-)
-
-
-def _slack_webhook_url() -> str:
-    """URL del canal de alertas, con fallback al webhook general."""
-    for sid in (SLACK_ALERTS_SECRET_NAME, SLACK_SECRET_ARN):
-        if not sid:
-            continue
-        try:
-            raw = secrets.get_secret_value(SecretId=sid).get("SecretString", "")
-            try:
-                url = json.loads(raw).get("webhook_url", raw)
-            except Exception:
-                url = (raw or "").strip()
-            if url:
-                return url
-        except Exception as e:  # noqa: BLE001
-            logger.warning("No se pudo leer el webhook de Slack %s: %s", sid, e)
-    return ""
-
-
 def post_slack(summary: dict, params: dict, s3_url: str, report_name: str) -> None:
-    webhook_url = _slack_webhook_url()
-    if not webhook_url:
+    """Aviso de reporte terminado.
+
+    Va al canal general (webhook histórico), NO al canal de casos: en
+    #watchtower_alertas se sigue solo la gestión de casos, y los avisos de
+    reportes son otra clase de tráfico que ahí sería ruido.
+    """
+    if not SLACK_SECRET_ARN:
         logger.info("No Slack secret configured, skipping Slack notification")
         return
+
+    secret = secrets.get_secret_value(SecretId=SLACK_SECRET_ARN)
+    webhook_url = secret["SecretString"].strip()
 
     display_name = REPORT_CONFIGS.get(report_name, {}).get("display_name", report_name)
     generated_at = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
