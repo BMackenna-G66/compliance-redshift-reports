@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import datetime as dt
 import decimal
+import hashlib
 import html
 import json
 import os
@@ -4684,6 +4685,33 @@ def _notify_client_reply(case: dict, adjuntos: list[str], estado_anterior: str,
     _post_slack(resumen, blocks=blocks, canal="alertas")
 
 
+def _email_ya_procesado(message_id: str) -> bool:
+    """¿Ya procesamos este correo antes?
+
+    Antes el poller usaba el flag \\Seen de IMAP como control de duplicados:
+    buscaba solo UNSEEN. El problema es que ese flag lo puede cambiar
+    cualquiera — si una persona abría la casilla y leía la respuesta de un
+    cliente antes de que corriera el poller, el mensaje quedaba \\Seen y NUNCA
+    se procesaba: el documento no llegaba al caso y nadie se enteraba.
+
+    Ahora el control es propio: se guarda el Message-ID de cada correo ya
+    procesado, así da igual quién lo haya leído."""
+    if not message_id:
+        return False
+    clave = hashlib.sha256(message_id.encode("utf-8", "replace")).hexdigest()[:32]
+    return _crm_get("email_processed", clave) is not None
+
+
+def _marcar_email_procesado(message_id: str, case_id: str, outcome: str) -> None:
+    if not message_id:
+        return
+    clave = hashlib.sha256(message_id.encode("utf-8", "replace")).hexdigest()[:32]
+    _crm_put("email_processed", clave, {
+        "message_id": message_id, "case_id": case_id,
+        "outcome": outcome, "processed_at": _now_str(),
+    })
+
+
 def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -> str:
     """Procesa un único mensaje IMAP. Retorna 'matched' (adjuntos subidos,
     checklist a "recibido"), 'matched_no_attachment' (el caso matcheó pero
@@ -4702,6 +4730,9 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
     msg = email_lib.message_from_bytes(msg_data[0][1])
     subject = _decode_mime_words(msg.get("Subject", ""))
     from_addr = email_lib.utils.parseaddr(msg.get("From", ""))[1]
+    message_id = (msg.get("Message-ID") or "").strip()
+    if _email_ya_procesado(message_id):
+        return "duplicado"
 
     m = _EMAIL_REF_RE.search(subject)
     ref_record = _crm_get("email_refs", m.group(1).lower()) if m else None
@@ -4787,6 +4818,8 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
         _notify_client_reply(case, [], estado_anterior, from_addr, texto=body_text)
         outcome = "matched_no_attachment"
 
+    _marcar_email_procesado(message_id, case_id, outcome)
+
     if move_matched_from_spam:
         try:
             imap.copy(num, "INBOX")
@@ -4834,7 +4867,7 @@ def poll_document_replies() -> dict:
     except Exception as e:
         return {"status": "error", "error": f"No se pudo conectar/autenticar por IMAP: {e}"}
 
-    processed = matched = matched_no_doc = unmatched = errors = 0
+    processed = matched = matched_no_doc = unmatched = errors = duplicados = 0
     pendientes = 0
     # Topes por corrida: recorrer toda la casilla en una sola invocación
     # colgaba la Lambda. Se procesa de a tandas; lo que sobra queda para la
@@ -4851,8 +4884,12 @@ def poll_document_replies() -> dict:
     # ver con esto. Filtrando por asunto no se los toca — antes se los abría y
     # se los marcaba como leídos solo para descartarlos, ensuciando una casilla
     # corporativa real.
+    # OJO: NO se filtra por UNSEEN. El control de duplicados es el ledger de
+    # Message-ID (ver _email_ya_procesado): si dependiéramos de \Seen, una
+    # respuesta que alguien abrió a mano antes del poller no se procesaría
+    # nunca y el documento no llegaría al caso.
     desde = (dt.datetime.utcnow() - dt.timedelta(days=DOC_REPLY_LOOKBACK_DAYS)).strftime("%d-%b-%Y")
-    criterio = f'(UNSEEN SINCE {desde} SUBJECT "ref:")'
+    criterio = f'(SINCE {desde} SUBJECT "ref:")'
 
     try:
         # ── INBOX: todo lo no matcheado se marca leído (comportamiento normal) ──
@@ -4867,6 +4904,9 @@ def poll_document_replies() -> dict:
                     continue
                 try:
                     outcome = _process_reply_message(imap, num, email_lib)
+                    if outcome == "duplicado":
+                        duplicados += 1
+                        continue
                     if outcome == "error":
                         errors += 1
                         continue
@@ -4908,7 +4948,7 @@ def poll_document_replies() -> dict:
 
     resultado = {"status": "ok", "processed": processed, "matched": matched,
                  "matched_no_attachment": matched_no_doc, "unmatched": unmatched,
-                 "errors": errors, "pendientes": pendientes}
+                 "errors": errors, "duplicados": duplicados, "pendientes": pendientes}
     print(f"poll_document_replies: {resultado}")
     return resultado
 
