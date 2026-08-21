@@ -349,6 +349,17 @@ EMAIL_TEMPLATE_CATALOG = {
         "attachment": "Formulario_B2B.pdf",
         "requires_custom_text": False,
     },
+    # Mismo diseño que el B2C general (cabecera, tipografía, saludo, cierre y
+    # footer) pero con el cuerpo vacío: el analista escribe el contenido. Sirve
+    # para pedidos que no encajan en el texto estándar sin perder la identidad
+    # del correo. Lleva el formulario adjunto porque el uso previsto sigue
+    # siendo pedir documentación.
+    "general_b2c_blanco": {
+        "label": "B2C general — cuerpo en blanco (texto libre)",
+        "file": "email_general_b2c_blanco.html",
+        "attachment": "Formulario_KYC_Individual_Global.pdf",
+        "requires_custom_text": True,
+    },
 }
 
 # Códigos de país (compliance.priority_queue_b2c.country_code, ISO2) que usan
@@ -378,7 +389,7 @@ def _render_email_template(template_key: str, nombre_completo: str, texto_libre:
     analista."""
     html_body = _load_email_template_html(template_key)
     html_body = html_body.replace(_SF_MERGE_FIELD_NOMBRE, nombre_completo or "cliente")
-    if template_key == "texto_libre":
+    if (EMAIL_TEMPLATE_CATALOG.get(template_key) or {}).get("requires_custom_text"):
         custom = (texto_libre or "").strip()
         custom_html = html.escape(custom).replace("\n", "<br>") if custom else "TEXTO LIBRE"
         html_body = html_body.replace(_TEXTO_LIBRE_PLACEHOLDER, custom_html)
@@ -393,6 +404,29 @@ def _email_template_attachment(template_key: str) -> tuple[str, bytes] | None:
     if not filename:
         return None
     return filename, (EMAIL_ATTACHMENTS_DIR / filename).read_bytes()
+
+
+def preview_email_template(body: dict):
+    """Devuelve el HTML del correo tal como se va a enviar, para que el
+    analista lo vea antes de mandarlo."""
+    template_key = (body.get("template_key") or "").strip()
+    if template_key not in EMAIL_TEMPLATE_CATALOG:
+        return resp(400, {"error": f"template_key desconocido: {template_key}"})
+    meta = EMAIL_TEMPLATE_CATALOG[template_key]
+    try:
+        html_body = _render_email_template(
+            template_key,
+            (body.get("nombre") or "").strip(),
+            body.get("texto_libre", ""),
+        )
+    except Exception as e:
+        return resp(200, {"error": f"No se pudo renderizar la plantilla: {e}"})
+    return resp(200, {
+        "html": html_body,
+        "adjunto": meta.get("attachment") or "",
+        "requiere_texto": meta.get("requires_custom_text", False),
+        "label": meta.get("label", template_key),
+    })
 
 
 def list_email_templates(_qs: dict | None = None):
@@ -2219,6 +2253,9 @@ def handler(event, context):  # noqa: ARG001
         # GET /email-templates — catálogo de plantillas para el selector manual
         if method == "GET" and parts == ["email-templates"]:
             return list_email_templates()
+        # POST /email-templates/preview — HTML del correo tal como se enviará
+        if method == "POST" and parts == ["email-templates", "preview"]:
+            return preview_email_template(body)
         # POST /cases/{id}/documentos-checklist
         if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "documentos-checklist":
             return update_case_document_checklist(parts[1], body)
@@ -4780,6 +4817,20 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
                 item["estado"] = "recibido"
         case["documentos_checklist"] = checklist
         case["updated_at"] = _now_str()
+        # El texto de la respuesta también se guarda como nota: muchas veces el
+        # cliente explica ahí qué mandó, qué le falta o algo del origen de los
+        # fondos. Antes se descartaba y solo quedaban los archivos, perdiendo
+        # ese contexto.
+        cuerpo = _extract_email_text(msg)[:2000].strip()
+        if cuerpo:
+            case.setdefault("notes", []).append({
+                "note_id": str(uuid.uuid4()),
+                "case_id": case_id,
+                "author_email": from_addr or "cliente",
+                "content": ("Respuesta del cliente por correo (con "
+                            f"{len(nuevos_adjuntos)} documento(s) adjunto(s)):\n\n{cuerpo}"),
+                "created_at": _now_str(),
+            })
         # Llegó material: el caso pasa a "En Investigación" para que se vea que
         # hay algo que trabajar. Solo se promueve desde "open" — si ya estaba
         # en revisión o cerrado, no se pisa el criterio del analista.
