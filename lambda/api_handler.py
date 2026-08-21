@@ -114,6 +114,37 @@ def _get_slack_alerts_url() -> str:
     return url
 
 
+# Mapeo correo corporativo -> user ID de Slack, para poder arrobar de verdad.
+# Escribir el correo en el mensaje NO genera notificación: Slack solo avisa
+# con la sintaxis <@Uxxxx>. El mapeo vive en S3 para poder actualizarlo cuando
+# entra gente nueva sin volver a desplegar.
+SLACK_USERS_KEY = "config/slack_users.json"
+_slack_users_cache: dict | None = None
+
+
+def _slack_users() -> dict:
+    global _slack_users_cache
+    if _slack_users_cache is not None:
+        return _slack_users_cache
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=SLACK_USERS_KEY)
+        data = json.loads(obj["Body"].read())
+        _slack_users_cache = {k.strip().lower(): v for k, v in (data or {}).items() if v}
+    except Exception:
+        _slack_users_cache = {}
+    return _slack_users_cache
+
+
+def _slack_mention(email: str, fallback: str = "_sin asignar_") -> str:
+    """Devuelve <@Uxxxx> si conocemos el ID de Slack de ese correo; si no, el
+    correo tal cual (mejor eso que nada, aunque no notifique)."""
+    email = str(email or "").strip()
+    if not email:
+        return fallback
+    uid = _slack_users().get(email.lower())
+    return f"<@{uid}>" if uid else email
+
+
 def _post_slack(text: str, blocks: list | None = None, canal: str = "default") -> None:
     """Publica en Slack. `blocks` permite mandar Block Kit (formato rico); el
     `text` queda igual como fallback para notificaciones push y clientes que
@@ -3700,7 +3731,7 @@ def create_case(body: dict):
 
     lineas.append(
         f"⚡ Prioridad: {_PRIORITY_LABEL_ES.get(priority, priority)}  ·  "
-        f"Asignado a: {assigned_to or '_sin asignar_'}"
+        f"Asignado a: {_slack_mention(assigned_to)}"
     )
     lineas.append(f"✍️ Creado por: {created_by}")
     lineas.append(_slack_case_link(cid))
@@ -3815,7 +3846,7 @@ def update_case_assign(case_id: str, body: dict):
         f"⚡ Prioridad: {_PRIORITY_LABEL_ES.get(updated.get('priority', ''), updated.get('priority', ''))}"
         f"  ·  Estado: {_CASE_STATUS_LABEL_ES.get(updated.get('status', ''), updated.get('status', ''))}"
     )
-    lineas.append(f"➡️ Asignado a: *{assigned_to or '_sin asignar_'}*  ·  por {actor}")
+    lineas.append(f"➡️ Asignado a: {_slack_mention(assigned_to)}  ·  por {actor}")
     lineas.append(_slack_case_link(case_id))
     _post_slack("\n".join(lineas))
 
@@ -4129,7 +4160,7 @@ def bulk_assign_cases(body: dict):
         ]
         for email, items in per_assignee.items():
             if items:
-                lineas.append(f"   • {email} — *{len(items)}* caso(s)")
+                lineas.append(f"   • {_slack_mention(email)} — *{len(items)}* caso(s)")
         if not_found:
             lineas.append(f"⚠️ {len(not_found)} no encontrado(s)")
         fallidos = [n["email"] for n in notificaciones if not n.get("sent")]
@@ -4242,7 +4273,7 @@ def take_case(case_id: str, body: dict):
     cliente = _slack_client_line(case)
     if cliente:
         lineas.append(cliente)
-    lineas.append(f"➡️ Lo tomó: *{actor}*" + (f"  ·  antes: {current}" if current else ""))
+    lineas.append(f"➡️ Lo tomó: {_slack_mention(actor)}" + (f"  ·  antes: {current}" if current else ""))
     lineas.append(_slack_case_link(case_id))
     _post_slack("\n".join(lineas))
 
@@ -4503,7 +4534,7 @@ def _notify_client_reply(case: dict, adjuntos: list[str], estado_anterior: str,
     if eid:
         cliente += f"\n`{campo} {eid}`"
 
-    asignado = str(case.get("assigned_to") or "").strip() or "_sin asignar_"
+    asignado = _slack_mention(case.get("assigned_to"))
 
     encabezado = ("📥 Documentos recibidos del cliente" if con_docs
                   else "💬 Respuesta del cliente (sin documentos)")
