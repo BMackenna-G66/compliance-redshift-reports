@@ -82,12 +82,51 @@ def _get_slack_url() -> str:
     except Exception:
         return ""
 
-def _post_slack(text: str) -> None:
-    url = _get_slack_url()
+# Webhook dedicado al canal de alertas operativas (#watchtower_alertas). Un
+# incoming webhook publica siempre en el canal con el que fue creado — no se
+# puede elegir el canal por mensaje —, así que para separar canales hace falta
+# un webhook por canal. Si este secreto no existe, se cae al webhook general
+# para no perder avisos.
+SLACK_ALERTS_SECRET_NAME = os.environ.get(
+    "SLACK_ALERTS_SECRET_NAME", "compliance-redshift-reports/slack-webhook-alertas"
+)
+_slack_alerts_url_cache: str | None = None
+
+
+def _get_slack_alerts_url() -> str:
+    """Webhook del canal de alertas, con fallback al general."""
+    global _slack_alerts_url_cache
+    if _slack_alerts_url_cache is not None:
+        return _slack_alerts_url_cache
+    url = ""
+    try:
+        raw = secrets_client.get_secret_value(
+            SecretId=SLACK_ALERTS_SECRET_NAME).get("SecretString", "")
+        try:
+            url = json.loads(raw).get("webhook_url", raw)
+        except Exception:
+            url = (raw or "").strip()
+    except Exception:
+        url = ""
+    if not url:
+        url = _get_slack_url()  # fallback: canal general
+    _slack_alerts_url_cache = url
+    return url
+
+
+def _post_slack(text: str, blocks: list | None = None, canal: str = "default") -> None:
+    """Publica en Slack. `blocks` permite mandar Block Kit (formato rico); el
+    `text` queda igual como fallback para notificaciones push y clientes que
+    no renderizan bloques. `canal='alertas'` usa el webhook del canal de
+    alertas operativas."""
+    url = _get_slack_alerts_url() if canal == "alertas" else _get_slack_url()
     if not url:
         return
     import urllib.request as _ur
-    payload = json.dumps({"text": text}).encode()
+    cuerpo: dict = {"text": text}
+    if blocks:
+        cuerpo["blocks"] = blocks
+    payload = json.dumps(cuerpo).encode()
     try:
         _ur.urlopen(_ur.Request(url, data=payload,
                                 headers={"Content-Type": "application/json"},
@@ -4443,6 +4482,90 @@ def _extract_email_text(msg) -> str:
     return ""
 
 
+def _notify_client_reply(case: dict, adjuntos: list[str], estado_anterior: str,
+                         from_addr: str = "", texto: str = "") -> None:
+    """Avisa en Slack que un cliente respondió una solicitud de documentos.
+
+    Es el aviso que faltaba: hasta ahora la respuesta se archivaba en el caso
+    pero nadie se enteraba hasta abrirlo a mano. Va al canal de alertas
+    operativas con formato Block Kit."""
+    case_id = case.get("case_id", "")
+    titulo = case.get("title", "(sin título)")
+    con_docs = bool(adjuntos)
+    estado_actual = case.get("status", "open")
+    cambio_estado = estado_actual != estado_anterior
+
+    nombre = str(case.get("entity_name") or "").strip()
+    eid = str(case.get("entity_id") or "").strip()
+    etype = str(case.get("entity_type") or "").lower()
+    campo = "company_id" if etype.startswith("comp") else "customer_id"
+    cliente = nombre or "(sin nombre)"
+    if eid:
+        cliente += f"\n`{campo} {eid}`"
+
+    asignado = str(case.get("assigned_to") or "").strip() or "_sin asignar_"
+
+    encabezado = ("📥 Documentos recibidos del cliente" if con_docs
+                  else "💬 Respuesta del cliente (sin documentos)")
+
+    checklist = case.get("documentos_checklist") or []
+    recibidos = sum(1 for i in checklist if i.get("estado") == "recibido")
+    entregados = sum(1 for i in checklist if i.get("estado") == "entregado")
+    pendientes = sum(1 for i in checklist if i.get("estado") == "pendiente")
+
+    blocks: list[dict] = [
+        {"type": "header", "text": {"type": "plain_text", "text": encabezado, "emoji": True}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{titulo}*"}},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Cliente*\n{cliente}"},
+            {"type": "mrkdwn", "text": f"*Analista*\n{asignado}"},
+        ]},
+    ]
+
+    if con_docs:
+        lista = "\n".join(f"• `{a}`" for a in adjuntos[:8])
+        if len(adjuntos) > 8:
+            lista += f"\n• _y {len(adjuntos) - 8} más_"
+        blocks.append({"type": "section",
+                       "text": {"type": "mrkdwn",
+                                "text": f"*Archivos adjuntos ({len(adjuntos)})*\n{lista}"}})
+        blocks.append({"type": "section",
+                       "text": {"type": "mrkdwn",
+                                "text": (f"*Checklist* — {recibidos} por validar · "
+                                         f"{entregados} entregado(s) · {pendientes} pendiente(s)\n"
+                                         "⚠️ Los documentos quedan como *Recibido*: hay que abrirlos "
+                                         "y marcarlos como *Entregado* a mano.")}})
+    else:
+        extracto = (texto or "").strip().replace("\n", " ")[:280]
+        if extracto:
+            blocks.append({"type": "section",
+                           "text": {"type": "mrkdwn", "text": f"> {extracto}"}})
+        blocks.append({"type": "section",
+                       "text": {"type": "mrkdwn",
+                                "text": ("El cliente respondió pero *no adjuntó documentos*. "
+                                         "El checklist sigue en *Pendiente* — puede que haya que "
+                                         "reinsistir o aclararle qué falta.")}})
+
+    contexto = [f"Caso `{case_id[:8]}…`"]
+    if cambio_estado:
+        contexto.append(f"Estado: {_CASE_STATUS_LABEL_ES.get(estado_anterior, estado_anterior)} → "
+                        f"*{_CASE_STATUS_LABEL_ES.get(estado_actual, estado_actual)}*")
+    else:
+        contexto.append(f"Estado: {_CASE_STATUS_LABEL_ES.get(estado_actual, estado_actual)} (sin cambios)")
+    if from_addr:
+        contexto.append(f"De: {from_addr}")
+    blocks.append({"type": "context",
+                   "elements": [{"type": "mrkdwn", "text": "  ·  ".join(contexto)}]})
+    blocks.append({"type": "actions", "elements": [
+        {"type": "button", "text": {"type": "plain_text", "text": "Abrir en WatchTower", "emoji": True},
+         "url": WATCHTOWER_URL, "style": "primary"},
+    ]})
+    blocks.append({"type": "divider"})
+
+    resumen = f"{encabezado} — {titulo}"
+    _post_slack(resumen, blocks=blocks, canal="alertas")
+
+
 def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -> str:
     """Procesa un único mensaje IMAP. Retorna 'matched' (adjuntos subidos,
     checklist a "recibido"), 'matched_no_attachment' (el caso matcheó pero
@@ -4470,6 +4593,7 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
     case_id = ref_record["case_id"]
 
     saved_any = False
+    nuevos_adjuntos: list[str] = []
     for part in msg.walk():
         if part.get_content_maintype() == "multipart":
             continue
@@ -4497,6 +4621,7 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
             "uploaded_at": _now_str(),
             "source": "email_reply",
         })
+        nuevos_adjuntos.append(filename)
         saved_any = True
 
     if saved_any:
@@ -4506,10 +4631,18 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
                 item["estado"] = "recibido"
         case["documentos_checklist"] = checklist
         case["updated_at"] = _now_str()
+        # Llegó material: el caso pasa a "En Investigación" para que se vea que
+        # hay algo que trabajar. Solo se promueve desde "open" — si ya estaba
+        # en revisión o cerrado, no se pisa el criterio del analista.
+        estado_anterior = case.get("status", "open")
+        if estado_anterior == "open":
+            case["status"] = "in_progress"
         _crm_put("cases", case_id, case)
         _safe_audit(user_email=from_addr or "cliente", action="case.email_reply_attachments",
                     entity_type="case", entity_id=case_id,
-                    new_value={"n_attachments": len(case.get("attachments", []))})
+                    new_value={"n_attachments": len(case.get("attachments", [])),
+                               "status": case.get("status"), "status_anterior": estado_anterior})
+        _notify_client_reply(case, nuevos_adjuntos, estado_anterior, from_addr)
         outcome = "matched"
     else:
         # El caso matcheó pero no vino ningún adjunto válido — igual es una
@@ -4525,9 +4658,15 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
         }
         case.setdefault("notes", []).append(note)
         case["updated_at"] = _now_str()
+        estado_anterior = case.get("status", "open")
+        if estado_anterior == "open":
+            case["status"] = "in_progress"
         _crm_put("cases", case_id, case)
         _safe_audit(user_email=from_addr or "cliente", action="case.email_reply_no_attachment",
-                    entity_type="case", entity_id=case_id, new_value={"note_id": note["note_id"]})
+                    entity_type="case", entity_id=case_id,
+                    new_value={"note_id": note["note_id"], "status": case.get("status"),
+                               "status_anterior": estado_anterior})
+        _notify_client_reply(case, [], estado_anterior, from_addr, texto=body_text)
         outcome = "matched_no_attachment"
 
     if move_matched_from_spam:
