@@ -146,12 +146,17 @@ def _slack_mention(email: str, fallback: str = "_sin asignar_") -> str:
     return f"<@{uid}>" if uid else email
 
 
-def _post_slack(text: str, blocks: list | None = None, canal: str = "default") -> None:
+def _post_slack(text: str, blocks: list | None = None, canal: str = "alertas") -> None:
     """Publica en Slack. `blocks` permite mandar Block Kit (formato rico); el
     `text` queda igual como fallback para notificaciones push y clientes que
-    no renderizan bloques. `canal='alertas'` usa el webhook del canal de
-    alertas operativas."""
-    url = _get_slack_alerts_url() if canal == "alertas" else _get_slack_url()
+    no renderizan bloques.
+
+    Por defecto va al canal de alertas operativas (#watchtower_alertas): es el
+    canal único de WatchTower. Se deja como DEFAULT en vez de marcarlo en cada
+    llamada para que cualquier aviso que se agregue más adelante caiga ahí
+    solo, sin depender de acordarse. Con canal='general' se puede mandar al
+    webhook viejo si alguna vez hiciera falta separar algo."""
+    url = _get_slack_url() if canal == "general" else _get_slack_alerts_url()
     if not url:
         return
     import urllib.request as _ur
@@ -4770,7 +4775,7 @@ def _notify_client_reply(case: dict, adjuntos: list[str], estado_anterior: str,
     blocks.append({"type": "divider"})
 
     resumen = f"{encabezado} — {titulo}"
-    _post_slack(resumen, blocks=blocks, canal="alertas")
+    _post_slack(resumen, blocks=blocks)
 
 
 def _email_ya_procesado(message_id: str) -> bool:
