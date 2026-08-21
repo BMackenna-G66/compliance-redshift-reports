@@ -4450,6 +4450,11 @@
             class="pb-3 px-2 text-sm font-medium transition">
             🔔 Notificaciones
           </button>
+          <button @click="adminSubtab='slack'; loadSlackUsers()"
+            :class="adminSubtab==='slack' ? 'border-b-2 border-orange-500 text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="pb-3 px-2 text-sm font-medium transition">
+            💬 Slack
+          </button>
           <button @click="adminSubtab='auditoria'; loadAuditLog()"
             :class="adminSubtab==='auditoria' ? 'border-b-2 border-orange-500 text-orange-400' : 'text-slate-400 hover:text-white'"
             class="pb-3 px-2 text-sm font-medium transition">
@@ -4602,6 +4607,93 @@
         </div>
 
         <!-- ---- Sub-tab: Notificaciones ---- -->
+        <!-- ---- Sub-tab: Slack (mapeo para arrobar analistas) ---- -->
+        <div x-show="adminSubtab==='slack'">
+          <div class="flex items-start justify-between mb-4 gap-4">
+            <div>
+              <h3 class="text-sm font-semibold text-white mb-1">Usuarios de Slack</h3>
+              <p class="text-xs text-slate-500 max-w-2xl">
+                Para que a un analista le <strong class="text-slate-400">llegue notificación</strong> en Slack hay que
+                arrobarlo con su ID de miembro. Escribir el correo no notifica.
+                El ID se copia desde Slack: click en la persona → <span class="text-slate-400">⋮ Más</span> →
+                <span class="text-slate-400">Copiar ID de miembro</span> (empieza con <code class="text-slate-400">U</code>).
+              </p>
+            </div>
+            <button @click="loadSlackUsers()" class="text-xs text-slate-400 hover:text-white transition whitespace-nowrap">↺ Actualizar</button>
+          </div>
+
+          <div x-show="slackUsersLoading" class="text-center py-8 text-slate-400 text-sm">
+            <span class="spin">⏳</span> Cargando...
+          </div>
+
+          <div x-show="!slackUsersLoading">
+            <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden mb-4">
+              <table class="w-full text-sm">
+                <thead class="bg-slate-900/60">
+                  <tr>
+                    <th class="text-left px-4 py-2.5 text-slate-400 font-medium text-xs">Analista</th>
+                    <th class="text-left px-4 py-2.5 text-slate-400 font-medium text-xs">Correo</th>
+                    <th class="text-left px-4 py-2.5 text-slate-400 font-medium text-xs w-56">ID de Slack</th>
+                    <th class="text-left px-4 py-2.5 text-slate-400 font-medium text-xs w-28">Estado</th>
+                    <th class="px-4 py-2.5 w-24"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="u in slackUsers" :key="u.email">
+                    <tr class="border-t border-slate-700/60">
+                      <td class="px-4 py-2 text-slate-200" x-text="u.full_name || '—'"></td>
+                      <td class="px-4 py-2 text-slate-400 text-xs font-mono" x-text="u.email"></td>
+                      <td class="px-4 py-2">
+                        <input type="text" x-model="u.slack_user_id" placeholder="U0522F23D1V"
+                          class="w-full bg-slate-900 border border-slate-600 rounded-lg px-2.5 py-1.5 text-white text-xs font-mono focus:border-orange-500 focus:outline-none">
+                      </td>
+                      <td class="px-4 py-2">
+                        <span x-show="u.slack_user_id" class="text-xs px-2 py-0.5 rounded-full bg-teal-900/50 text-teal-300 border border-teal-700">✓ notifica</span>
+                        <span x-show="!u.slack_user_id" class="text-xs px-2 py-0.5 rounded-full bg-slate-700 text-slate-400 border border-slate-600">sin ID</span>
+                      </td>
+                      <td class="px-4 py-2 text-right">
+                        <button @click="saveSlackUser(u)" :disabled="slackUserSaving===u.email"
+                          class="text-xs px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white font-medium transition">
+                          <span x-text="slackUserSaving===u.email ? '...' : 'Guardar'"></span>
+                        </button>
+                      </td>
+                    </tr>
+                  </template>
+                  <tr x-show="slackUsers.length===0">
+                    <td colspan="5" class="text-center py-8 text-slate-600 text-sm">Sin analistas cargados</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="flex items-center gap-3 text-xs">
+              <span class="text-slate-500">
+                <span class="text-teal-400 font-medium" x-text="slackUsers.filter(u=>u.slack_user_id).length"></span>
+                de <span x-text="slackUsers.length"></span> analistas pueden recibir notificación
+              </span>
+              <span x-show="slackUserMsg" class="text-teal-400" x-text="slackUserMsg"></span>
+              <span x-show="slackUserError" class="text-red-400" x-text="slackUserError"></span>
+            </div>
+
+            <!-- Mapeos sin analista asociado -->
+            <div x-show="slackOrphans.length > 0" class="mt-5">
+              <p class="text-xs text-slate-500 mb-2">
+                Mapeos cargados que no corresponden a ningún analista del sistema:
+              </p>
+              <div class="space-y-1.5">
+                <template x-for="o in slackOrphans" :key="o.email">
+                  <div class="flex items-center gap-3 bg-slate-800/60 border border-slate-700 rounded-lg px-3 py-2">
+                    <span class="text-xs font-mono text-slate-400" x-text="o.email"></span>
+                    <span class="text-xs font-mono text-slate-500" x-text="o.slack_user_id"></span>
+                    <button @click="deleteSlackUser(o.email)"
+                      class="ml-auto text-xs text-red-400 hover:text-red-300 transition">Quitar</button>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div x-show="adminSubtab==='notificaciones'">
           <div class="max-w-lg space-y-6">
             <!-- Add form -->
@@ -5573,6 +5665,14 @@
       activeCaseAI: '',
       activeCaseAILoading: false,
       createCaseModal: { open: false },
+      // Mantenedor de usuarios de Slack (Admin › Slack)
+      slackUsers: [],
+      slackOrphans: [],
+      slackUsersLoading: false,
+      slackUserSaving: '',
+      slackUserMsg: '',
+      slackUserError: '',
+
       newCaseLookupLoading: false,
       newCaseLookupError: '',
       // Ficha KYC/compliance del cliente dentro del caso
@@ -7735,6 +7835,40 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       async loadCrmUsers() {
         const d = await this.api('GET', '/crm/users');
         this.crmUsers = d?.users || [];
+      },
+
+      async loadSlackUsers() {
+        this.slackUsersLoading = true;
+        this.slackUserMsg = ''; this.slackUserError = '';
+        const d = await this.api('GET', '/slack-users');
+        this.slackUsers = d?.analistas || [];
+        this.slackOrphans = d?.sin_analista || [];
+        this.slackUsersLoading = false;
+      },
+
+      async saveSlackUser(u) {
+        this.slackUserSaving = u.email;
+        this.slackUserMsg = ''; this.slackUserError = '';
+        const d = await this.api('POST', '/slack-users', {
+          email: u.email,
+          slack_user_id: (u.slack_user_id || '').trim(),
+          actor_email: this.currentUserEmail,
+        });
+        this.slackUserSaving = '';
+        if (d && d.email) {
+          this.slackUserMsg = `Guardado: ${u.full_name || u.email}`;
+          setTimeout(() => { this.slackUserMsg = ''; }, 3000);
+        } else {
+          this.slackUserError = d?.error || 'No se pudo guardar.';
+        }
+      },
+
+      async deleteSlackUser(email) {
+        if (!confirm(`¿Quitar el mapeo de ${email}?`)) return;
+        const d = await this.api('DELETE', '/slack-users/' + encodeURIComponent(email), {
+          actor_email: this.currentUserEmail,
+        });
+        if (d?.message) await this.loadSlackUsers();
       },
 
       async loadEmailTemplates() {

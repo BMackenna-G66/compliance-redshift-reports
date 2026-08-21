@@ -2252,6 +2252,14 @@ def handler(event, context):  # noqa: ARG001
         if method == "GET" and parts == ["crm", "users"]:
             return get_crm_users()
 
+        # ── Mapeo de usuarios de Slack (para poder arrobar en las alertas) ──
+        if method == "GET" and parts == ["slack-users"]:
+            return get_slack_users()
+        if method == "POST" and parts == ["slack-users"]:
+            return upsert_slack_user(body)
+        if method == "DELETE" and len(parts) == 2 and parts[0] == "slack-users":
+            return delete_slack_user(parts[1], body)
+
         # ---------------------------------------------------------------------------
         # CASES CRM
         # ---------------------------------------------------------------------------
@@ -3598,6 +3606,85 @@ def update_alert_notes(alert_id: str, body: dict):
     if _crm_update("alerts", alert_id, {"notes": body.get("notes", "").strip()}) is None:
         return resp(404, {"error": f"Alert '{alert_id}' not found"})
     return resp(200, {"message": "Notes updated"})
+
+
+def _save_slack_users(mapping: dict) -> None:
+    """Guarda el mapeo y limpia la caché del contenedor para que el cambio se
+    vea de inmediato en esta Lambda."""
+    global _slack_users_cache
+    s3.put_object(
+        Bucket=S3_BUCKET, Key=SLACK_USERS_KEY,
+        Body=json.dumps(mapping, indent=2, ensure_ascii=False).encode("utf-8"),
+        ContentType="application/json",
+    )
+    _slack_users_cache = {k.strip().lower(): v for k, v in mapping.items() if v}
+
+
+def get_slack_users():
+    """Mapeo correo -> user ID de Slack, con los analistas conocidos para que
+    el mantenedor pueda mostrar quién todavía no tiene ID cargado."""
+    mapping = dict(_slack_users())
+    conocidos = []
+    try:
+        for u in _crm_list("users"):
+            email = (u.get("email") or "").strip()
+            if email and "@" in email:
+                conocidos.append({
+                    "email": email,
+                    "full_name": u.get("full_name") or email,
+                    "slack_user_id": mapping.get(email.lower(), ""),
+                })
+    except Exception:
+        pass
+    conocidos.sort(key=lambda x: x["full_name"].lower())
+    # Entradas del mapeo que no corresponden a ningún analista del sistema.
+    emails_conocidos = {c["email"].lower() for c in conocidos}
+    huerfanas = [{"email": k, "full_name": "", "slack_user_id": v}
+                 for k, v in mapping.items() if k not in emails_conocidos]
+    return resp(200, {"analistas": conocidos, "sin_analista": huerfanas,
+                      "total_con_id": sum(1 for v in mapping.values() if v)})
+
+
+def upsert_slack_user(body: dict):
+    """Carga o actualiza el ID de Slack de un correo."""
+    denied = _require_admin(body)
+    if denied:
+        return denied
+    email = str(body.get("email") or "").strip().lower()
+    uid = str(body.get("slack_user_id") or "").strip()
+    if not email or "@" not in email:
+        return resp(400, {"error": "email válido es requerido"})
+    # Los member ID de Slack son alfanuméricos y empiezan con U (personas) o
+    # W (cuentas de Enterprise Grid).
+    if uid and not re.fullmatch(r"[UW][A-Z0-9]{6,}", uid.upper()):
+        return resp(400, {"error": "El ID de Slack debe empezar con U (o W) — ej. U0522F23D1V. "
+                                   "Se copia desde el perfil de la persona en Slack: ⋮ → Copiar ID de miembro."})
+
+    mapping = dict(_slack_users())
+    if uid:
+        mapping[email] = uid.upper() if uid.islower() else uid
+    else:
+        mapping.pop(email, None)  # ID vacío = quitar el mapeo
+    _save_slack_users(mapping)
+    _safe_audit(user_email=(body.get("actor_email") or "unknown"),
+                action="slack_user.upsert", entity_type="config", entity_id=email,
+                new_value={"slack_user_id": uid})
+    return resp(200, {"email": email, "slack_user_id": uid, "total": len(mapping)})
+
+
+def delete_slack_user(email: str, body: dict):
+    denied = _require_admin(body)
+    if denied:
+        return denied
+    email = str(email or "").strip().lower()
+    mapping = dict(_slack_users())
+    if email not in mapping:
+        return resp(404, {"error": f"No hay mapeo cargado para {email}"})
+    mapping.pop(email, None)
+    _save_slack_users(mapping)
+    _safe_audit(user_email=(body.get("actor_email") or "unknown"),
+                action="slack_user.delete", entity_type="config", entity_id=email)
+    return resp(200, {"message": f"Mapeo de {email} eliminado", "total": len(mapping)})
 
 
 def get_crm_users():
