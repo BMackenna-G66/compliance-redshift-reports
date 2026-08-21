@@ -383,7 +383,57 @@ def _load_email_template_html(template_key: str) -> str:
     return (EMAIL_TEMPLATES_DIR / meta["file"]).read_text(encoding="utf-8")
 
 
-def _render_email_template(template_key: str, nombre_completo: str, texto_libre: str | None = None) -> str:
+# Bloques removibles de las plantillas de solicitud, en el orden en que
+# aparecen en el correo. Cada punto numerado está envuelto en la plantilla con
+# <!--B:nombre--> ... <!--/B--> y su número reemplazado por {{N}}.
+_TEMPLATE_BLOCK_ORDER = ["domicilio", "formulario", "origen", "motivo"]
+
+# Qué bloque del correo corresponde a cada categoría del checklist. Dos
+# categorías caen en el mismo bloque (los comprobantes de respaldo son parte
+# del punto de origen de fondos), así que alcanza con que una esté pedida.
+_CATEGORY_TO_BLOCK = {
+    "Domicilio": "domicilio",
+    "Identidad/Datos personales": "formulario",
+    "Origen de fondo": "origen",
+    "Comprobantes/Soporte": "origen",
+    "Relación/Beneficiario": "motivo",
+}
+_BLOCK_RE = re.compile(r"<!--B:([a-z]+)-->.*?<!--/B-->", re.DOTALL)
+
+
+def _filtrar_bloques(html_body: str, documentos: list[str] | None) -> str:
+    """Deja en el correo solo los puntos correspondientes a los documentos
+    pedidos y renumera los que quedan.
+
+    Si el analista destilda una categoría, ese punto no debe aparecer en el
+    correo — antes se mandaba siempre el texto completo sin importar la
+    selección. Sin selección conocida se manda todo (comportamiento seguro)."""
+    if "<!--B:" not in html_body:
+        return html_body  # plantilla sin bloques (texto libre / en blanco)
+
+    pedidos = {_CATEGORY_TO_BLOCK[d] for d in (documentos or []) if d in _CATEGORY_TO_BLOCK}
+    if not pedidos:
+        pedidos = set(_TEMPLATE_BLOCK_ORDER)
+
+    def _quitar(m):
+        return m.group(0) if m.group(1) in pedidos else ""
+
+    html_body = _BLOCK_RE.sub(_quitar, html_body)
+
+    # Renumerar: los {{N}} que sobrevivieron pasan a 1, 2, 3... en orden.
+    contador = [0]
+
+    def _numerar(_m):
+        contador[0] += 1
+        return str(contador[0])
+
+    html_body = re.sub(r"\{\{N\}\}", _numerar, html_body)
+    # Se limpian los marcadores para no dejar comentarios en el correo final.
+    return html_body.replace("<!--/B-->", "").replace("<!--B:", "<!--")
+
+
+def _render_email_template(template_key: str, nombre_completo: str, texto_libre: str | None = None,
+                           documentos: list[str] | None = None) -> str:
     """Renderiza una de las 4 plantillas oficiales, reemplazando el nombre
     del cliente y, para texto_libre, el contenido escrito a mano por el
     analista."""
@@ -393,7 +443,7 @@ def _render_email_template(template_key: str, nombre_completo: str, texto_libre:
         custom = (texto_libre or "").strip()
         custom_html = html.escape(custom).replace("\n", "<br>") if custom else "TEXTO LIBRE"
         html_body = html_body.replace(_TEXTO_LIBRE_PLACEHOLDER, custom_html)
-    return html_body
+    return _filtrar_bloques(html_body, documentos)
 
 
 def _email_template_attachment(template_key: str) -> tuple[str, bytes] | None:
@@ -418,6 +468,7 @@ def preview_email_template(body: dict):
             template_key,
             (body.get("nombre") or "").strip(),
             body.get("texto_libre", ""),
+            body.get("documentos") or None,
         )
     except Exception as e:
         return resp(200, {"error": f"No se pudo renderizar la plantilla: {e}"})
@@ -3139,7 +3190,7 @@ def run_alert_prioritization_test(body: dict):
         subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
         # Los datos de prueba no traen país -> siempre plantilla B2C general.
         template_key = "general_b2c"
-        html_body = _render_email_template(template_key, nombre)
+        html_body = _render_email_template(template_key, nombre, documentos=documentos)
         attachment = _email_template_attachment(template_key)
         envio = _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
                             attachments=[attachment] if attachment else None)
@@ -3304,7 +3355,7 @@ def run_alert_prioritization_real(body: dict):
 
         ref = _register_email_ref(case_id) if case_id else ""
         subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
-        html_body = _render_email_template(template_key, nombre)
+        html_body = _render_email_template(template_key, nombre, documentos=documentos)
         attachment = _email_template_attachment(template_key)
         envio = _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
                             attachments=[attachment] if attachment else None)
@@ -3461,7 +3512,7 @@ def send_manual_document_request(body: dict):
         ref = _register_email_ref(case_id) if case_id else ""
 
     subject = _subject_with_ref("Solicitud de información adicional — Global66", ref)
-    html_body = _render_email_template(template_key, nombre, texto_libre)
+    html_body = _render_email_template(template_key, nombre, texto_libre, documentos)
     attachment = _email_template_attachment(template_key)
     envio = _send_email(correo, subject, html_body, from_addr=ALERT_DOCS_FROM_ADDR,
                         attachments=[attachment] if attachment else None)
