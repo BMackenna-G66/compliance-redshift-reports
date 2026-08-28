@@ -2212,6 +2212,10 @@ def handler(event, context):  # noqa: ARG001
         # de Remesas, pensada para ser llamada desde otro proyecto/sistema.
         if method == "POST" and parts == ["remesas", "search"]:
             return search_remesas_sync(body)
+        # POST /delitos/search — antecedentes penales EN VIVO por RUT o
+        # customer_id, para consumo de otros sistemas (ej. modelos de Fraude).
+        if method == "POST" and parts == ["delitos", "search"]:
+            return search_delitos_sync(body)
         # POST /search/wallet
         if method == "POST" and parts == ["search", "wallet"]:
             return run_wallet_search(body)
@@ -5206,6 +5210,113 @@ def search_remesas_sync(body: dict):
     found_ids = {r.get("transaction_id") for r in rows}
     not_found = [tid for tid in clean_ids if tid not in found_ids]
     return resp(200, {"rows": rows, "count": len(rows), "not_found": not_found})
+
+
+# ── Consulta de antecedentes penales (para consumo externo) ──────────────
+_DELITOS_SEARCH_MAX = 100
+# El RUT se almacena SIN puntos ni guion y con el DV pegado: '123456789',
+# '12345678K'. Si el llamador manda '12.345.678-9' y no se normaliza, la
+# consulta devuelve vacío — un falso negativo silencioso, que en una
+# búsqueda de antecedentes es el peor error posible.
+_RUT_LIMPIO_RE = re.compile(r"^[0-9]{6,9}[0-9kK]$")
+
+
+def _normalizar_rut(valor) -> str | None:
+    """'12.345.678-9' | '12345678-9' | '123456789' → '123456789'.
+
+    Devuelve None si lo que llega no puede ser un RUT. Además de normalizar,
+    esto es la barrera de inyección SQL: solo dígitos y K sobreviven."""
+    limpio = str(valor).strip().replace(".", "").replace("-", "").replace(" ", "")
+    if not _RUT_LIMPIO_RE.match(limpio):
+        return None
+    return limpio.upper()
+
+
+def search_delitos_sync(body: dict):
+    """Antecedentes penales EN VIVO por RUT o customer_id — pensado para que
+    otro proyecto (ej. los modelos del equipo de Fraude) consulte sin acceso
+    directo a la base.
+
+    Lee de compliance_shared.mv_* (vistas materializadas ya deduplicadas: la
+    tabla base es append-only y tiene el mismo RUT cargado hasta 6 veces).
+
+    body: {rut: '12.345.678-9'} | {ruts: [...]} |
+          {customer_id: 123}    | {customer_ids: [...]}   (máx. 100)
+    """
+    ruts_in = body.get("ruts")
+    if ruts_in is None and body.get("rut") is not None:
+        ruts_in = [body["rut"]]
+    cids_in = body.get("customer_ids")
+    if cids_in is None and body.get("customer_id") is not None:
+        cids_in = [body["customer_id"]]
+    ruts_in = ruts_in or []
+    cids_in = cids_in or []
+
+    if not ruts_in and not cids_in:
+        return resp(400, {"error": "Se requiere rut/ruts o customer_id/customer_ids"})
+    if len(ruts_in) + len(cids_in) > _DELITOS_SEARCH_MAX:
+        return resp(400, {
+            "error": f"Máximo {_DELITOS_SEARCH_MAX} identificadores por consulta"
+        })
+
+    ruts, invalidos = [], []
+    for r in ruts_in:
+        norm = _normalizar_rut(r)
+        (ruts.append(norm) if norm else invalidos.append(str(r)))
+    cids = []
+    for c in cids_in:
+        try:
+            cids.append(int(str(c).strip()))
+        except (ValueError, TypeError):
+            invalidos.append(str(c))
+    if not ruts and not cids:
+        return resp(400, {"error": "Ningún identificador válido", "invalidos": invalidos})
+
+    filtros = []
+    if ruts:
+        filtros.append("rut in ({})".format(", ".join("'%s'" % r for r in ruts)))
+    if cids:
+        filtros.append("customer_id in ({})".format(", ".join(str(c) for c in cids)))
+    where = " or ".join(filtros)
+
+    try:
+        clientes = _rs_exec(
+            "select rut, customer_id, compliance_status, risk_level, total_delitos,"
+            " con_info, fecha_consulta"
+            f" from compliance_shared.mv_clientes_delitos where {where}"
+        )
+        causas = _rs_exec(
+            "select rut, customer_id, delito_num, crimen, estado, estado_norm,"
+            " fecha, riesgo, rit, ruc, tribunal"
+            f" from compliance_shared.mv_delitos where {where}"
+            " order by rut, delito_num"
+        )
+    except RuntimeError as e:
+        return resp(200, {"error": "cluster_unavailable", "message": str(e)})
+
+    por_rut: dict = {}
+    for c in causas:
+        por_rut.setdefault(c.get("rut"), []).append(c)
+
+    resultados = []
+    for cli in clientes:
+        cli["delitos"] = por_rut.get(cli.get("rut"), [])
+        resultados.append(cli)
+
+    encontrados_rut = {c.get("rut") for c in clientes}
+    encontrados_cid = {c.get("customer_id") for c in clientes}
+    # Sin antecedentes NO es lo mismo que no consultado: el que no aparece en
+    # la base es alguien a quien nunca se le corrió la consulta.
+    sin_registro = ([r for r in ruts if r not in encontrados_rut]
+                    + [c for c in cids if c not in encontrados_cid])
+
+    return resp(200, {
+        "resultados": resultados,
+        "count": len(resultados),
+        "sin_registro": sin_registro,
+        "invalidos": invalidos,
+        "fuente": "compliance_shared.mv_clientes_delitos + mv_delitos",
+    })
 
 
 def run_wallet_search(body: dict):
