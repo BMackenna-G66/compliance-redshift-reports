@@ -625,6 +625,8 @@
                                   class="text-slate-500 hover:text-red-400 transition text-sm" title="Marcar como Alertado">⚠</button>
                                 <button @click="openAssignAlert(row, result.report_name)"
                                   class="text-slate-500 hover:text-blue-400 transition text-sm" title="Asignar a analista">👤</button>
+                                <button @click="openCreateCaseFromRow(row, result.report_name, result.display_name)"
+                                  class="text-slate-500 hover:text-orange-400 transition text-sm" title="Crear caso">📁</button>
                                 <button @click="analyzeRow(row, result.report_name)"
                                   class="text-slate-500 hover:text-purple-400 transition text-sm" title="Analizar con IA">🤖</button>
                               </td>
@@ -5718,7 +5720,7 @@
       caseSelectMode: false,
       selectedCaseIds: [],
       bulkAssignModal: { open: false, mode: 'single', assigned_to: '', assignees: [], sending: false, error: '', result: null },
-      newCaseForm: { title: '', description: '', priority: 'medium', assigned_to: '', entity_type: '', entity_id: '', report_name: '', from_alert_id: null },
+      newCaseForm: { title: '', description: '', priority: 'medium', assigned_to: '', entity_type: '', entity_id: '', entity_name: '', report_name: '', from_alert_id: null, alert_data: {}, alert_priority: '' },
       kanbanColumns: [
         { key: 'open',         label: 'Abierto',           dot: 'bg-blue-400',   nextStatuses: [{k:'in_progress', l:'→ Investigar'}] },
         { key: 'in_progress',  label: 'En Investigación',  dot: 'bg-yellow-400', nextStatuses: [{k:'open', l:'← Reabrir'}, {k:'under_review', l:'→ Revisar'}] },
@@ -8119,13 +8121,67 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         if (d?.documentos_checklist) this.activeCase.documentos_checklist = d.documentos_checklist;
       },
 
+      // Mismo orden de prioridad que _ROW_ENTITY_PATTERNS en el backend, para
+      // que una fila identifique a la misma entidad la reparta quien la reparta.
+      entidadDesdeFila(row) {
+        const claves = Object.keys(row || {});
+        const buscar = (re) => claves.find(k => re.test(String(k)));
+        const candidatos = [
+          ['customer_id', /^(customer_id|client_id)$/i],
+          ['company_id', /^company_id$/i],
+          ['beneficiary_id', /^beneficiary_id$/i],
+          ['email', /email/i],
+        ];
+        for (const [campo, re] of candidatos) {
+          const k = buscar(re);
+          if (!k) continue;
+          const v = String(row[k] ?? '').trim();
+          if (v && !['none', 'nan', '—'].includes(v.toLowerCase())) return { campo, valor: v };
+        }
+        return { campo: '', valor: '' };
+      },
+
+      // Crear caso desde una fila del tablero "Resultados de Sesión". Reusa el
+      // mismo modal que el resto de la app y adjunta la fila completa como
+      // alert_data, para que el caso nazca con los números que lo originaron.
+      openCreateCaseFromRow(row, reportName, displayName) {
+        const { campo, valor } = this.entidadDesdeFila(row);
+        if (!valor) {
+          alert('Esta fila no identifica a un cliente ni a una empresa, así que no se puede crear un caso desde ella.');
+          return;
+        }
+        const nombre = displayName || String(reportName || 'reporte').replace(/_/g, ' ');
+        this.openCreateCaseModal({
+          entity_field: campo,
+          entity_value: valor,
+          // Título vacío a propósito: lookupCaseEntityName lo compone como
+          // "Caso: <nombre del cliente> (<id>)", igual que el resto de los casos.
+          titulo: '',
+          descripcion: `Detectado en: ${nombre}`,
+          report_name: reportName || '',
+          alert_id: null,
+          row_data: row,
+        });
+      },
+
       openCreateCaseModal(fromAlert = null) {
         // entity_field de una alerta puede venir como 'customer_id'/'email';
         // el caso solo distingue cliente vs empresa.
         const ef = String(fromAlert?.entity_field || '').toLowerCase();
+        // row_data viaja como string desde el backend y como objeto cuando
+        // viene de una fila del tablero: se normaliza a objeto.
+        let datosAlerta = fromAlert?.row_data ?? fromAlert?.alert_data ?? {};
+        if (typeof datosAlerta === 'string') {
+          try { datosAlerta = JSON.parse(datosAlerta); } catch (e) { datosAlerta = {}; }
+        }
+        if (!datosAlerta || typeof datosAlerta !== 'object') datosAlerta = {};
         this.newCaseForm = {
-          title: fromAlert ? ('Caso: ' + (fromAlert.reason || fromAlert.entity_value || '')) : '',
-          description: '',
+          title: fromAlert
+            ? (fromAlert.titulo !== undefined
+                ? fromAlert.titulo
+                : ('Caso: ' + (fromAlert.reason || fromAlert.entity_value || '')))
+            : '',
+          description: (fromAlert && fromAlert.descripcion) || '',
           priority: 'medium',
           assigned_to: '',
           entity_type: ef.includes('company') ? 'company' : 'customer',
@@ -8133,6 +8189,8 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           entity_name: '',
           report_name: fromAlert ? (fromAlert.report_name || '') : '',
           from_alert_id: fromAlert ? fromAlert.alert_id : null,
+          alert_data: datosAlerta,
+          alert_priority: String(fromAlert?.prioridad || datosAlerta.prioridad || ''),
         };
         this.newCaseLookupError = '';
         this.newCaseLookupLoading = false;
@@ -8174,6 +8232,11 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           entity_id: this.newCaseForm.entity_id,
           entity_name: this.newCaseForm.entity_name,
           report_name: this.newCaseForm.report_name,
+          // La fila que originó el caso. El backend ya la guardaba, pero el
+          // front nunca la mandaba: los casos creados a mano quedaban sin los
+          // números de la alerta, a diferencia de los automáticos.
+          alert_data: this.newCaseForm.alert_data || {},
+          alert_priority: this.newCaseForm.alert_priority || '',
           created_by: this.currentUserEmail || this.userEmail || 'unknown',
         };
         const d = await this.api('POST', '/cases', payload);
