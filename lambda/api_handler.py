@@ -44,6 +44,7 @@ from __future__ import annotations
 import datetime as dt
 import decimal
 import hashlib
+import hmac
 import html
 import json
 import os
@@ -54,6 +55,7 @@ from pathlib import Path
 
 import boto3
 from boto3.dynamodb.conditions import Attr
+from botocore.exceptions import ClientError
 
 try:
     from db_redshift import write_audit as _write_audit
@@ -2150,7 +2152,7 @@ def handler(event, context):  # noqa: ARG001
                     "Content-Type": "application/json",
                     "Access-Control-Allow-Origin": cors_origin,
                     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-                    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                    "Access-Control-Allow-Headers": "Authorization, Content-Type, x-api-key",
                     "Access-Control-Max-Age": "300",
                 },
                 "body": "",
@@ -2212,6 +2214,10 @@ def handler(event, context):  # noqa: ARG001
         # de Remesas, pensada para ser llamada desde otro proyecto/sistema.
         if method == "POST" and parts == ["remesas", "search"]:
             return search_remesas_sync(body)
+        # POST /delitos/search — antecedentes penales EN VIVO por RUT o
+        # customer_id, para consumo de otros sistemas (ej. modelos de Fraude).
+        if method == "POST" and parts == ["delitos", "search"]:
+            return search_delitos_sync(body, event)
         # POST /search/wallet
         if method == "POST" and parts == ["search", "wallet"]:
             return run_wallet_search(body)
@@ -5206,6 +5212,265 @@ def search_remesas_sync(body: dict):
     found_ids = {r.get("transaction_id") for r in rows}
     not_found = [tid for tid in clean_ids if tid not in found_ids]
     return resp(200, {"rows": rows, "count": len(rows), "not_found": not_found})
+
+
+# ── Consulta de antecedentes penales (para consumo externo) ──────────────
+_DELITOS_SEARCH_MAX = 100
+DELITOS_KEYS_SECRET_NAME = os.environ.get(
+    "DELITOS_KEYS_SECRET_NAME", "compliance-redshift-reports/delitos-api-keys")
+_delitos_keys_cache: dict | None = None
+
+
+def _delitos_api_keys() -> dict:
+    """{'nombre-del-consumidor': 'clave'} desde Secrets Manager.
+
+    Una clave por consumidor en vez de una sola compartida: así la auditoría
+    sabe quién consultó y se puede revocar a uno sin romperle el acceso al
+    resto. Se cachea por contenedor; al rotar, el valor nuevo entra cuando
+    Lambda recicle el contenedor o con un redeploy.
+    """
+    global _delitos_keys_cache
+    if _delitos_keys_cache is not None:
+        return _delitos_keys_cache
+    try:
+        sm = boto3.client("secretsmanager")
+        raw = sm.get_secret_value(SecretId=DELITOS_KEYS_SECRET_NAME).get("SecretString", "") or "{}"
+        _delitos_keys_cache = {str(k): str(v) for k, v in json.loads(raw).items() if k and v}
+    except Exception as e:
+        # Falla cerrada: sin claves legibles no se autoriza a nadie.
+        print(f"[delitos] no pude leer las API keys ({DELITOS_KEYS_SECRET_NAME}): {e}")
+        _delitos_keys_cache = {}
+    return _delitos_keys_cache
+
+
+def _identificar_consumidor(event: dict) -> str | None:
+    """Nombre del consumidor si la clave del header x-api-key es válida.
+
+    Compara con hmac.compare_digest (tiempo constante) y recorre todas las
+    claves sin cortar en el primer acierto, para no filtrar información por
+    diferencias de tiempo de respuesta.
+    """
+    headers = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
+    presentada = str(headers.get("x-api-key") or "").strip()
+    if not presentada:
+        return None
+    encontrado = None
+    for nombre, clave in _delitos_api_keys().items():
+        if hmac.compare_digest(presentada, clave):
+            encontrado = nombre
+    return encontrado
+
+
+DELITOS_CUOTA_DIARIA = int(os.environ.get("DELITOS_CUOTA_DIARIA", "5000"))
+
+
+def _consumir_cuota_delitos(consumidor: str, cuantos: int) -> tuple[bool, int]:
+    """Descuenta `cuantos` identificadores de la cuota diaria del consumidor.
+
+    Devuelve (permitido, consumido_despues).
+
+    Sin permisos de API Gateway para poner throttling por ruta ni de DynamoDB
+    para una tabla de contadores, el control de volumen se hace acá con
+    escrituras condicionales de S3 (If-Match sobre el ETag), que dan un
+    compare-and-swap real: si dos requests concurrentes leen el mismo valor,
+    la segunda falla y reintenta en vez de pisar el conteo.
+
+    Es una red de seguridad contra loops desbocados y enumeración, NO la
+    frontera de seguridad — esa es la autenticación. Por eso ante un error de
+    S3 deja pasar (fail-open) en vez de cortarle el servicio a un consumidor
+    legítimo, y lo registra para que se note.
+    """
+    if cuantos <= 0:
+        return True, 0
+    clave = f"cuotas/delitos/{dt.datetime.utcnow():%Y-%m-%d}/{consumidor}.json"
+    for _ in range(4):
+        try:
+            try:
+                obj = s3.get_object(Bucket=S3_BUCKET, Key=clave)
+                actual = int(json.loads(obj["Body"].read()).get("identificadores", 0))
+                etag = obj["ETag"]
+            except s3.exceptions.NoSuchKey:
+                actual, etag = 0, None
+
+            if actual + cuantos > DELITOS_CUOTA_DIARIA:
+                return False, actual
+
+            cuerpo = json.dumps({
+                "consumidor": consumidor,
+                "identificadores": actual + cuantos,
+                "actualizado": dt.datetime.utcnow().isoformat(),
+            }).encode("utf-8")
+            cond = {"IfMatch": etag} if etag else {"IfNoneMatch": "*"}
+            s3.put_object(Bucket=S3_BUCKET, Key=clave, Body=cuerpo,
+                          ContentType="application/json", **cond)
+            return True, actual + cuantos
+        except ClientError as e:
+            # 412/409 = otro request ganó la carrera; se reintenta con el valor nuevo.
+            if e.response.get("Error", {}).get("Code") in ("PreconditionFailed", "ConditionalRequestConflict"):
+                continue
+            print(f"[delitos] cuota no evaluable, se deja pasar: {e}")
+            return True, -1
+        except Exception as e:
+            print(f"[delitos] cuota no evaluable, se deja pasar: {e}")
+            return True, -1
+    print(f"[delitos] cuota: demasiada contención para {consumidor}, se deja pasar")
+    return True, -1
+
+
+def _auditar_consulta_delitos(consumidor, event, ruts, cids, encontrados) -> None:
+    """Deja rastro de quién consultó a quién.
+
+    Son antecedentes penales de personas identificadas: el registro de accesos
+    es parte del control, no un extra. Se escribe a S3 (queryable) y además se
+    imprime a CloudWatch, que es el respaldo garantizado si S3 falla.
+    """
+    ctx = (event.get("requestContext") or {}).get("http", {}) or {}
+    registro = {
+        "ts": dt.datetime.utcnow().isoformat(),
+        "consumidor": consumidor,
+        "ip": ctx.get("sourceIp", ""),
+        "user_agent": str((event.get("headers") or {}).get("user-agent", ""))[:200],
+        "ruts": ruts,
+        "customer_ids": cids,
+        "encontrados": encontrados,
+    }
+    print(f"[auditoria-delitos] {json.dumps(registro, ensure_ascii=False)}")
+    try:
+        s3.put_object(
+            Bucket=S3_BUCKET,
+            Key=f"auditoria/delitos/{dt.datetime.utcnow():%Y/%m/%d}/{uuid.uuid4()}.json",
+            Body=json.dumps(registro, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except Exception as e:
+        print(f"[auditoria-delitos] no pude persistir a S3: {e}")
+
+
+# El RUT se almacena SIN puntos ni guion y con el DV pegado: '123456789',
+# '12345678K'. Si el llamador manda '12.345.678-9' y no se normaliza, la
+# consulta devuelve vacío — un falso negativo silencioso, que en una
+# búsqueda de antecedentes es el peor error posible.
+_RUT_LIMPIO_RE = re.compile(r"^[0-9]{6,9}[0-9kK]$")
+
+
+def _normalizar_rut(valor) -> str | None:
+    """'12.345.678-9' | '12345678-9' | '123456789' → '123456789'.
+
+    Devuelve None si lo que llega no puede ser un RUT. Además de normalizar,
+    esto es la barrera de inyección SQL: solo dígitos y K sobreviven."""
+    limpio = str(valor).strip().replace(".", "").replace("-", "").replace(" ", "")
+    if not _RUT_LIMPIO_RE.match(limpio):
+        return None
+    return limpio.upper()
+
+
+def search_delitos_sync(body: dict, event: dict | None = None):
+    """Antecedentes penales EN VIVO por RUT o customer_id — pensado para que
+    otro proyecto (ej. los modelos del equipo de Fraude) consulte sin acceso
+    directo a la base.
+
+    Lee de compliance_shared.mv_* (vistas materializadas ya deduplicadas: la
+    tabla base es append-only y tiene el mismo RUT cargado hasta 6 veces).
+
+    Requiere header `x-api-key`. A diferencia del resto del API, acá la llave
+    de búsqueda (el RUT) es adivinable y enumerable, así que sin autenticación
+    cualquiera podría barrer la población completa; ver docs/seguridad.
+
+    body: {rut: '12.345.678-9'} | {ruts: [...]} |
+          {customer_id: 123}    | {customer_ids: [...]}   (máx. 100)
+    """
+    event = event or {}
+    consumidor = _identificar_consumidor(event)
+    if not consumidor:
+        return resp(401, {"error": "no_autorizado",
+                          "message": "Header x-api-key ausente o inválido."})
+
+    ruts_in = body.get("ruts")
+    if ruts_in is None and body.get("rut") is not None:
+        ruts_in = [body["rut"]]
+    cids_in = body.get("customer_ids")
+    if cids_in is None and body.get("customer_id") is not None:
+        cids_in = [body["customer_id"]]
+    ruts_in = ruts_in or []
+    cids_in = cids_in or []
+
+    if not ruts_in and not cids_in:
+        return resp(400, {"error": "Se requiere rut/ruts o customer_id/customer_ids"})
+    if len(ruts_in) + len(cids_in) > _DELITOS_SEARCH_MAX:
+        return resp(400, {
+            "error": f"Máximo {_DELITOS_SEARCH_MAX} identificadores por consulta"
+        })
+
+    ruts, invalidos = [], []
+    for r in ruts_in:
+        norm = _normalizar_rut(r)
+        (ruts.append(norm) if norm else invalidos.append(str(r)))
+    cids = []
+    for c in cids_in:
+        try:
+            cids.append(int(str(c).strip()))
+        except (ValueError, TypeError):
+            invalidos.append(str(c))
+    if not ruts and not cids:
+        return resp(400, {"error": "Ningún identificador válido", "invalidos": invalidos})
+
+    permitido, consumido = _consumir_cuota_delitos(consumidor, len(ruts) + len(cids))
+    if not permitido:
+        return resp(429, {
+            "error": "cuota_diaria_excedida",
+            "message": f"El consumidor '{consumidor}' alcanzó su cuota de "
+                       f"{DELITOS_CUOTA_DIARIA} identificadores por día "
+                       f"({consumido} consumidos). Para volumen alto usar el "
+                       f"datashare de Redshift, no este endpoint.",
+        })
+
+    filtros = []
+    if ruts:
+        filtros.append("rut in ({})".format(", ".join("'%s'" % r for r in ruts)))
+    if cids:
+        filtros.append("customer_id in ({})".format(", ".join(str(c) for c in cids)))
+    where = " or ".join(filtros)
+
+    try:
+        clientes = _rs_exec(
+            "select rut, customer_id, compliance_status, risk_level, total_delitos,"
+            " con_info, fecha_consulta"
+            f" from compliance_shared.mv_clientes_delitos where {where}"
+        )
+        causas = _rs_exec(
+            "select rut, customer_id, delito_num, crimen, estado, estado_norm,"
+            " fecha, riesgo, rit, ruc, tribunal"
+            f" from compliance_shared.mv_delitos where {where}"
+            " order by rut, delito_num"
+        )
+    except RuntimeError as e:
+        return resp(200, {"error": "cluster_unavailable", "message": str(e)})
+
+    por_rut: dict = {}
+    for c in causas:
+        por_rut.setdefault(c.get("rut"), []).append(c)
+
+    resultados = []
+    for cli in clientes:
+        cli["delitos"] = por_rut.get(cli.get("rut"), [])
+        resultados.append(cli)
+
+    encontrados_rut = {c.get("rut") for c in clientes}
+    encontrados_cid = {c.get("customer_id") for c in clientes}
+    # Sin antecedentes NO es lo mismo que no consultado: el que no aparece en
+    # la base es alguien a quien nunca se le corrió la consulta.
+    sin_registro = ([r for r in ruts if r not in encontrados_rut]
+                    + [c for c in cids if c not in encontrados_cid])
+
+    _auditar_consulta_delitos(consumidor, event, ruts, cids, len(resultados))
+
+    return resp(200, {
+        "resultados": resultados,
+        "count": len(resultados),
+        "sin_registro": sin_registro,
+        "invalidos": invalidos,
+        "fuente": "compliance_shared.mv_clientes_delitos + mv_delitos",
+    })
 
 
 def run_wallet_search(body: dict):
