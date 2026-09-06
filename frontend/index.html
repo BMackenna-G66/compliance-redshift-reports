@@ -8266,7 +8266,12 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       },
 
       async changeCaseStatus(case_id, status) {
-        await this.api('POST', '/cases/' + case_id + '/status', { status });
+        // actor_email va explícito: sin él el backend registra "unknown" en la
+        // auditoría y en la notificación de Slack, y no se sabe quién cerró.
+        await this.api('POST', '/cases/' + case_id + '/status', {
+          status,
+          actor_email: this.currentUserEmail || this.userEmail || '',
+        });
         const d = await this.api('GET', '/cases/' + case_id);
         if (d?.case) this.activeCase = d.case;
         await this.loadCases();

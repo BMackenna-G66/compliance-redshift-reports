@@ -3980,6 +3980,80 @@ def update_case(case_id: str, body: dict):
     return resp(200, {"message": "Case updated"})
 
 
+def _duracion_legible(desde: str, hasta: str) -> str:
+    """'2026-09-01 10:00:00' → '3 días 4 h'. Vacío si no se puede calcular."""
+    try:
+        a = dt.datetime.strptime(str(desde)[:19], "%Y-%m-%d %H:%M:%S")
+        b = dt.datetime.strptime(str(hasta)[:19], "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return ""
+    seg = (b - a).total_seconds()
+    if seg < 0:
+        return ""
+    dias, resto = divmod(int(seg), 86400)
+    horas, resto = divmod(resto, 3600)
+    minutos = resto // 60
+    if dias:
+        return f"{dias} día{'s' if dias != 1 else ''}" + (f" {horas} h" if horas else "")
+    if horas:
+        return f"{horas} h" + (f" {minutos} min" if minutos else "")
+    return f"{minutos} min"
+
+
+def _slack_cambio_estado_caso(caso: dict, status: str, actor: str) -> None:
+    """Notifica a Slack un cambio de estado con el contexto completo.
+
+    Antes solo salían 8 caracteres del case_id y el estado nuevo, que no
+    alcanza para saber de qué caso se habla sin abrir la app. Se manda lo
+    mismo que en la creación (cliente, alerta, métricas, prioridad) más lo
+    propio del cierre: cuánto estuvo abierto y con qué resolución.
+    """
+    cerrado = status == "closed"
+    encabezado = "✅ *Caso cerrado*" if cerrado else "⚠️ *Caso pasó a Bajo Revisión*"
+    lineas = [encabezado, f"*{str(caso.get('title') or '(sin título)')}*"]
+
+    cliente = _slack_client_line(caso)
+    if cliente:
+        lineas.append(cliente)
+
+    reporte = str(caso.get("report_name") or "").strip()
+    alert_prio = str(caso.get("alert_priority") or "").strip()
+    if reporte or alert_prio:
+        lineas.append("🔔 Alerta: " + " · ".join(x for x in (reporte, alert_prio) if x))
+
+    metricas = _slack_alert_metrics(caso.get("alert_data") or {})
+    if metricas:
+        lineas.append(f"📊 {metricas}")
+
+    prioridad = str(caso.get("priority") or "")
+    lineas.append(
+        f"⚡ Prioridad: {_PRIORITY_LABEL_ES.get(prioridad, prioridad)}  ·  "
+        f"Asignado a: {_slack_mention(str(caso.get('assigned_to') or ''))}"
+    )
+
+    # Cuánto estuvo abierto: es el dato de SLA que hoy había que ir a buscar.
+    abierto = _duracion_legible(caso.get("created_at", ""),
+                                caso.get("closed_at") or _now_str())
+    if abierto:
+        lineas.append(f"⏱ Estuvo abierto {abierto}")
+
+    # La última nota es, en la práctica, la resolución del caso.
+    if cerrado:
+        notas = sorted((caso.get("notes") or []), key=lambda n: n.get("created_at", ""))
+        if notas:
+            texto = str(notas[-1].get("content") or "").strip().replace("\n", " ")
+            if texto:
+                if len(texto) > 300:
+                    texto = texto[:297] + "…"
+                lineas.append(f"📝 Resolución: {texto}")
+        else:
+            lineas.append("📝 _Se cerró sin notas._")
+
+    lineas.append(f"✍️ {'Cerrado' if cerrado else 'Actualizado'} por: {actor}")
+    lineas.append(_slack_case_link(str(caso.get("case_id") or "")))
+    _post_slack("\n".join(lineas))
+
+
 def update_case_status(case_id: str, body: dict):
     """Change case status. Sets closed_at when status = 'closed'."""
     status = body.get("status", "").strip()
@@ -3993,18 +4067,18 @@ def update_case_status(case_id: str, body: dict):
     elif status != "archived":
         changes["closed_at"] = ""
 
-    if _crm_update("cases", case_id, changes) is None:
+    caso = _crm_update("cases", case_id, changes)
+    if caso is None:
         return resp(404, {"error": f"Case '{case_id}' not found"})
     actor = body.get("actor_email", "unknown")
     _safe_audit(user_email=actor, action="case.status_change", entity_type="case",
                 entity_id=case_id, new_value={"status": status})
-    _STATUS_LABEL = {"under_review": "⚠️ Bajo Revisión", "closed": "✅ Cerrado", "open": "🔵 Abierto", "in_progress": "🔄 En Investigación"}
+    # Best-effort: si Slack falla, el cambio de estado igual quedó guardado.
     if status in ("under_review", "closed"):
-        _post_slack(
-            f"{_STATUS_LABEL.get(status, status)} *Caso actualizado*\n"
-            f"ID: {case_id[:8]}… | Nuevo estado: {_STATUS_LABEL.get(status, status)}\n"
-            f"Por: {actor}"
-        )
+        try:
+            _slack_cambio_estado_caso(caso, status, actor)
+        except Exception as e:
+            print(f"[slack] no pude notificar el cambio de estado de {case_id}: {e}")
     return resp(200, {"message": f"Case status updated to {status}"})
 
 
