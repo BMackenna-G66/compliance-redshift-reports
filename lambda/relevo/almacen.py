@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 
+from . import deposito
+
 # En contenedor esto apunta a un volumen montado. Por eso es configurable:
 # RELEVO_DATOS=/datos  ->  /datos/mensajes.jsonl
 _DIR = Path(os.environ.get("RELEVO_DATOS") or Path(__file__).resolve().parent.parent / "datos")
@@ -16,7 +18,29 @@ POR_DEFECTO = _DIR / "mensajes.jsonl"
 
 
 def guardar(mensajes, ruta=None, agregar=True):
-    """Escribe mensajes deduplicando por id. Devuelve cuántos son nuevos."""
+    """Escribe mensajes deduplicando por id. Devuelve cuántos son nuevos.
+
+    Sin `ruta` y con el depósito activo va a S3, un objeto por mensaje: la
+    deduplicación la da la clave, igual que la PK de `relevo_mensajes` en la
+    especificación. Con `ruta` explícita mantiene el fondo en disco, que es
+    lo que usan los tests.
+    """
+    if ruta is None and deposito.activo():
+        nuevos = 0
+        for m in mensajes:
+            clave = deposito.clave_segura(m["id"])
+            if agregar:
+                # solo_si_falta hace la deduplicación en el servidor: dos
+                # invocaciones concurrentes no se pisan ni cuentan doble.
+                if deposito.poner("mensajes", clave, m, solo_si_falta=True):
+                    nuevos += 1
+            else:
+                existia = deposito.obtener("mensajes", clave) is not None
+                deposito.poner("mensajes", clave, m)
+                if not existia:
+                    nuevos += 1
+        return nuevos
+
     ruta = Path(ruta or POR_DEFECTO)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     existentes = {m["id"]: m for m in leer(ruta)} if (agregar and ruta.exists()) else {}
@@ -31,7 +55,19 @@ def guardar(mensajes, ruta=None, agregar=True):
     return nuevos
 
 
+def _normalizar(m):
+    """Los defaults que el pipeline espera encontrar siempre."""
+    m.setdefault("cuerpo", "")
+    m.setdefault("headers", {})
+    m.setdefault("texto_adjuntos", [])
+    m.setdefault("esperado", None)
+    return m
+
+
 def leer(ruta=None):
+    if ruta is None and deposito.activo():
+        return [_normalizar(m) for m in deposito.todos("mensajes")]
+
     ruta = Path(ruta or POR_DEFECTO)
     if not ruta.exists():
         return []
@@ -40,10 +76,5 @@ def leer(ruta=None):
         linea = linea.strip()
         if not linea:
             continue
-        m = json.loads(linea)
-        m.setdefault("cuerpo", "")
-        m.setdefault("headers", {})
-        m.setdefault("texto_adjuntos", [])
-        m.setdefault("esperado", None)
-        fuera.append(m)
+        fuera.append(_normalizar(json.loads(linea)))
     return fuera

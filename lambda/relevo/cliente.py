@@ -20,6 +20,8 @@ aparece en varios correos y la respuesta de la base no cambia entre ellos.
 """
 import json
 import os
+
+from . import deposito
 import re
 import time
 import unicodedata
@@ -256,6 +258,14 @@ def resolver_muchas(transacciones, consultas, rs=None, cache=True, limite=0, for
 # caché en disco
 
 def leer_cache(ruta=None):
+    """Caché de la resolución en Redshift, indexado por "llave|valor".
+
+    Sin `ruta` y con el depósito activo lee de S3, un objeto por llave — el
+    equivalente de la PK `llave_valor` de `relevo_clientes` en §4.
+    """
+    if ruta is None and deposito.activo():
+        return {f"{r.get('llave','')}|{r.get('valor','')}": r
+                for r in deposito.todos("clientes")}
     ruta = Path(ruta or _CACHE)
     if not ruta.exists():
         return {}
@@ -273,7 +283,17 @@ def leer_cache(ruta=None):
 
 
 def guardar_cache(resultados, ruta=None):
-    """Reescribe el archivo deduplicado. Atómico: se escribe al lado y se mueve."""
+    """Reescribe el archivo deduplicado. Atómico: se escribe al lado y se mueve.
+
+    En S3 no hay reescritura: cada resultado es su propio objeto y se
+    sobreescribe al re-resolver, tal como dice §4 para `relevo_clientes`.
+    Devuelve cuántos quedaron en total, como la versión en disco.
+    """
+    if ruta is None and deposito.activo():
+        for r in resultados:
+            llave = f"{r.get('llave','')}|{r.get('valor','')}"
+            deposito.poner("clientes", deposito.clave_segura(llave), r)
+        return len(leer_cache())
     ruta = Path(ruta or _CACHE)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     todo = leer_cache(ruta)
