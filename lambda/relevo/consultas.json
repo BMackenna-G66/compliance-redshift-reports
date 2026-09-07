@@ -1,0 +1,115 @@
+{
+  "version": "2026-09-06+dataapi",
+  "nota": "Consultas del paso 5, contra la Data API de Redshift. UNA por tipo de llave. Se editan aca, no en el codigo. Las tres activas estan verificadas contra el cluster con valores reales de la casilla el 2026-09-06.",
+  "contrato": {
+    "nota": "El SQL puede leer de donde sea, pero DEBE devolver las columnas con estos alias. Lo que venga con otro nombre se guarda en `extra` y se muestra igual, pero no participa del match ni del envio al cliente.",
+    "alias": {
+      "cliente_id": "identificador del cliente en nuestra base — es la llave del caso",
+      "cliente_nombre": "razon social o nombre",
+      "cliente_correo": "OBLIGATORIO para poder pedirle la documentacion. Sin esto el caso queda `incompleto`.",
+      "cliente_documento": "RUT / CUIT / CPF, opcional",
+      "cliente_pais": "opcional",
+      "tx_monto": "opcional — sirve para verificar contra lo que dice el correo del partner",
+      "tx_moneda": "opcional",
+      "tx_fecha": "opcional",
+      "tx_estado": "opcional",
+      "tx_beneficiario": "opcional — la verificacion mas util: si el beneficiario de la base no se parece al del correo, el match esta mal",
+      "tx_remitente": "opcional — quien MANDA. Para un payin de Currencycloud es la verificacion util: el correo del partner nombra al remitente, no al beneficiario."
+    },
+    "parametro": "El valor de la llave viaja SIEMPRE como parametro con nombre `:valor`. Nunca pegado al SQL. La Data API manda los parametros como TEXTO, asi que una columna numerica necesita cast explicito (`:valor::bigint`).",
+    "limite": "Toda consulta termina en LIMIT 2. Si vuelven 2 filas el caso es `ambiguo` y no se envia nada — es la validacion de unicidad.",
+    "nombres": "Nombre de TRES partes obligatorio: \"db_prod\".\"esquema\".\"tabla\". Los datos viven en el datashare db_prod, no en la base a la que se conecta la Data API (dev). Sin eso da `Relation ... does not exist`.",
+    "join": "El join a customer.customer va con LEFT, no con INNER. Hay clientes —los B2B, entre otros— que no tienen fila ahi, y un inner join convertia «encontre la transaccion pero no al cliente» en `sin_match`, que se lee como «el identificador esta mal». Con LEFT sale `incompleto`, que es lo que realmente pasa. Y el correo se toma con COALESCE: transaction.transaction trae customer_email en la propia fila."
+  },
+  "consultas": {
+    "rmt": {
+      "activa": true,
+      "partner": "dLocal",
+      "que_es": "Nuestro numero de remesa. El correo trae 028172225 y se normaliza a 28172225.",
+      "donde_vive": "db_prod.treasury.cash_call.cash_call_id",
+      "verificado": "2026-09-06 · 38 de 38 valores de la casilla",
+      "sql": "SELECT COALESCE(c.customer_id, t.customer_id) AS cliente_id, NULLIF(TRIM(COALESCE(c.company_name,'') || ' ' || COALESCE(c.name,'') || ' ' || COALESCE(c.last_name,'')), '') AS cliente_nombre, COALESCE(c.email, t.customer_email) AS cliente_correo, c.country AS cliente_pais, t.destiny_amount AS tx_monto, t.destiny_currency AS tx_moneda, t.start_date AS tx_fecha, t.tx_status AS tx_estado, t.beneficiary_name AS tx_beneficiario, t.remitter_name AS tx_remitente, t.transaction_id AS tx_id, t.payment_id AS ref_partner, cc.cash_call_id, cc.status AS estado_cash_call, cc.product_reference_number AS ref_nuestra FROM \"db_prod\".\"treasury\".\"cash_call\" cc LEFT JOIN \"db_prod\".\"transaction\".\"transaction\" t ON t.transaction_id = cc.external_reference_number LEFT JOIN \"db_prod\".\"customer\".\"customer\" c ON c.customer_id = t.customer_id WHERE cc.cash_call_id = :valor::bigint LIMIT 2",
+      "nota": "**El RMT ES el cash_call_id.** `RMT028020236` es el cash call 28020236 con el numero rellenado a 9 digitos: el prefijo y el cero son formato de impresion, no parte del dato. Y `cash_call.external_reference_number` es NUESTRO transaction_id. Buscar asi es una igualdad de entero contra la clave: 38 de 38 y ~3s, contra 37 de 38 y ~6s cuando se buscaba con REGEXP_REPLACE sobre transaction.payment_reference_number. El que fallaba lo hacia porque una transaccion puede tener VARIOS cash calls (vimos una con un PAID y un RELEASED) y la fila de transaction solo arrastra uno; el RMT dice cual. Regalo del cambio: `cc.status` (PAID / RELEASED / REJECTED) es el estado real de la plata, que es justo lo que el analista necesita saber antes de escribirle al cliente. Ojo con dos cosas de la query original: transaction.transaction NO tiene `external_reference_number` —solo `payment_reference_number`— y el join correcto a cash_call es contra `transaction_id`."
+    },
+    "nium_payout_id": {
+      "activa": true,
+      "partner": "Nium",
+      "que_es": "Payout ID de Nium, 8 digitos. En la base va con prefijo PY.",
+      "donde_vive": "db_prod.transaction.transaction.payment_id",
+      "verificado": "2026-09-06 · PY79360845 de la casilla acerto",
+      "sql": "SELECT COALESCE(c.customer_id, t.customer_id) AS cliente_id, NULLIF(TRIM(COALESCE(c.company_name,'') || ' ' || COALESCE(c.name,'') || ' ' || COALESCE(c.last_name,'')), '') AS cliente_nombre, COALESCE(c.email, t.customer_email) AS cliente_correo, c.country AS cliente_pais, t.destiny_amount AS tx_monto, t.destiny_currency AS tx_moneda, t.start_date AS tx_fecha, t.tx_status AS tx_estado, t.beneficiary_name AS tx_beneficiario, t.remitter_name AS tx_remitente, t.transaction_id AS tx_id, t.payment_id AS ref_partner FROM \"db_prod\".\"transaction\".\"transaction\" t LEFT JOIN \"db_prod\".\"customer\".\"customer\" c ON c.customer_id = t.customer_id WHERE t.payment_id = 'PY' || :valor LIMIT 2",
+      "nota": "El payout id de Nium se guarda con prefijo PY. Comparacion exacta y anclada al prefijo a proposito: dLocal usa la MISMA columna con ids numericos de 9 digitos, y comparar sin el prefijo abriria un cruce entre partners. Verificado que los payout de Nium NO son cash_call_id (0 de 5), asi que esta via es propia. Igual Nium manda tambien nuestro RMT en el mismo correo, y ese resuelve por la consulta de `rmt`: son dos caminos al mismo caso."
+    },
+    "transfer_no": {
+      "activa": true,
+      "partner": "OZ Câmbio",
+      "que_es": "El 'transfer number' de OZ es, directamente, NUESTRO transaction_id.",
+      "donde_vive": "db_prod.transaction.transaction.transaction_id",
+      "verificado": "2026-09-06 · 2 de 2 valores de la casilla acertaron",
+      "sql": "SELECT COALESCE(c.customer_id, t.customer_id) AS cliente_id, NULLIF(TRIM(COALESCE(c.company_name,'') || ' ' || COALESCE(c.name,'') || ' ' || COALESCE(c.last_name,'')), '') AS cliente_nombre, COALESCE(c.email, t.customer_email) AS cliente_correo, c.country AS cliente_pais, t.destiny_amount AS tx_monto, t.destiny_currency AS tx_moneda, t.start_date AS tx_fecha, t.tx_status AS tx_estado, t.beneficiary_name AS tx_beneficiario, t.remitter_name AS tx_remitente, t.transaction_id AS tx_id, t.payment_id AS ref_partner, t.payment_reference_number AS ref_nuestra FROM \"db_prod\".\"transaction\".\"transaction\" t LEFT JOIN \"db_prod\".\"customer\".\"customer\" c ON c.customer_id = t.customer_id WHERE t.transaction_id = :valor::bigint LIMIT 2",
+      "nota": "Hallazgo: el rango de transaction_id (511 - 14.964.315) coincide exacto con el rango declarado para transfer_no (13,0M - 15,5M). No es un id del partner: es el nuestro."
+    },
+    "cc_transaction_id": {
+      "activa": true,
+      "partner": "Currencycloud",
+      "que_es": "Transaction ID de Currencycloud, formato IF-AAAAMMDD-XXXXXX.",
+      "donde_vive": "db_prod.currency_cloud.notification.message_json -> $.related_entity_short_reference",
+      "verificado": "2026-09-06 · 3 de 3 valores de la casilla llegaron a cliente con correo",
+      "sql": "SELECT c.global66_customer_id AS cliente_id, NULLIF(TRIM(COALESCE(cu.company_name,'') || ' ' || COALESCE(cu.name,'') || ' ' || COALESCE(cu.last_name,'')), '') AS cliente_nombre, JSON_EXTRACT_PATH_TEXT(c.customer_data, 'customer_email', TRUE) AS cliente_correo, cu.country AS cliente_pais, MAX(n.amount_generated) AS tx_monto, MAX(n.currency_generated) AS tx_moneda, MAX(n.arrival_time) AS tx_fecha, LISTAGG(DISTINCT n.notification_type, ' + ') AS tx_estado, MAX(n.sender_name_generated) AS tx_remitente, c.short_reference AS ref_cc, COUNT(*) AS notificaciones FROM \"db_prod\".\"currency_cloud\".\"notification\" n LEFT JOIN \"db_prod\".\"currency_cloud\".\"customer_bind\" c ON c.currency_cloud_customer_id = JSON_EXTRACT_PATH_TEXT(n.message_json, 'account_id', TRUE) LEFT JOIN \"db_prod\".\"customer\".\"customer\" cu ON cu.customer_id = c.global66_customer_id WHERE JSON_EXTRACT_PATH_TEXT(n.message_json, 'related_entity_short_reference', TRUE) = :valor GROUP BY 1, 2, 3, 4, 10 LIMIT 2",
+      "nota": "El IF- no tiene columna propia: vive DENTRO del payload del webhook, en message_json -> related_entity_short_reference. Son 1.440.364 de las 1.804.618 filas de notification. Del payload sale tambien account_id, que ata con customer_bind y de ahi al global66_customer_id y al correo. El GROUP BY no es cosmetico: un mismo IF- genera varias notificaciones (PENDING, REJECT, ...) del MISMO cliente, y sin agrupar el LIMIT 2 las leeria como `ambiguo` y frenaria el caso por una razon falsa. Agrupado, dos filas significan dos clientes distintos, que es la ambiguedad que si importa. customer_bind.customer_data solo trae customer_email y your_reference —no hay nombre— y estos clientes tampoco estan en customer.customer, asi que cliente_nombre suele venir vacio. Cuesta 13-18s: escanea 1,8M de filas con una funcion JSON encima y no hay sort key que ayude. Por eso declara timeout propio de 180s.",
+      "timeout": 180
+    },
+    "cc_external_id": {
+      "activa": false,
+      "partner": "Currencycloud",
+      "que_es": "External ID formato AAAAMMDD_cuenta_ref. Lo generamos nosotros.",
+      "donde_vive": "NO ENCONTRADO",
+      "verificado": "2026-09-06 · sondeado sin exito",
+      "sql": "SELECT COALESCE(c.customer_id, t.customer_id) AS cliente_id, NULLIF(TRIM(COALESCE(c.company_name, '') || ' ' || COALESCE(c.name, '') || ' ' || COALESCE(c.last_name, '')), '') AS cliente_nombre, COALESCE(c.email, t.customer_email) AS cliente_correo, c.country AS cliente_pais, t.destiny_amount AS tx_monto, t.destiny_currency AS tx_moneda, t.start_date AS tx_fecha, t.tx_status AS tx_estado, t.beneficiary_name AS tx_beneficiario, t.transaction_id AS tx_id, t.payment_reference_number AS ref_nuestra, t.payment_id AS ref_partner FROM \"db_prod\".\"transaction\".\"transaction\" t LEFT JOIN \"db_prod\".\"customer\".\"customer\" c ON c.customer_id = t.customer_id WHERE t.payment_reference_number = :valor LIMIT 2",
+      "nota": "SIN RESOLVER, y por ahora no hace falta: el IF- cubre Currencycloud. Queda como salida de emergencia para los correos que no lo traen (9 casos). El segmento del medio no es un account_number de currency_cloud.funding_account; hay que preguntarle a quien genera ese External ID como se compone."
+    }
+  },
+  "exploracion": {
+    "nota": "Pistas para servicio/explorar-redshift.py. Acotadas al esquema real: db_prod.transaction.transaction tiene 290 columnas, y pistas genericas como 'transaction' devuelven 400 candidatas en toda la base, que es inservible para sondear. Se apunta a las columnas que de verdad podrian guardar el identificador del partner.",
+    "base": "db_prod",
+    "llaves": {
+      "rmt": [
+        "payment_id",
+        "payment_reference_number",
+        "request_id",
+        "authorization_code",
+        "rmt"
+      ],
+      "nium_payout_id": [
+        "payment_id",
+        "payment_reference_number",
+        "request_id",
+        "payout",
+        "authorization_code"
+      ],
+      "transfer_no": [
+        "transaction_id"
+      ],
+      "cc_transaction_id": [
+        "payment_id",
+        "payment_reference_number",
+        "request_id",
+        "authorization_code",
+        "beneficiary_generated_id"
+      ],
+      "cc_external_id": [
+        "external_id",
+        "external_reference_id",
+        "payment_reference_number",
+        "request_id"
+      ]
+    },
+    "cliente": [
+      "email",
+      "mail",
+      "correo",
+      "customer",
+      "name"
+    ]
+  }
+}

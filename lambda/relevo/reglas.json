@@ -1,0 +1,881 @@
+{
+  "version": "2026-09-06+79e5729d",
+  "nota": "Fuente unica de verdad de la extraccion. La consume el motor Python y el probador en vivo de la vista. Patrones limitados al subconjunto comun de Python re y JS RegExp: sin lookbehind, sin grupos con nombre, flags declarados aparte y nunca inline.",
+  "rangos": {
+    "rmt": {
+      "min": 1000000,
+      "max": 40000000,
+      "fuente": "Metodo de extraccion §4"
+    },
+    "nium_payout_id": {
+      "min": 50000000,
+      "max": 90000000,
+      "fuente": "Metodo de extraccion §4"
+    },
+    "transfer_no": {
+      "min": 13000000,
+      "max": 15500000,
+      "fuente": "Metodo de extraccion §4 · aparecio un 1385384 corrupto"
+    }
+  },
+  "normalizacion": {
+    "rmt": {
+      "tipo": "entero",
+      "quitar_prefijo": "RMT",
+      "quitar_ceros_izquierda": true
+    },
+    "nium_payout_id": {
+      "tipo": "entero",
+      "quitar_prefijo": "PY",
+      "quitar_ceros_izquierda": true
+    },
+    "transfer_no": {
+      "tipo": "entero",
+      "quitar_prefijo": "",
+      "quitar_ceros_izquierda": true
+    },
+    "cc_ticket": {
+      "tipo": "texto"
+    },
+    "cc_transaction_id": {
+      "tipo": "texto",
+      "mayusculas": true
+    },
+    "cc_external_id": {
+      "tipo": "texto"
+    },
+    "nium_request_id": {
+      "tipo": "texto"
+    }
+  },
+  "formatos": {
+    "cc_external_id": {
+      "patron_aceptado": "^\\d{8}_\\d{10,14}_?\\d*$",
+      "motivo": "El External ID de Currencycloud tiene cuatro formatos y solo AAAAMMDD_cuenta_ref es nuestro. Los otros tres (numerico corto, ECM CASE #, texto libre) se descartan."
+    }
+  },
+  "partners": [
+    {
+      "id": "dlocal",
+      "nombre": "dLocal",
+      "remitentes": [
+        "no_reply@dlocal.com"
+      ],
+      "dominios": [
+        "dlocal.com"
+      ],
+      "canal_salida": "correo_hilo",
+      "idioma": "en",
+      "prioridad_llave": [
+        "rmt"
+      ],
+      "clasificacion": [
+        {
+          "tipo": "rfi_nuevo",
+          "accionable": true,
+          "patron": "New RFI is requested",
+          "ambito": [
+            "asunto"
+          ]
+        },
+        {
+          "tipo": "rfi_recordatorio",
+          "accionable": true,
+          "patron": "RFI needs attention",
+          "ambito": [
+            "asunto"
+          ]
+        },
+        {
+          "tipo": "otp",
+          "accionable": false,
+          "patron": "OTP code requested",
+          "ambito": [
+            "asunto"
+          ]
+        },
+        {
+          "tipo": "payout_liberado",
+          "accionable": false,
+          "patron": "has been released",
+          "ambito": [
+            "asunto"
+          ]
+        },
+        {
+          "tipo": "verificacion_aprobada",
+          "accionable": false,
+          "patron": "verification has been approved",
+          "ambito": [
+            "asunto"
+          ]
+        }
+      ],
+      "extraccion": [
+        {
+          "llave": "rmt",
+          "rol": "llave_consulta",
+          "de_quien": "Global66",
+          "ambito": [
+            "asunto",
+            "cuerpo"
+          ],
+          "patron": "\\bRMT(\\d{6,12})\\b",
+          "flags": "",
+          "global": true,
+          "espera_uno": true,
+          "nota": "El ID vive en el asunto, pero el CUERPO trae el pedido y los datos de la transaccion (beneficiario, monto, pais, Payout ID). Por eso se baja igual: el ambito 'cuerpo' es lo que le dice al ingestor que lo pida."
+        }
+      ],
+      "pistas_asunto": [
+        {
+          "patron": "\\bd\\W?local\\b",
+          "peso": 3,
+          "nota": "marca"
+        },
+        {
+          "patron": "New RFI is requested|RFI needs attention|OTP code requested|verification has been approved",
+          "peso": 3,
+          "nota": "frases propias, 0 colisiones en 963 asuntos"
+        },
+        {
+          "patron": "Payout ID\\s+\\d+\\s+external ID",
+          "peso": 3,
+          "nota": "formato propio de notificacion"
+        }
+      ],
+      "nota_dominios": "Ademas del robot no_reply@, escriben personas del equipo (el 2026-09-03 aparecio una en la cola de descubrimiento). El dominio cubre las dos cosas."
+    },
+    {
+      "id": "nium",
+      "nombre": "Nium",
+      "remitentes": [
+        "compliance@nium.com",
+        "payments@nium.com"
+      ],
+      "dominios": [
+        "nium.com"
+      ],
+      "canal_salida": "portal_zendesk",
+      "idioma": "en",
+      "prioridad_llave": [
+        "rmt",
+        "nium_payout_id"
+      ],
+      "clasificacion": [
+        {
+          "tipo": "rfi_recordatorio",
+          "accionable": true,
+          "patron": "Reminder\\s*:?\\s*Additional Information Request",
+          "ambito": [
+            "asunto"
+          ]
+        },
+        {
+          "tipo": "rfi",
+          "accionable": true,
+          "patron": "Additional Information Request",
+          "ambito": [
+            "asunto"
+          ]
+        },
+        {
+          "tipo": "negocio_restringido",
+          "accionable": true,
+          "patron": "Prohibited\\s*/?\\s*Restricted Business",
+          "ambito": [
+            "asunto"
+          ]
+        }
+      ],
+      "extraccion": [
+        {
+          "llave": "nium_payout_id",
+          "rol": "llave_consulta",
+          "de_quien": "Global66",
+          "ambito": [
+            "asunto",
+            "cuerpo"
+          ],
+          "patron": "\\bPY(\\d{6,10})\\b",
+          "flags": "",
+          "global": true,
+          "nota": "Capturar TODOS: vienen separados por / en el cuerpo. 25 de 71 solo estan en el cuerpo."
+        },
+        {
+          "llave": "rmt",
+          "rol": "llave_consulta",
+          "de_quien": "Global66",
+          "ambito": [
+            "asunto",
+            "cuerpo"
+          ],
+          "patron": "\\bRMT(\\d{6,12})\\b",
+          "flags": "",
+          "global": true,
+          "nota": "28 de 71 PY no traen RMT: la consulta tiene que aceptar las dos llaves."
+        },
+        {
+          "llave": "nium_request_id",
+          "rol": "caso_partner",
+          "de_quien": "Nium",
+          "ambito": [
+            "asunto",
+            "cuerpo"
+          ],
+          "patron": "Request ID\\s*:?\\s*(\\d{6,8})",
+          "flags": "i",
+          "global": false,
+          "nota": "Ticket interno de Nium. Agrupa por CLIENTE, no por operacion. No sirve para identificar al cliente."
+        }
+      ],
+      "pistas_asunto": [
+        {
+          "patron": "\\bnium\\b",
+          "peso": 2,
+          "nota": "peso bajo a proposito: aparece como contraparte en asuntos de Currencycloud"
+        },
+        {
+          "patron": "Compliance Operations,\\s*NIUM|support\\.nium\\.com",
+          "peso": 3,
+          "nota": "firma propia"
+        },
+        {
+          "patron": "Additional Information Request",
+          "peso": 3,
+          "nota": "0 colisiones; resuelve 51 asuntos sin token de marca"
+        },
+        {
+          "patron": "Prohibited\\s*/?\\s*Restricted Business",
+          "peso": 3,
+          "nota": "0 colisiones; resuelve los 7 restantes"
+        },
+        {
+          "patron": "\\bPY\\d{6,10}\\b",
+          "peso": 1,
+          "nota": "peso minimo: solo gana si nada mas matchea. PY es el formato de ID DE NIUM (46 asuntos, 0 colisiones), a diferencia de RMT que es NUESTRO y aparece en dLocal (231) y en Nium (33)."
+        }
+      ]
+    },
+    {
+      "id": "currencycloud",
+      "nombre": "Currencycloud",
+      "remitentes": [
+        "kycrequests@currencycloud.com",
+        "fraudreporting@currencycloud.com"
+      ],
+      "dominios": [
+        "currencycloud.com"
+      ],
+      "canal_salida": "portal_zendesk",
+      "idioma": "en",
+      "prioridad_llave": [
+        "cc_transaction_id",
+        "cc_external_id"
+      ],
+      "clasificacion": [
+        {
+          "tipo": "resuelto",
+          "accionable": false,
+          "ambito": [
+            "cuerpo"
+          ],
+          "patron": "has been Solved",
+          "flags": "",
+          "nota": "aviso de cierre de ticket. Mismo asunto que el requerimiento."
+        },
+        {
+          "tipo": "fraude",
+          "accionable": true,
+          "ambito": [
+            "asunto"
+          ],
+          "patron": "Fraud Notification"
+        },
+        {
+          "tipo": "bank_rfi",
+          "accionable": true,
+          "ambito": [
+            "asunto"
+          ],
+          "patron": "Bank RFI|Retrospective Compliance"
+        },
+        {
+          "tipo": "verificacion_tss",
+          "accionable": true,
+          "ambito": [
+            "asunto"
+          ],
+          "patron": "TSS RT for the Compliance Check|Compliance Check",
+          "nota": "tipo nuevo visto el 2026-09-03. No estaba en la ventana analizada."
+        },
+        {
+          "tipo": "consulta_compliance",
+          "accionable": true,
+          "ambito": [
+            "asunto"
+          ],
+          "patron": "Compliance Query"
+        }
+      ],
+      "extraccion": [
+        {
+          "llave": "cc_ticket",
+          "rol": "caso_partner",
+          "de_quien": "Currencycloud",
+          "ambito": [
+            "asunto"
+          ],
+          "patron": "(?:^|\\s|\\])\\s*(\\d{7})\\s*-",
+          "flags": "",
+          "global": false,
+          "nota": "Ticket Zendesk. Cobertura 100% en el asunto, pero es de ELLOS: no identifica al cliente."
+        },
+        {
+          "llave": "cc_ticket",
+          "rol": "caso_partner",
+          "de_quien": "Currencycloud",
+          "ambito": [
+            "asunto",
+            "cuerpo"
+          ],
+          "patron": "request\\s*\\((\\d{7})\\)",
+          "flags": "i",
+          "global": false
+        },
+        {
+          "llave": "cc_transaction_id",
+          "rol": "llave_consulta",
+          "de_quien": "Currencycloud",
+          "ambito": [
+            "cuerpo"
+          ],
+          "patron": "Transaction ID\\s*:?\\s*(IF-\\d{8}-[A-Z0-9]{5,8})",
+          "flags": "i",
+          "global": true,
+          "nota": "96,3% de cobertura en la muestra de 82 cuerpos. Solo sirve si Redshift lo guarda: es la pregunta 1 de fase 0."
+        },
+        {
+          "llave": "cc_external_id",
+          "rol": "llave_consulta",
+          "de_quien": "Mezclado",
+          "ambito": [
+            "cuerpo"
+          ],
+          "patron": "External ID\\s*:?\\s*(\\d{8}_\\d{10,14}_?\\d*)",
+          "flags": "i",
+          "global": true,
+          "nota": "Solo el formato AAAAMMDD_cuenta_ref. Los otros tres formatos se descartan en validacion."
+        }
+      ],
+      "pistas_asunto": [
+        {
+          "patron": "\\[\\s*currency\\s?cloud\\s*\\]",
+          "peso": 4,
+          "nota": "etiqueta estructural: gana sobre una marca mencionada suelta"
+        },
+        {
+          "patron": "currency\\s?cloud",
+          "peso": 3,
+          "nota": "tolera 'CURRENCY CLOUD' con espacio, que aparece en un hilo"
+        },
+        {
+          "patron": "Compliance Query|Bank RFI|Retrospective Compliance|Fraud Notification",
+          "peso": 2,
+          "nota": "frases del asunto"
+        },
+        {
+          "patron": "TSS RT for the Compliance Check",
+          "peso": 2,
+          "nota": "tipo nuevo del 2026-09-03"
+        }
+      ]
+    },
+    {
+      "id": "ozcambio",
+      "nombre": "OZ Câmbio",
+      "remitentes": [],
+      "dominios": [
+        "ozcambio.com.br"
+      ],
+      "canal_salida": "correo_hilo",
+      "idioma": "es",
+      "prioridad_llave": [
+        "transfer_no"
+      ],
+      "clasificacion": [
+        {
+          "tipo": "limite",
+          "accionable": true,
+          "patron": "L[IÍ]MITE",
+          "ambito": [
+            "asunto"
+          ]
+        },
+        {
+          "tipo": "notificacion",
+          "accionable": true,
+          "patron": "OZ NOTIFICAT?I?ON|OZ NOTIFICACI[OÓ]N|OZ NOTIFICACION",
+          "ambito": [
+            "asunto"
+          ]
+        }
+      ],
+      "extraccion": [
+        {
+          "llave": "transfer_no",
+          "rol": "llave_consulta",
+          "de_quien": "Global66",
+          "ambito": [
+            "asunto",
+            "cuerpo"
+          ],
+          "ancla": "\\bIDs?\\b\\s*[:\\-–]?\\s*",
+          "patron": "\\b(\\d{7,9})\\b",
+          "flags": "i",
+          "global": true,
+          "nota": "ES el numero de envio que ve el cliente. Formato 'IDs A / B' en 5 mensajes: busqueda global obligatoria. El cuerpo trae estado, monto y beneficiario."
+        }
+      ],
+      "pistas_asunto": [
+        {
+          "patron": "ozcambio|OZ\\s?C[aâ]mbio",
+          "peso": 3,
+          "nota": "marca"
+        },
+        {
+          "patron": "OZ\\s+NOTIFICAT?I?ON|OZ\\s+NOTIFICACI[OÓ]N",
+          "peso": 3,
+          "nota": "formato propio"
+        }
+      ]
+    },
+    {
+      "id": "bridge",
+      "nombre": "Bridge",
+      "remitentes": [
+        "support@bridge.xyz"
+      ],
+      "dominios": [
+        "bridge.xyz",
+        "cases.withpersona.com"
+      ],
+      "canal_salida": "desconocido",
+      "idioma": "en",
+      "prioridad_llave": [],
+      "clasificacion": [
+        {
+          "tipo": "edd",
+          "accionable": true,
+          "ambito": [
+            "asunto"
+          ],
+          "patron": "Enhanced Due Diligence|EDD|KYC Request"
+        }
+      ],
+      "extraccion": [],
+      "nota": "Aparece en el mapa de dominios pero no fue analizado. Cae en descubrimiento con reglas vacias.",
+      "pistas_asunto": [
+        {
+          "patron": "\\bbridge\\.xyz\\b|withpersona",
+          "peso": 3
+        },
+        {
+          "patron": "Enhanced Due Diligence KYC Request",
+          "peso": 2,
+          "nota": "formato propio de Bridge via Persona"
+        }
+      ],
+      "nota_dominios": "Escriben desde el dominio de Persona, su proveedor de KYC, no desde bridge.xyz. Visto el 2026-09-03."
+    },
+    {
+      "id": "cobre",
+      "nombre": "Cobre",
+      "remitentes": [],
+      "dominios": [
+        "cobre.co"
+      ],
+      "canal_salida": "desconocido",
+      "idioma": "es",
+      "prioridad_llave": [],
+      "clasificacion": [],
+      "extraccion": [],
+      "pistas_asunto": [
+        {
+          "patron": "\\bcobre\\.co\\b",
+          "peso": 3
+        }
+      ]
+    },
+    {
+      "id": "localpayment",
+      "nombre": "Localpayment",
+      "remitentes": [],
+      "dominios": [
+        "localpayment.com"
+      ],
+      "canal_salida": "desconocido",
+      "idioma": "es",
+      "prioridad_llave": [],
+      "clasificacion": [],
+      "extraccion": [],
+      "pistas_asunto": [
+        {
+          "patron": "\\blocalpayment\\b",
+          "peso": 3
+        }
+      ]
+    }
+  ],
+  "nota_pistas": "Las pistas de asunto son el ULTIMO recurso, para cuando no hay headers. Se puntuan por peso y gana el mayor, no el primero de la lista. Dos reglas aprendidas midiendo contra el consolidado: (1) un prefijo de identificador NUESTRO (RMT, PY) NO es pista de partner -- identifica una transaccion, y cualquier corresponsal puede citarlo: 33 correos de Nium se atribuian a dLocal por traer un RMT en el asunto; (2) una marca mencionada suelta pesa menos que una etiqueta estructural: 3 correos de Currencycloud decian 'NIUM' como contraparte y se atribuian a Nium, hasta que '[Currencycloud]' entre corchetes paso a pesar mas.",
+  "no_corresponsal": {
+    "nota": "La ingesta incremental lee TODA la casilla, no solo lo que matchean las cuatro busquedas de partner: history.list devuelve todo lo que llega. Sin esto, las respuestas de clientes a nuestros propios RFIs caen en partner_desconocido y tapan la cola de descubrimiento de corresponsales nuevos, que es para lo que existe. Aca solo se APARTAN; procesarlas es una etapa futura (el tramo de vuelta del ciclo).",
+    "asunto": [
+      {
+        "patron": "Solicitud de informaci[oó]n",
+        "nota": "asunto de NUESTRO correo saliente al cliente"
+      },
+      {
+        "patron": "Requerimiento Contraparte",
+        "nota": "idem"
+      },
+      {
+        "patron": "Solicitud de informacion adicional",
+        "nota": "idem"
+      }
+    ],
+    "dominios_personales": [
+      "gmail.com",
+      "hotmail.com",
+      "outlook.com",
+      "outlook.es",
+      "yahoo.com",
+      "yahoo.es",
+      "icloud.com",
+      "live.com",
+      "me.com"
+    ],
+    "nota_dominios": "Un corresponsal escribe desde un dominio corporativo. Un remitente de correo personal no es un corresponsal nuevo: es un cliente."
+  },
+  "requerimiento": {
+    "nota": "Que pide el partner. Lista BLANCA a proposito: solo se reconocen items conocidos y lo que no matchea se cuenta aparte en `no_reconocido`. El resumen se compone de la estructura extraida, no es texto libre: no puede inventar un requerimiento que el partner no pidio. Si aparece un item nuevo repetido, se agrega aca.",
+    "arranques": [
+      "[Pp]lease provide[^\\n:]*:?",
+      "[Ss]upporting documentation[^\\n:]*:?",
+      "we kindly request[^\\n:]*:?",
+      "[Ii]nformation requested[^\\n:]*:?",
+      "[Pp]lease submit[^\\n:]*:?",
+      "[Kk]indly provide[^\\n:]*:?",
+      "[Pp]lease confirm[^\\n:]*:?",
+      "[Ww]e require[^\\n:]*:?"
+    ],
+    "ventana": 700,
+    "ruido": [
+      "we recommend you provide",
+      "secure data",
+      "global66",
+      "associate analyst",
+      "compliance analyst",
+      "currencycloud compliance",
+      "tienes dudas",
+      "hi team",
+      "atentamente",
+      "kind regards",
+      "thanks",
+      "transaction details",
+      "information requested",
+      "this transaction",
+      "however",
+      "please press",
+      "sent by",
+      "if you have any questions",
+      "associate, analyst",
+      "real time transa",
+      "uk time on",
+      "satisfactory response",
+      "provided by the deadline",
+      "deadline",
+      "reply above this line",
+      "your request",
+      "has been updated",
+      "not the ticket requester",
+      "add additional comments",
+      "service from",
+      "team,",
+      "dear ",
+      "regards",
+      "table td",
+      "thank you for your cooperation",
+      "compliance operations",
+      "real-time monitoring",
+      "real time trans",
+      "created via web",
+      "if you are not able to respond",
+      "uk time zone",
+      "we would appreciate",
+      "font-",
+      "border",
+      "padding",
+      "margin",
+      "px;",
+      "{",
+      "}",
+      "complete the form",
+      "review the form",
+      "press the button",
+      "handled securely",
+      "do not reply",
+      "automated system",
+      "payment service provider",
+      "supporting documentation required"
+    ],
+    "catalogo": [
+      {
+        "item": "nombre_remitente",
+        "es": "Nombre completo del remitente",
+        "patrones": [
+          "full legal name of sender",
+          "full legal name including",
+          "sender name",
+          "nombre completo del remitente"
+        ]
+      },
+      {
+        "item": "razon_social",
+        "es": "Razón social del remitente",
+        "patrones": [
+          "full legal name of sender company",
+          "registered name",
+          "razón social"
+        ]
+      },
+      {
+        "item": "documento_identidad",
+        "es": "Documento de identidad (frente y dorso)",
+        "patrones": [
+          "gov.?t issued id",
+          "government issued id",
+          "copy of.*id\\b",
+          "front of the document",
+          "back of the document",
+          "identity document",
+          "c[ée]dula",
+          "documento de identidad"
+        ]
+      },
+      {
+        "item": "fecha_nacimiento",
+        "es": "Fecha de nacimiento",
+        "patrones": [
+          "date of birth",
+          "fecha de nacimiento"
+        ]
+      },
+      {
+        "item": "lugar_nacimiento",
+        "es": "Lugar de nacimiento",
+        "patrones": [
+          "place of birth",
+          "lugar de nacimiento"
+        ]
+      },
+      {
+        "item": "ciudadania",
+        "es": "Ciudadanía / nacionalidad",
+        "patrones": [
+          "citizenship",
+          "nationality",
+          "ciudadan[ií]a",
+          "nacionalidad"
+        ]
+      },
+      {
+        "item": "domicilio",
+        "es": "Domicilio",
+        "patrones": [
+          "physical address",
+          "registered address",
+          "residential address",
+          "domicilio",
+          "direcci[óo]n"
+        ]
+      },
+      {
+        "item": "giro_negocio",
+        "es": "Giro del negocio",
+        "patrones": [
+          "nature of.*business",
+          "business activity",
+          "giro",
+          "actividad econ[óo]mica"
+        ]
+      },
+      {
+        "item": "sitio_web",
+        "es": "Sitio web",
+        "patrones": [
+          "^website",
+          "\\bwebsite\\b",
+          "sitio web"
+        ]
+      },
+      {
+        "item": "relacion_beneficiario",
+        "es": "Relación entre remitente y beneficiario",
+        "patrones": [
+          "relationship between the sender and the beneficiar",
+          "nature of the relationship",
+          "relaci[óo]n.*beneficiario"
+        ]
+      },
+      {
+        "item": "motivo_transaccion",
+        "es": "Motivo de la transacción",
+        "patrones": [
+          "reason for the transaction",
+          "purpose of (?:the )?(?:payment|transaction|transfer)",
+          "motivo de",
+          "prop[óo]sito"
+        ]
+      },
+      {
+        "item": "origen_fondos",
+        "es": "Origen de los fondos",
+        "patrones": [
+          "source of funds",
+          "bank statement reflecting",
+          "origen de.*fondos"
+        ]
+      },
+      {
+        "item": "remitente_final",
+        "es": "Confirmación del remitente final",
+        "patrones": [
+          "ultimate sender",
+          "beneficial owner",
+          "remitente final"
+        ]
+      },
+      {
+        "item": "nombre_beneficiario",
+        "es": "Nombre del beneficiario",
+        "patrones": [
+          "beneficiary name",
+          "nombre del beneficiario"
+        ]
+      },
+      {
+        "item": "factura_contrato",
+        "es": "Factura o contrato de respaldo",
+        "patrones": [
+          "invoice",
+          "contract",
+          "factura",
+          "contrato"
+        ]
+      }
+    ],
+    "plazo": [
+      {
+        "patron": "within\\s+(\\d+)\\s+calendar\\s+days?",
+        "tipo": "dias_corridos"
+      },
+      {
+        "patron": "close of business on\\s+(\\d{1,2}\\s+\\w+\\s+\\d{4})",
+        "tipo": "fecha"
+      },
+      {
+        "patron": "at the latest by\\s+([^.\\n]{4,40})",
+        "tipo": "texto"
+      },
+      {
+        "patron": "within\\s+(\\d+)\\s+(?:business\\s+)?days?",
+        "tipo": "dias"
+      },
+      {
+        "patron": "antes del\\s+([^.\\n]{4,30})",
+        "tipo": "texto"
+      },
+      {
+        "patron": "plazo[^.\\n]{0,20}?(\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4})",
+        "tipo": "fecha"
+      }
+    ]
+  },
+  "datos": {
+    "nota": "Datos de contexto de la transaccion. Se leen de lineas «Etiqueta\\tValor» (tablas HTML) o «Etiqueta: valor» (texto plano). Sirven para verificar que la consulta devolvio el cliente correcto, y son el respaldo cuando no hay llave: beneficiario + monto + fecha.",
+    "campos": [
+      {
+        "campo": "beneficiario",
+        "es": "Beneficiario",
+        "etiquetas": [
+          "Beneficiary Name",
+          "Beneficiary name",
+          "Beneficiary",
+          "Beneficiario",
+          "Benefici[áa]rio"
+        ]
+      },
+      {
+        "campo": "beneficiario_apellido",
+        "es": "Apellido del beneficiario",
+        "etiquetas": [
+          "Beneficiary Last Name"
+        ]
+      },
+      {
+        "campo": "remitente",
+        "es": "Remitente",
+        "etiquetas": [
+          "Sender name",
+          "Sender Name",
+          "Remitente",
+          "Remetente"
+        ]
+      },
+      {
+        "campo": "monto",
+        "es": "Monto",
+        "etiquetas": [
+          "Amount",
+          "Transaction amount",
+          "Monto",
+          "Valor"
+        ]
+      },
+      {
+        "campo": "pais",
+        "es": "País",
+        "etiquetas": [
+          "Country",
+          "Pa[íi]s"
+        ]
+      },
+      {
+        "campo": "fecha_tx",
+        "es": "Fecha de la transacción",
+        "etiquetas": [
+          "Transaction date",
+          "Date",
+          "Fecha"
+        ]
+      },
+      {
+        "campo": "payout_id",
+        "es": "Payout ID del partner",
+        "etiquetas": [
+          "Payout ID"
+        ]
+      },
+      {
+        "campo": "estado",
+        "es": "Estado",
+        "etiquetas": [
+          "Status",
+          "Estado",
+          "Situa[çc][ãa]o"
+        ]
+      }
+    ]
+  }
+}
