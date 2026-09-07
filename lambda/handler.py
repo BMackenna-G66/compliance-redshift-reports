@@ -1211,6 +1211,24 @@ def handler(event, context):  # noqa: ARG001
     if report_name == "poll_document_replies":
         return _poll_document_replies()
 
+    # ── Módulo Relevo: ingesta de correo de corresponsales ────────────────
+    # Reemplaza el demonio launchd del Mac. EventBridge lo dispara cada 5 min.
+    # No toca Redshift ni el ciclo de runs: lee Gmail y guarda en el depósito.
+    # Aislado en su propio try porque una falla de la ingesta no puede
+    # arrastrarse al resto de los reportes.
+    if report_name == "relevo_ingesta":
+        try:
+            from relevo import ingesta
+            resultado = ingesta.correr(
+                maximo=event.get("maximo"),
+                forzar_resync=bool(event.get("forzar_resync")),
+            )
+            logger.info("Relevo ingesta: %s", json.dumps(resultado, default=str))
+            return resultado
+        except Exception as e:
+            logger.exception("Relevo ingesta falló")
+            return {"status": "error", "error": str(e)[:300]}
+
     # ── Módulo especial: Análisis AML Individual ──────────────────────────
     if report_name == "individual_aml_analysis":
         customer_ids = event.get("customer_ids", [])
