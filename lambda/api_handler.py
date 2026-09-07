@@ -2504,6 +2504,13 @@ def handler(event, context):  # noqa: ARG001
         if method == "GET" and parts == ["roles"]:
             return get_roles()
 
+        # ── Módulo Relevo (ciclo RFI de corresponsales) ──────────────────
+        # GET /relevo/salud — diagnóstico del módulo. Es la única ruta del
+        # módulo por ahora: el resto (§10 de docs/MIGRACION_A_WATCHTOWER.md)
+        # llega cuando estén la ingesta y el front.
+        if method == "GET" and parts == ["relevo", "salud"]:
+            return relevo_salud()
+
         # GET /rules
         if method == "GET" and parts == ["rules"]:
             return get_rules()
@@ -6022,6 +6029,58 @@ def get_users():
         return resp(200, {"users": users})
     except Exception as e:
         return resp(200, {"users": [], "warning": str(e)})
+
+
+def relevo_salud():
+    """Diagnóstico del módulo Relevo: si el depósito responde y qué hay guardado.
+
+    Existe para poder verificar desde afuera que la persistencia funciona en la
+    Lambda real — el filesystem es de sólo lectura y ese era el punto que
+    bloqueaba al módulo. Hace un ciclo escribir/leer/borrar sobre una clave de
+    diagnóstico propia, así el resultado no depende de que ya haya datos.
+
+    Devuelve sólo banderas y conteos: ningún dato de cliente, porque este API
+    todavía no exige credenciales.
+    """
+    try:
+        from relevo import deposito
+    except Exception as e:
+        return resp(200, {"modulo": "relevo", "importa": False, "error": str(e)[:200]})
+
+    fuera = {
+        "modulo": "relevo",
+        "importa": True,
+        "deposito_activo": deposito.activo(),
+        "prefijo": deposito.PREFIJO,
+    }
+    if not deposito.activo():
+        fuera["nota"] = "RELEVO_BUCKET sin definir: el módulo caería a disco, que en Lambda es de sólo lectura."
+        return resp(200, fuera)
+
+    # Ciclo completo contra S3, con una clave de diagnóstico que se borra.
+    try:
+        marca = f"salud-{uuid.uuid4().hex[:8]}"
+        deposito.poner("_salud", marca, {"ts": _now_str()})
+        leido = deposito.obtener("_salud", marca)
+        deposito.borrar("_salud", marca)
+        fuera["escritura"] = leido is not None
+    except Exception as e:
+        fuera["escritura"] = False
+        fuera["error_escritura"] = str(e)[:200]
+
+    try:
+        from relevo import almacen, casos
+        acciones = casos.leer_acciones()
+        fuera["conteos"] = {
+            "mensajes": len(almacen.leer()),
+            "casos_con_acciones": len(acciones),
+            "acciones": sum(len(v) for v in acciones.values()),
+            "clientes_en_cache": len(deposito.claves("clientes")),
+        }
+    except Exception as e:
+        fuera["error_conteos"] = str(e)[:200]
+
+    return resp(200, fuera)
 
 
 def get_roles():

@@ -24,6 +24,8 @@ de acciones se puede auditar, y es exactamente lo que el CRM quiere recibir.
 """
 import json
 import os
+
+from . import deposito
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -314,6 +316,18 @@ def registrar(caso_id, accion, quien="", detalle=None, ruta=None):
     ev = {"caso": caso_id, "accion": accion, "quien": quien,
           "cuando": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
           "detalle": detalle or {}}
+    if ruta is None and deposito.activo():
+        # Un objeto por acción, bajo el prefijo del caso. Es append-only de
+        # verdad: sin lectura-modificación-escritura, dos invocaciones
+        # concurrentes no se pisan. Equivale a la clave compuesta
+        # (caso_id, cuando) de `relevo_acciones` en §4.
+        deposito.poner(
+            f"acciones/{deposito.clave_segura(caso_id)}",
+            deposito.clave_segura(f"{ev['cuando']}|{accion}|{quien}"),
+            ev,
+        )
+        return ev
+
     ruta = Path(ruta or _REGISTRO)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     with ruta.open("a", encoding="utf-8") as fh:
@@ -323,6 +337,13 @@ def registrar(caso_id, accion, quien="", detalle=None, ruta=None):
 
 def leer_acciones(ruta=None):
     """Devuelve {caso_id: [acciones]}."""
+    if ruta is None and deposito.activo():
+        fuera = {}
+        for ev in deposito.todos("acciones"):
+            fuera.setdefault(ev.get("caso", ""), []).append(ev)
+        for lista in fuera.values():
+            lista.sort(key=lambda e: e.get("cuando", ""))
+        return fuera
     ruta = Path(ruta or _REGISTRO)
     if not ruta.exists():
         return {}
