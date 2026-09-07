@@ -27,6 +27,13 @@ cp config/*.yaml "$BUILD_DIR/config/"
 cp lambda/templates/*.html "$BUILD_DIR/templates/"
 cp lambda/attachments/*.pdf "$BUILD_DIR/attachments/"
 
+# Módulo Relevo (ciclo RFI de corresponsales). Va como paquete completo porque
+# se importa como `relevo.*`; los cp de arriba son archivo por archivo y no
+# alcanzan a un subdirectorio. Sin esta línea los tests pasan igual pero la
+# Lambda revienta con ModuleNotFoundError al importarlo.
+# Su carpeta tests/ la borra el trim de más abajo, así que no viaja al paquete.
+cp -R lambda/relevo "$BUILD_DIR/"
+
 echo "→ Installing Python dependencies for Linux/x86_64 (Lambda runtime)"
 # --platform / --only-binary forces wheels compatible with the Lambda runtime.
 pip install \

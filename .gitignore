@@ -32,6 +32,7 @@ env/
 
 # Lambda build artifacts
 lambda/build/
+lambda_build/
 lambda/*.zip
 lambda_package.zip
 
