@@ -6080,6 +6080,27 @@ def relevo_salud():
     except Exception as e:
         fuera["error_conteos"] = str(e)[:200]
 
+    # Ingesta: si hay credenciales y si la marca del historial ya avanzó. No se
+    # llama a Gmail acá — sólo se reporta lo que está configurado, para que un
+    # chequeo de salud no consuma cuota ni dependa de la red.
+    try:
+        from relevo import estado, ingesta
+        c = ingesta.credenciales()
+        fuera["gmail"] = {
+            "credenciales_completas": all(
+                (c["client_id"], c["client_secret"], c["refresh_token"])),
+            "usuario": c["usuario"],
+            "secreto": ingesta.SECRETO,
+        }
+        hid = estado.leer(ingesta.CLAVE_HISTORIAL)
+        fuera["ingesta"] = {
+            "history_id": hid or None,
+            "arrancada": bool(hid),
+            "max_por_corrida": ingesta.MAX_POR_CORRIDA,
+        }
+    except Exception as e:
+        fuera["error_ingesta"] = str(e)[:200]
+
     return resp(200, fuera)
 
 
