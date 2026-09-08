@@ -1200,7 +1200,25 @@ LIMIT 5
 """
 
 
-def _lookup_customer_rows(identifier: str, kind: str = "b2c") -> list[dict]:
+# Campos por los que se puede buscar explícitamente. Cuando el analista
+# elige uno, la consulta filtra SÓLO por ése: sin adivinar por el formato del
+# texto, que es lo que tenía muerta la búsqueda por documento.
+CAMPOS_BUSQUEDA = {
+    "b2c": {
+        "customer_id": "ID de cliente",
+        "documento": "N° de documento",
+        "correo": "Correo",
+    },
+    "b2b": {
+        "company_id": "ID de empresa",
+        "rut": "RUT / N° de identificación",
+        "username": "Username",
+    },
+}
+
+
+def _lookup_customer_rows(identifier: str, kind: str = "b2c",
+                          campo: str | None = None) -> list[dict]:
     """Ficha KYC/compliance de un cliente (b2c) o empresa (b2b).
 
     Es el mismo motor que usa la búsqueda de Análisis Individual; se extrajo
@@ -1213,6 +1231,12 @@ def _lookup_customer_rows(identifier: str, kind: str = "b2c") -> list[dict]:
         raise ValueError("identifier inválido")
     safe = identifier.replace("'", "''")
 
+    campo = (campo or "").strip().lower() or None
+    if campo and campo not in CAMPOS_BUSQUEDA.get(kind, {}):
+        raise ValueError(
+            f"campo '{campo}' no válido para {kind}. "
+            f"Válidos: {', '.join(CAMPOS_BUSQUEDA.get(kind, {}))}")
+
     # Un identificador de puros dígitos es AMBIGUO: puede ser el id interno o
     # el número de documento. Antes ganaba siempre el id, así que la búsqueda
     # por documento estaba muerta para cualquier documento numérico — que son
@@ -1224,7 +1248,15 @@ def _lookup_customer_rows(identifier: str, kind: str = "b2c") -> list[dict]:
     cabe_como_id = es_numero and int(identifier) <= 2147483647
 
     if kind == "b2b":
-        if es_numero:
+        if campo == "company_id":
+            if not cabe_como_id:
+                raise ValueError("el ID de empresa tiene que ser un número")
+            where = f"WHERE co.company_id = {int(identifier)}"
+        elif campo == "rut":
+            where = f"WHERE UPPER(co.identification_number) = UPPER('{safe}')"
+        elif campo == "username":
+            where = f"WHERE UPPER(co.username) = UPPER('{safe}')"
+        elif es_numero:
             partes = [f"UPPER(co.identification_number) = UPPER('{safe}')"]
             if cabe_como_id:
                 partes.insert(0, f"co.company_id = {int(identifier)}")
@@ -1245,7 +1277,15 @@ def _lookup_customer_rows(identifier: str, kind: str = "b2c") -> list[dict]:
         doc = (f"EXISTS (SELECT 1 FROM \"db_prod\".\"customer\".\"kyc_document\" k2 "
                f"WHERE k2.customer_id = c.customer_id "
                f"AND UPPER(k2.document_number) = UPPER('{safe}'))")
-        if "@" in identifier:
+        if campo == "customer_id":
+            if not cabe_como_id:
+                raise ValueError("el ID de cliente tiene que ser un número")
+            extra = f"AND c.customer_id = {int(identifier)}"
+        elif campo == "documento":
+            extra = f"AND {doc}"
+        elif campo == "correo":
+            extra = f"AND LOWER(c.email) = LOWER('{safe}')"
+        elif "@" in identifier:
             extra = f"AND LOWER(c.email) = LOWER('{safe}')"
         elif es_numero:
             partes = [doc]
@@ -1287,7 +1327,8 @@ def _display_name_from_profile(profile: dict, kind: str) -> str:
 
 def search_customer_b2c(body: dict):
     try:
-        rows = _lookup_customer_rows(body.get("identifier", ""), "b2c")
+        rows = _lookup_customer_rows(body.get("identifier", ""), "b2c",
+                                     campo=body.get("campo"))
     except ValueError as e:
         return resp(400, {"error": str(e)})
     return resp(200, {"rows": rows, "count": len(rows)})
@@ -1295,7 +1336,8 @@ def search_customer_b2c(body: dict):
 
 def search_customer_b2b(body: dict):
     try:
-        rows = _lookup_customer_rows(body.get("identifier", ""), "b2b")
+        rows = _lookup_customer_rows(body.get("identifier", ""), "b2b",
+                                     campo=body.get("campo"))
     except ValueError as e:
         return resp(400, {"error": str(e)})
     return resp(200, {"rows": rows, "count": len(rows)})
