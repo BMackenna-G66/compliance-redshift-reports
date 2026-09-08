@@ -1372,6 +1372,11 @@
                     <div class="mb-4">
                       <p class="text-xs text-slate-500 mb-2">Acciones disponibles en este estado:</p>
                       <div class="flex flex-wrap gap-2">
+                        <button x-show="c.estado==='listo_para_pedir' || c.estado==='respuesta_parcial'"
+                          @click="relevoAbrirPedido(c)"
+                          class="text-xs px-3 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-500 text-white border border-orange-500 transition">
+                          ✉️ Ver y enviar el pedido
+                        </button>
                         <template x-for="a in relevoAccionesDe(c.estado)" :key="a.k">
                           <button @click="relevoRegistrar(c, a.k)" :disabled="relevoAccionando"
                             class="text-xs px-3 py-1.5 rounded-lg border transition"
@@ -1502,6 +1507,66 @@
               <label class="text-xs text-slate-400 block mb-1">Resultado</label>
               <pre class="text-xs bg-slate-900 rounded-lg border border-slate-700 p-3 overflow-auto"
                 style="max-height:460px" x-text="relevoPruebaResultado || 'Pegá un correo y probá.'"></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- modal de previsualización y envío -->
+        <div x-show="relevoPedido.abierto" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="relevoPedido.abierto=false"></div>
+          <div class="relative bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto">
+            <div class="flex items-center justify-between px-5 py-4 border-b border-slate-700 sticky top-0 bg-slate-900">
+              <div>
+                <h3 class="text-white font-semibold">Pedido de documentos al cliente</h3>
+                <p class="text-xs text-slate-500" x-text="relevoPedido.para ? 'Para: ' + relevoPedido.para : ''"></p>
+              </div>
+              <button @click="relevoPedido.abierto=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+            </div>
+            <div class="p-5">
+              <div x-show="relevoPedido.cargando" class="text-slate-400 text-sm">Componiendo el correo…</div>
+              <div x-show="!relevoPedido.cargando">
+                <!-- avisos y bloqueos -->
+                <template x-for="(a,i) in (relevoPedido.datos.avisos || [])" :key="'a'+i">
+                  <div class="mb-2 px-3 py-2 rounded-lg bg-yellow-900/30 border border-yellow-800 text-yellow-200 text-xs" x-text="'⚠ ' + a"></div>
+                </template>
+                <template x-for="(b,i) in (relevoPedido.datos.bloqueos || [])" :key="'b'+i">
+                  <div class="mb-2 px-3 py-2 rounded-lg bg-red-900/30 border border-red-800 text-red-200 text-xs" x-text="'🚫 ' + b"></div>
+                </template>
+                <div class="grid md:grid-cols-3 gap-4 mb-4 text-xs">
+                  <div class="bg-slate-800 rounded-lg p-3">
+                    <p class="text-slate-500 mb-1">Asunto</p>
+                    <p class="text-slate-200 break-words" x-text="relevoPedido.datos.asunto"></p>
+                  </div>
+                  <div class="bg-slate-800 rounded-lg p-3">
+                    <p class="text-slate-500 mb-1">Documentos del catálogo</p>
+                    <p class="text-slate-200" x-text="(relevoPedido.datos.items_catalogo||[]).length + ' ítems'"></p>
+                    <p class="text-slate-500 mt-1" x-show="(relevoPedido.datos.items_crudo||[]).length"
+                       x-text="'+ ' + (relevoPedido.datos.items_crudo||[]).length + ' en crudo'"></p>
+                  </div>
+                  <div class="bg-slate-800 rounded-lg p-3">
+                    <p class="text-slate-500 mb-1">Adjuntos</p>
+                    <p class="text-slate-200">Ninguno — no es una solicitud KYC</p>
+                  </div>
+                </div>
+                <p class="text-xs text-slate-500 mb-2">Así lo va a ver el cliente:</p>
+                <iframe :srcdoc="relevoPedido.datos.html || ''" class="w-full rounded-lg border border-slate-700 bg-white"
+                        style="height:420px" sandbox=""></iframe>
+              </div>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-5 py-4 border-t border-slate-700 sticky bottom-0 bg-slate-900">
+              <p class="text-xs text-slate-500">
+                El envío queda registrado salga o no, y anota la acción en el caso.
+              </p>
+              <div class="flex gap-2">
+                <button @click="relevoPedido.abierto=false"
+                  class="text-xs px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg">Cerrar</button>
+                <button @click="relevoEnviarPedido()"
+                  :disabled="!relevoPedido.datos.puede_enviar || relevoPedido.enviando"
+                  class="text-xs px-4 py-2 rounded-lg text-white transition"
+                  :class="relevoPedido.datos.puede_enviar ? 'bg-orange-600 hover:bg-orange-500' : 'bg-slate-700 cursor-not-allowed opacity-50'">
+                  <span :class="relevoPedido.enviando ? 'spin inline-block' : ''">✉️</span> Enviar al cliente
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -6367,6 +6432,7 @@
       relevoSoloVencidos: false, relevoSoloPendientes: false, relevoSoloAccionables: false,
       relevoBuscar: '',
       relevoPrueba: { remitente: '', asunto: '', cuerpo: '' },
+      relevoPedido: { abierto: false, cargando: false, enviando: false, caso: null, para: '', datos: {} },
       relevoPruebaResultado: '',
       // Los estados los define el motor (§7). Se listan acá sólo para el filtro.
       relevoEstados: ['informativo','sin_cliente','sin_correo','listo_para_pedir',
@@ -6517,6 +6583,34 @@
           const nota = d.nota ? '\n' + d.nota : '';
           alert(`Resolución: ${d.resueltos ?? 0} resueltos de ${d.pendientes ?? 0} pendientes.${nota}`);
           await this.relevoCargar(true);
+        }
+      },
+
+      // Previsualizar NO toca la red del lado del envío: sólo compone (§8).
+      async relevoAbrirPedido(c) {
+        this.relevoPedido = { abierto: true, cargando: true, enviando: false,
+                              caso: c, para: c.cliente_correo || '', datos: {} };
+        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(c.id) + '/pedido', {});
+        this.relevoPedido.cargando = false;
+        if (d) { this.relevoPedido.datos = d; this.relevoPedido.para = d.para || ''; }
+      },
+
+      async relevoEnviarPedido() {
+        const p = this.relevoPedido;
+        if (!p.datos.puede_enviar) return;
+        if (!confirm(`Vas a enviarle este correo a ${p.para}.\n\nQueda registrado y el caso pasa a "pedido enviado". ¿Confirmás?`)) return;
+        p.enviando = true;
+        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(p.caso.id) + '/pedido', {
+          enviar: true, quien: this.currentUserEmail || this.userEmail || '',
+        });
+        p.enviando = false;
+        if (d?.enviado) {
+          alert(`Enviado a ${d.para}\nref: ${d.ref}`);
+          p.abierto = false;
+          this.relevoDetalle = null;
+          await this.relevoCargar(true);
+        } else if (d) {
+          alert('No se envió: ' + (d.error || 'error desconocido'));
         }
       },
 

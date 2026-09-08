@@ -152,6 +152,33 @@ class Gmail:
             return self._get(f"messages/{mid}", format="full")
         return self._get(f"messages/{mid}", format="metadata", metadataHeaders=HEADERS)
 
+    # ----------------------------------------------------------- escritura
+    def enviar(self, mime_bytes):
+        """Manda un MIME ya armado. Devuelve {"id", "threadId"}.
+
+        Se usa la API y no SMTP para poder **guardar el threadId** (§5): así la
+        respuesta del cliente se correlaciona por hilo, que sobrevive a que
+        edite el asunto. El token en el asunto queda como segundo camino.
+
+        Requiere el scope `gmail.send` (o `gmail.modify`). Con el token en
+        `gmail.readonly` Google devuelve 403 y se levanta con ese detalle, para
+        que el error diga qué falta y no parezca un problema de permisos de AWS.
+        """
+        url = f"{API}/users/{self.usuario}/messages/send"
+        cuerpo = json.dumps({"raw": base64.urlsafe_b64encode(mime_bytes).decode()}).encode()
+        pedido = urllib.request.Request(url, data=cuerpo, headers={
+            "Authorization": f"Bearer {self._token()}", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(pedido, timeout=60) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            detalle = e.read()[:300].decode("utf-8", "replace")
+            if e.code == 403 and "insufficient" in detalle.lower():
+                raise GmailError(
+                    "403: el refresh token no tiene scope de envío. Hay que "
+                    "re-consentir con gmail.send usando obtener_token.py.") from e
+            raise GmailError(f"{e.code} enviando: {detalle}") from e
+
     def observar(self, topic):
         """Suscripcion push via Pub/Sub. Caduca a los 7 dias: hay que renovarla."""
         url = f"{API}/users/{self.usuario}/watch"

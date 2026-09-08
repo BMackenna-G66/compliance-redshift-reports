@@ -2542,6 +2542,23 @@ def handler(event, context):  # noqa: ARG001
                 return resp(200, rapi.probar(body))
             if method == "POST" and parts == ["relevo", "resolver"]:
                 return resp(200, rapi.resolver_ahora(body))
+            # POST /relevo/casos/{id}/pedido — previsualizar o enviar (§8).
+            # Sin "enviar": true sólo previsualiza y no toca la red.
+            if method == "POST" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "pedido":
+                from relevo import envio
+                if body.get("enviar"):
+                    return resp(200, envio.enviar(
+                        parts[2], quien=body.get("quien") or body.get("actor_email", ""),
+                        nota=body.get("nota", ""),
+                        saltar_bloqueo_doble=bool(body.get("saltar_bloqueo_doble"))))
+                return resp(200, envio.previsualizar(parts[2], nota=body.get("nota", "")))
+            # POST /relevo/pedidos/lote — exige confirmado:true y respeta el tope.
+            if method == "POST" and parts == ["relevo", "pedidos", "lote"]:
+                from relevo import envio
+                return resp(200, envio.enviar_lote(
+                    body.get("caso_ids"),
+                    quien=body.get("quien") or body.get("actor_email", ""),
+                    confirmado=bool(body.get("confirmado"))))
             return resp(404, {"error": f"ruta de relevo no encontrada: {method} /{'/'.join(parts)}"})
 
         # GET /rules
