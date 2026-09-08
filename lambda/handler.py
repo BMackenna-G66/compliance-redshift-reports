@@ -1229,6 +1229,23 @@ def handler(event, context):  # noqa: ARG001
             logger.exception("Relevo ingesta falló")
             return {"status": "error", "error": str(e)[:300]}
 
+    # ── Módulo Relevo: resolución del cliente en Redshift ─────────────────
+    # NO enciende el cluster (§6): si está dormido, la resolución se encola y
+    # se reintenta en la próxima vuelta. Por eso este camino retorna antes de
+    # llegar a la lógica de wake/pause del flujo normal de reportes.
+    if report_name == "relevo_resolver":
+        try:
+            from relevo import resolucion
+            resultado = resolucion.correr(
+                maximo=event.get("maximo"),
+                forzar=bool(event.get("forzar")),
+            )
+            logger.info("Relevo resolución: %s", json.dumps(resultado, default=str))
+            return resultado
+        except Exception as e:
+            logger.exception("Relevo resolución falló")
+            return {"status": "error", "error": str(e)[:300]}
+
     # ── Módulo especial: Análisis AML Individual ──────────────────────────
     if report_name == "individual_aml_analysis":
         customer_ids = event.get("customer_ids", [])
