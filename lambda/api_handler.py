@@ -2552,6 +2552,18 @@ def handler(event, context):  # noqa: ARG001
                         nota=body.get("nota", ""),
                         saltar_bloqueo_doble=bool(body.get("saltar_bloqueo_doble"))))
                 return resp(200, envio.previsualizar(parts[2], nota=body.get("nota", "")))
+            # GET  /relevo/casos/{id}/checklist — estado tri-estado de §9.
+            if method == "GET" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "checklist":
+                from relevo import checklist as ck
+                return resp(200, {"caso_id": parts[2], "checklist": ck.leer(parts[2]),
+                                  "resumen": ck.resumen(parts[2])})
+            # POST /relevo/casos/{id}/checklist — cambio manual. `entregado`
+            # sólo puede venir por acá, y exige autor: el sistema no lo pone.
+            if method == "POST" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "checklist":
+                from relevo import checklist as ck
+                return resp(200, ck.marcar(
+                    parts[2], body.get("documento", ""), body.get("estado", ""),
+                    quien=body.get("quien") or body.get("actor_email", "")))
             # POST /relevo/pedidos/lote — exige confirmado:true y respeta el tope.
             if method == "POST" and parts == ["relevo", "pedidos", "lote"]:
                 from relevo import envio

@@ -1250,6 +1250,20 @@ def handler(event, context):  # noqa: ARG001
             logger.exception("Relevo vista falló")
             return {"status": "error", "error": str(e)[:300]}
 
+    # ── Módulo Relevo: recepción de la respuesta del cliente ──────────────
+    # Poller propio (§9). NO toca el poller AML: ese filtra por SUBJECT "ref:"
+    # y este correlaciona por thread_id o por el token "rfi:", que no se
+    # solapan. Dedup por ledger de Message-ID, nunca por el flag \Seen.
+    if report_name == "relevo_recepcion":
+        try:
+            from relevo import recepcion
+            resultado = recepcion.correr(maximo=event.get("maximo"))
+            logger.info("Relevo recepción: %s", json.dumps(resultado, default=str))
+            return resultado
+        except Exception as e:
+            logger.exception("Relevo recepción falló")
+            return {"status": "error", "error": str(e)[:300]}
+
     if report_name == "relevo_resolver":
         try:
             from relevo import resolucion

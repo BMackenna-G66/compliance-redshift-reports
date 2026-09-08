@@ -19,7 +19,7 @@ import os
 import time
 import uuid
 
-from . import casos, correo, deposito, ingesta, vista
+from . import casos, checklist, correo, deposito, ingesta, vista
 
 COLECCION = "solicitudes"
 # Tope por lote. Bajo a propósito: es un flujo que le escribe a clientes
@@ -175,6 +175,12 @@ def enviar(caso_id, quien="", nota="", saltar_bloqueo_doble=False):
         return {"enviado": False, "error": str(e)[:400], "request_id": reg["request_id"]}
 
     reg = _registrar(caso_id, c, True, thread_id=thread_id, quien=quien)
+    # El checklist nace acá, todo en `pendiente` (§9). Si el caso ya tenía uno
+    # —un recontacto— no se pisa: se conservan los estados ya confirmados.
+    try:
+        checklist.crear(caso_id, caso.get("items") or [], ref=c["token"], quien=quien)
+    except Exception as e:
+        print(f"[relevo] correo enviado pero no pude armar el checklist de {caso_id}: {e}")
     # La acción se anota después del envío: si el correo no salió, el caso no
     # puede quedar como "pedido enviado".
     try:

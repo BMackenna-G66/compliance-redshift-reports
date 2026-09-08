@@ -152,6 +152,45 @@ class Gmail:
             return self._get(f"messages/{mid}", format="full")
         return self._get(f"messages/{mid}", format="metadata", metadataHeaders=HEADERS)
 
+    def adjuntos(self, mid):
+        """Los adjuntos de un mensaje, ya decodificados.
+
+        Devuelve [{nombre, tipo, bytes, tamano}]. Requiere bajar el mensaje
+        completo: los adjuntos no vienen en format=metadata, y su contenido
+        vive en un endpoint aparte cuando pesa más que unos KB.
+
+        Sólo necesita gmail.readonly, así que esto funciona con el token
+        actual — a diferencia del envío.
+        """
+        j = self._get(f"messages/{mid}", format="full")
+        fuera = []
+
+        def _recorrer(parte):
+            if not isinstance(parte, dict):
+                return
+            nombre = parte.get("filename") or ""
+            cuerpo = parte.get("body") or {}
+            if nombre:
+                datos = cuerpo.get("data")
+                if not datos and cuerpo.get("attachmentId"):
+                    # Los adjuntos grandes se piden por separado.
+                    r = self._get(f"messages/{mid}/attachments/{cuerpo['attachmentId']}")
+                    datos = r.get("data")
+                if datos:
+                    try:
+                        crudo = base64.urlsafe_b64decode(datos + "=" * (-len(datos) % 4))
+                    except Exception:
+                        crudo = b""
+                    if crudo:
+                        fuera.append({"nombre": nombre,
+                                      "tipo": parte.get("mimeType") or "application/octet-stream",
+                                      "bytes": crudo, "tamano": len(crudo)})
+            for hija in (parte.get("parts") or []):
+                _recorrer(hija)
+
+        _recorrer(j.get("payload"))
+        return fuera
+
     # ----------------------------------------------------------- escritura
     def enviar(self, mime_bytes):
         """Manda un MIME ya armado. Devuelve {"id", "threadId"}.
