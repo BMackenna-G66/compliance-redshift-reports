@@ -1262,6 +1262,7 @@
           <template x-for="s in [
               {k:'clientes', l:'👥 Clientes (360)'},
               {k:'casos',    l:'📁 Casos'},
+              {k:'vencidos', l:'⏰ Recontacto'},
               {k:'bandeja',  l:'📨 Bandeja de partners'},
               {k:'probador', l:'🧪 Probador de reglas'},
               {k:'config',   l:'⚙️ Configuración'}]" :key="s.k">
@@ -1571,19 +1572,121 @@
           </div>
         </div>
 
+        <!-- ── COLA DE RECONTACTO ── -->
+        <div x-show="relevoSub==='vencidos'">
+          <div class="flex items-center gap-3 mb-3 flex-wrap">
+            <label class="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+              <input type="checkbox" x-model="relevoSoloColaVencidos" @change="relevoCargarCola()"
+                class="w-3.5 h-3.5 accent-red-500"> Solo los vencidos
+            </label>
+            <span class="text-xs text-slate-500 ml-auto" x-text="relevoCola.length + ' en la cola'"></span>
+          </div>
+          <p class="text-xs text-slate-500 mb-3">
+            El plazo sale, en este orden: lo que escribió el partner en su correo → la política del partner →
+            la política general. Los casos <strong class="text-slate-400">agotados</strong> no aparecen: ya se
+            hicieron los intentos que permite la política, y darlos por sin respuesta lo decide una persona.
+          </p>
+          <div class="overflow-x-auto bg-slate-800 rounded-xl border border-slate-700">
+            <table class="w-full text-xs">
+              <thead><tr class="border-b border-slate-700 text-slate-400">
+                <th class="text-left p-3">Cliente</th><th class="text-left p-3">Partner</th>
+                <th class="text-center p-3">Intento</th><th class="text-left p-3">Toca</th>
+                <th class="text-left p-3">Falta</th><th class="text-left p-3">Plazo según</th>
+                <th class="p-3"></th>
+              </tr></thead>
+              <tbody>
+                <template x-for="v in relevoCola" :key="v.caso_id">
+                  <tr class="border-b border-slate-700/50 hover:bg-slate-700/30">
+                    <td class="p-3">
+                      <div class="text-slate-200" x-text="v.cliente_nombre || v.caso_id"></div>
+                      <div class="text-slate-500" x-text="v.cliente_correo || 'sin correo'"></div>
+                    </td>
+                    <td class="p-3 text-slate-300" x-text="v.partner"></td>
+                    <td class="p-3 text-center text-slate-300"
+                        x-text="(v.intentos ?? 0) + ' / ' + (v.politica?.intentos ?? '—')"></td>
+                    <td class="p-3" :class="v.vencido ? 'text-red-400 font-semibold' : 'text-slate-400'"
+                        x-text="(v.proximo_contacto || '').slice(0,10) || '—'"></td>
+                    <td class="p-3 text-slate-300 max-w-xs">
+                      <span x-text="(v.faltantes||[]).length + ' ítem(s)'"></span>
+                      <div class="text-slate-500 truncate" :title="(v.faltantes||[]).join(', ')"
+                           x-text="(v.faltantes||[]).join(', ')"></div>
+                    </td>
+                    <td class="p-3 text-slate-500" x-text="v.politica?.fuente || '—'"></td>
+                    <td class="p-3 text-right">
+                      <button @click="relevoAbrirRecontacto(v)"
+                        class="text-xs px-2.5 py-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600">
+                        Ver recontacto
+                      </button>
+                    </td>
+                  </tr>
+                </template>
+                <tr x-show="relevoCola.length===0">
+                  <td colspan="7" class="p-6 text-center text-slate-500">
+                    Nadie por recontactar. Cuando el envío esté activo y pasen los plazos, la cola se llena sola.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- ── 5. CONFIGURACIÓN ── -->
         <div x-show="relevoSub==='config'">
-          <p class="text-xs text-slate-500 mb-3">
-            Mantenedores de recontacto e interruptores de envío. Los interruptores arrancan
-            <strong class="text-slate-400">apagados</strong>: nada le sale a un cliente sin que alguien lo prenda.
-          </p>
-          <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 max-w-2xl">
-            <pre class="text-xs text-slate-300 overflow-auto" style="max-height:300px"
-              x-text="JSON.stringify(relevoConfig, null, 2)"></pre>
-            <p class="text-xs text-slate-600 mt-3">
-              La edición desde pantalla llega con el paso 6, junto con el envío. Hoy se lee para verificar
-              que los interruptores estén donde deben.
+          <!-- EL INTERRUPTOR -->
+          <div class="rounded-xl border p-4 mb-5 max-w-3xl"
+            :class="relevoEnvioActivo() ? 'bg-red-950/40 border-red-800' : 'bg-slate-800 border-slate-700'">
+            <div class="flex items-start justify-between gap-4">
+              <div class="flex-1">
+                <h3 class="text-white font-semibold flex items-center gap-2">
+                  <span x-text="relevoEnvioActivo() ? '🔴' : '⚪'"></span>
+                  Envío de correos al cliente
+                </h3>
+                <p class="text-xs mt-1" :class="relevoEnvioActivo() ? 'text-red-200' : 'text-slate-400'"
+                   x-text="relevoEnvioActivo()
+                     ? 'ACTIVO — los analistas pueden escribirle a clientes reales.'
+                     : 'APAGADO — ningún correo sale, ni a mano ni por lote.'"></p>
+                <p class="text-xs text-slate-500 mt-2">
+                  Ningún proceso programado envía: la ingesta, el snapshot, la recepción y la resolución
+                  no pueden contactar a nadie. Este interruptor sólo habilita los botones que aprieta una persona.
+                </p>
+              </div>
+              <button @click="relevoToggleEnvio()" :disabled="relevoGuardandoSw"
+                class="text-xs px-4 py-2 rounded-lg text-white whitespace-nowrap transition"
+                :class="relevoEnvioActivo() ? 'bg-red-700 hover:bg-red-600' : 'bg-green-700 hover:bg-green-600'">
+                <span :class="relevoGuardandoSw ? 'spin inline-block' : ''"></span>
+                <span x-text="relevoEnvioActivo() ? 'Apagar el envío' : 'Activar el envío'"></span>
+              </button>
+            </div>
+          </div>
+
+          <!-- interruptores por partner -->
+          <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 mb-5 max-w-3xl">
+            <h4 class="text-sm text-white font-medium mb-1">Por partner</h4>
+            <p class="text-xs text-slate-500 mb-3">
+              Sirven para apagar un partner sin apagar todo. Un partner sin interruptor propio sigue al general.
             </p>
+            <div class="flex flex-wrap gap-2">
+              <template x-for="p in relevoPartners()" :key="p">
+                <button @click="relevoTogglePartner(p)" :disabled="relevoGuardandoSw"
+                  class="text-xs px-3 py-1.5 rounded-lg border transition"
+                  :class="relevoPartnerActivo(p)
+                    ? 'bg-green-900/40 text-green-300 border-green-800'
+                    : 'bg-slate-700 text-slate-400 border-slate-600'">
+                  <span x-text="relevoPartnerActivo(p) ? '● ' : '○ '"></span><span x-text="p"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+
+          <!-- mantenedores -->
+          <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 max-w-3xl">
+            <h4 class="text-sm text-white font-medium mb-1">Mantenedores de recontacto</h4>
+            <p class="text-xs text-slate-500 mb-3">
+              Precedencia: el plazo que escribió el partner en su correo gana; si no hay, la política del
+              partner; si no hay, la general.
+            </p>
+            <pre class="text-xs text-slate-300 overflow-auto" style="max-height:240px"
+              x-text="JSON.stringify(relevoConfig, null, 2)"></pre>
           </div>
         </div>
 
@@ -6433,6 +6536,7 @@
       relevoBuscar: '',
       relevoPrueba: { remitente: '', asunto: '', cuerpo: '' },
       relevoPedido: { abierto: false, cargando: false, enviando: false, caso: null, para: '', datos: {} },
+      relevoCola: [], relevoSoloColaVencidos: true, relevoGuardandoSw: false,
       relevoPruebaResultado: '',
       // Los estados los define el motor (§7). Se listan acá sólo para el filtro.
       relevoEstados: ['informativo','sin_cliente','sin_correo','listo_para_pedir',
@@ -6543,6 +6647,7 @@
         if (clientes) this.relevoClientes = clientes.clientes || [];
         if (cfg) this.relevoConfig = cfg;
         if (this.relevoSub === 'bandeja') await this.relevoCargarBandeja();
+        if (this.relevoSub === 'vencidos') await this.relevoCargarCola();
         this.relevoCargando = false;
       },
 
@@ -6600,7 +6705,8 @@
         if (!p.datos.puede_enviar) return;
         if (!confirm(`Vas a enviarle este correo a ${p.para}.\n\nQueda registrado y el caso pasa a "pedido enviado". ¿Confirmás?`)) return;
         p.enviando = true;
-        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(p.caso.id) + '/pedido', {
+        const ruta = p.recontacto ? '/recontactar' : '/pedido';
+        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(p.caso.id) + ruta, {
           enviar: true, quien: this.currentUserEmail || this.userEmail || '',
         });
         p.enviando = false;
@@ -6612,6 +6718,51 @@
         } else if (d) {
           alert('No se envió: ' + (d.error || 'error desconocido'));
         }
+      },
+
+      // ── interruptor de envío ──────────────────────────────────────
+      relevoEnvioActivo() { return !!(this.relevoConfig?.interruptores?.envio_general); },
+      relevoPartnerActivo(p) {
+        const sw = this.relevoConfig?.interruptores || {};
+        const k = 'envio_' + String(p).toLowerCase().replace(/ /g, '_');
+        // Sin interruptor propio, un partner sigue al general.
+        return (k in sw) ? !!sw[k] : this.relevoEnvioActivo();
+      },
+      async relevoGuardarSw(clave, valor, aviso) {
+        if (!confirm(aviso)) return;
+        this.relevoGuardandoSw = true;
+        const d = await this.api('POST', '/relevo/interruptores', {
+          clave, valor, quien: this.currentUserEmail || this.userEmail || '',
+        });
+        this.relevoGuardandoSw = false;
+        if (d?.interruptores) this.relevoConfig = { ...this.relevoConfig, interruptores: d.interruptores };
+      },
+      relevoToggleEnvio() {
+        const prender = !this.relevoEnvioActivo();
+        this.relevoGuardarSw('envio_general', prender, prender
+          ? 'Vas a ACTIVAR el envío de correos a clientes reales.\n\nA partir de ahora los analistas pueden escribirles desde la app. ¿Confirmás?'
+          : 'Vas a APAGAR el envío. Ningún correo saldrá, ni a mano ni por lote.\n\n¿Confirmás?');
+      },
+      relevoTogglePartner(p) {
+        const k = 'envio_' + String(p).toLowerCase().replace(/ /g, '_');
+        const prender = !this.relevoPartnerActivo(p);
+        this.relevoGuardarSw(k, prender,
+          `Vas a ${prender ? 'ACTIVAR' : 'apagar'} el envío para ${p}. ¿Confirmás?`);
+      },
+
+      // ── cola de recontacto ────────────────────────────────────────
+      async relevoCargarCola() {
+        const q = new URLSearchParams({ solo_vencidos: this.relevoSoloColaVencidos ? '1' : '0' });
+        const d = await this.api('GET', '/relevo/vencidos?' + q.toString());
+        if (d) this.relevoCola = d.cola || [];
+      },
+      async relevoAbrirRecontacto(v) {
+        this.relevoPedido = { abierto: true, cargando: true, enviando: false,
+                              caso: { id: v.caso_id, cliente_correo: v.cliente_correo },
+                              para: v.cliente_correo || '', datos: {}, recontacto: true };
+        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(v.caso_id) + '/recontactar', {});
+        this.relevoPedido.cargando = false;
+        if (d) { this.relevoPedido.datos = d; this.relevoPedido.para = d.para || ''; }
       },
 
       async relevoProbar() {

@@ -2564,6 +2564,37 @@ def handler(event, context):  # noqa: ARG001
                 return resp(200, ck.marcar(
                     parts[2], body.get("documento", ""), body.get("estado", ""),
                     quien=body.get("quien") or body.get("actor_email", "")))
+            # GET  /relevo/vencidos — la cola de recontacto (§7).
+            if method == "GET" and parts == ["relevo", "vencidos"]:
+                from relevo import recontacto, vista
+                d, meta = vista.completa()
+                lista = d["casos"] if d else []
+                solo = str(q.get("solo_vencidos", "1")).lower() not in ("0", "false", "no")
+                return resp(200, {"cola": recontacto.cola(lista, solo_vencidos=solo),
+                                  "meta": meta})
+            # POST /relevo/casos/{id}/recontactar — previsualiza o manda el
+            # recontacto, pidiendo SÓLO lo que falta.
+            if method == "POST" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "recontactar":
+                from relevo import recontacto
+                if body.get("enviar"):
+                    return resp(200, recontacto.recontactar(
+                        parts[2], quien=body.get("quien") or body.get("actor_email", ""),
+                        nota=body.get("nota", "")))
+                return resp(200, recontacto.previsualizar_recontacto(parts[2]))
+            # POST /relevo/interruptores — prender o apagar el envío. Es la
+            # única vía: el interruptor arranca apagado y sólo una persona lo
+            # mueve, con su nombre registrado.
+            if method == "POST" and parts == ["relevo", "interruptores"]:
+                quien = (body.get("quien") or body.get("actor_email") or "").strip()
+                if not quien:
+                    return resp(400, {"error": "quien es requerido: mover este interruptor "
+                                               "habilita escribirle a clientes reales"})
+                clave = (body.get("clave") or "envio_general").strip()
+                actual = dict(rapi.leer_config().get("interruptores") or {})
+                actual[clave] = bool(body.get("valor"))
+                cfg = rapi.guardar_config("interruptores", actual, quien)
+                return resp(200, {"interruptores": cfg.get("interruptores"),
+                                  "cambiado": clave, "por": quien})
             # POST /relevo/pedidos/lote — exige confirmado:true y respeta el tope.
             if method == "POST" and parts == ["relevo", "pedidos", "lote"]:
                 from relevo import envio
