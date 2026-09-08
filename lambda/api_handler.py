@@ -1213,19 +1213,48 @@ def _lookup_customer_rows(identifier: str, kind: str = "b2c") -> list[dict]:
         raise ValueError("identifier inválido")
     safe = identifier.replace("'", "''")
 
+    # Un identificador de puros dígitos es AMBIGUO: puede ser el id interno o
+    # el número de documento. Antes ganaba siempre el id, así que la búsqueda
+    # por documento estaba muerta para cualquier documento numérico — que son
+    # 2.261.088 de 2.617.741 (86%), incluidos todos los RUT chilenos sin K.
+    # Ahora se buscan los dos con OR y decide la base, no el formato.
+    es_numero = identifier.isdigit()
+    # El id es entero: un documento largo lo desbordaría, así que sólo se
+    # compara cuando entra en el rango.
+    cabe_como_id = es_numero and int(identifier) <= 2147483647
+
     if kind == "b2b":
-        if identifier.isdigit():
-            where = f"WHERE co.company_id = {int(identifier)}"
+        if es_numero:
+            partes = [f"UPPER(co.identification_number) = UPPER('{safe}')"]
+            if cabe_como_id:
+                partes.insert(0, f"co.company_id = {int(identifier)}")
+            where = "WHERE " + " OR ".join(partes)
         else:
-            where = f"WHERE co.identification_number = '{safe}' OR co.username = '{safe}'"
+            where = (f"WHERE UPPER(co.identification_number) = UPPER('{safe}') "
+                     f"OR UPPER(co.username) = UPPER('{safe}')")
         sql = _B2B_QUERY.replace("__WHERE__", where)
     else:
-        if identifier.isdigit():
-            extra = f"AND c.customer_id = {int(identifier)}"
-        elif "@" in identifier:
+        # El documento NO se compara contra `kd`: ese alias viene del CTE con
+        # rn = 1, o sea sólo el documento más reciente. 65.659 clientes tienen
+        # más de uno, y buscar por el anterior no encontraría nada. Con EXISTS
+        # matchea cualquiera de sus documentos, y el que se muestra sigue
+        # siendo el último, que es lo correcto para la ficha.
+        # UPPER en los dos lados: el dígito verificador chileno se escribe
+        # tanto "24807079K" como "24807079k", y quien lo tipea usa minúscula
+        # la mitad de las veces.
+        doc = (f"EXISTS (SELECT 1 FROM \"db_prod\".\"customer\".\"kyc_document\" k2 "
+               f"WHERE k2.customer_id = c.customer_id "
+               f"AND UPPER(k2.document_number) = UPPER('{safe}'))")
+        if "@" in identifier:
             extra = f"AND LOWER(c.email) = LOWER('{safe}')"
+        elif es_numero:
+            partes = [doc]
+            if cabe_como_id:
+                partes.insert(0, f"c.customer_id = {int(identifier)}")
+            extra = "AND (" + " OR ".join(partes) + ")"
         else:
-            extra = f"AND kd.document_number = '{safe}'"
+            # Documentos con K (RUT chileno) o alfanuméricos: sólo documento.
+            extra = f"AND {doc}"
         sql = _B2C_QUERY.replace("__FILTER__", extra)
 
     return _rs_exec_multi([sql], timeout_s=90)[0]
