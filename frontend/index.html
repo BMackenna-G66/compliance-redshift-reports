@@ -10071,7 +10071,19 @@ Responde en español, de forma estructurada y concisa.`;
         if (d && d.rows !== undefined) {
           this.clientSearchResult = d;
         } else {
-          this.clientSearchError = d?.error || 'Error al consultar. Verifica que el cluster esté activo.';
+          // El mensaje anterior mandaba a revisar el cluster ante CUALQUIER
+          // fallo, y eso hizo perder tiempo buscando donde no era: la causa
+          // real fue un timeout con el cluster perfectamente encendido.
+          // Ahora se consulta el estado real antes de culpar a nadie.
+          let motivo = d?.error;
+          if (!motivo) {
+            const cl = await this.api('GET', '/cluster/status');
+            motivo = (cl && cl.status !== 'available')
+              ? `El clúster está en estado "${cl.status}". Esperá a que quede disponible.`
+              : 'La consulta no respondió a tiempo (el API corta a los 30 s). '
+                + 'Probá con un identificador más específico o reintentá.';
+          }
+          this.clientSearchError = motivo;
         }
         this.clientSearchRunning = false;
       },
