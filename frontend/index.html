@@ -2805,22 +2805,39 @@
               class="px-5 py-2 text-sm font-semibold rounded-lg transition">
               👤 Clientes B2C
             </button>
-            <button @click="clientType='b2b'; clientSearchResult=null; clientSearchError=null"
+            <button @click="clientType='b2b'; clientSearchResult=null; clientSearchError=null; clientCampo=''"
               :class="clientType==='b2b' ? 'bg-violet-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'"
               class="px-5 py-2 text-sm font-semibold rounded-lg transition">
               🏢 Clientes B2B
             </button>
           </div>
 
+          <!-- Por qué campo buscar. Sin elegir, el sistema deduce por el
+               formato — que es lo que tenía muerta la búsqueda por documento,
+               porque un documento numérico se confundía con un ID. -->
+          <div class="flex items-center gap-2 mb-4 flex-wrap">
+            <span class="text-xs text-slate-500 mr-1">Buscar por:</span>
+            <template x-for="c in clientCampos()" :key="c.k">
+              <button @click="clientCampo = (clientCampo===c.k ? '' : c.k); clientSearchResult=null; clientSearchError=null"
+                :class="clientCampo===c.k
+                  ? (clientType==='b2c' ? 'bg-blue-600 text-white border-blue-500' : 'bg-violet-600 text-white border-violet-500')
+                  : 'bg-slate-700 text-slate-300 border-slate-600 hover:bg-slate-600'"
+                class="px-3 py-1.5 text-xs font-medium rounded-lg border transition" x-text="c.l"></button>
+            </template>
+            <span x-show="!clientCampo" class="text-xs text-slate-600 ml-1">
+              sin elegir, se deduce por el formato
+            </span>
+          </div>
+
           <!-- Search box -->
           <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-4">
             <div class="mb-4">
               <label class="block text-xs font-medium text-slate-400 mb-1.5">
-                <span x-text="clientType==='b2c' ? 'Customer ID, email o número de documento' : 'Company ID, username o número de identificación'"></span>
+                <span x-text="clientEtiqueta()"></span>
               </label>
               <div class="flex gap-3">
                 <input x-model="clientSearchId" type="text"
-                  :placeholder="clientType==='b2c' ? 'Ej: 3696886 / usuario@email.com / 12345678' : 'Ej: 98765 / empresa_srl / 76543210'"
+                  :placeholder="clientPlaceholder()"
                   @keydown.enter="searchCustomer()"
                   class="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 <button @click="searchCustomer()"
@@ -6094,6 +6111,7 @@
       amlSubTab: 'casos',
       clientType: 'b2c',
       clientSearchId: '',
+      clientCampo: '',
       clientSearchRunning: false,
       clientSearchResult: null,
       clientSearchError: null,
@@ -10018,13 +10036,38 @@ Responde en español, de forma estructurada y concisa.`;
         }
       },
 
+      // Campos por los que se puede filtrar explícitamente. Deben coincidir
+      // con CAMPOS_BUSQUEDA del backend.
+      clientCampos() {
+        return this.clientType === 'b2c'
+          ? [{k:'customer_id', l:'🆔 Customer ID'}, {k:'documento', l:'📄 N° documento'}, {k:'correo', l:'✉️ Email'}]
+          : [{k:'company_id', l:'🆔 Company ID'}, {k:'rut', l:'📄 RUT / identificación'}, {k:'username', l:'👤 Username'}];
+      },
+      clientEtiqueta() {
+        const c = this.clientCampos().find(x => x.k === this.clientCampo);
+        if (c) return c.l.replace(/^[^ ]+ /, '');
+        return this.clientType === 'b2c'
+          ? 'Customer ID, email o número de documento'
+          : 'Company ID, username o número de identificación';
+      },
+      clientPlaceholder() {
+        return ({
+          customer_id: 'Ej: 3696886', documento: 'Ej: 12345678 o 24807079K', correo: 'Ej: usuario@email.com',
+          company_id: 'Ej: 45086', rut: 'Ej: 770356423', username: 'Ej: NIDORCL001',
+        })[this.clientCampo] || (this.clientType === 'b2c'
+          ? 'Ej: 3696886 / usuario@email.com / 12345678'
+          : 'Ej: 98765 / empresa_srl / 76543210');
+      },
+
       async searchCustomer() {
         if (!this.clientSearchId.trim()) return;
         this.clientSearchRunning = true;
         this.clientSearchResult = null;
         this.clientSearchError = null;
         const endpoint = this.clientType === 'b2c' ? '/analyze/customer/b2c' : '/analyze/customer/b2b';
-        const d = await this.api('POST', endpoint, { identifier: this.clientSearchId.trim() });
+        const cuerpo = { identifier: this.clientSearchId.trim() };
+        if (this.clientCampo) cuerpo.campo = this.clientCampo;
+        const d = await this.api('POST', endpoint, cuerpo);
         if (d && d.rows !== undefined) {
           this.clientSearchResult = d;
         } else {
