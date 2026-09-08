@@ -2505,11 +2505,44 @@ def handler(event, context):  # noqa: ARG001
             return get_roles()
 
         # ── Módulo Relevo (ciclo RFI de corresponsales) ──────────────────
-        # GET /relevo/salud — diagnóstico del módulo. Es la única ruta del
-        # módulo por ahora: el resto (§10 de docs/MIGRACION_A_WATCHTOWER.md)
-        # llega cuando estén la ingesta y el front.
-        if method == "GET" and parts == ["relevo", "salud"]:
-            return relevo_salud()
+        # §10 de docs/MIGRACION_A_WATCHTOWER.md. Los handlers viven en
+        # relevo/api.py, no acá: la regla de oro de §1 es que el módulo no se
+        # mezcle con el ciclo AML, y este archivo ya pasa las 6.000 líneas.
+        # Faltan /pedido y /pedidos/lote — son el paso 6 y necesitan gmail.send.
+        if parts and parts[0] == "relevo":
+            if method == "GET" and parts == ["relevo", "salud"]:
+                return relevo_salud()
+            try:
+                from relevo import api as rapi
+            except Exception as e:
+                return resp(200, {"error": "módulo relevo no importable", "detalle": str(e)[:200]})
+            q = event.get("queryStringParameters") or {}
+
+            if method == "GET" and parts == ["relevo", "casos"]:
+                return resp(200, rapi.listar_casos(q))
+            if method == "GET" and len(parts) == 3 and parts[1] == "casos":
+                return resp(200, rapi.detalle_caso(parts[2]))
+            if method == "POST" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "accion":
+                return resp(200, rapi.registrar_accion(parts[2], body))
+            if method == "GET" and parts == ["relevo", "clientes"]:
+                return resp(200, rapi.listar_clientes(q))
+            if method == "GET" and parts == ["relevo", "mensajes"]:
+                return resp(200, rapi.listar_mensajes(q))
+            if method == "GET" and parts == ["relevo", "config"]:
+                return resp(200, rapi.leer_config())
+            if method in ("PUT", "POST") and parts == ["relevo", "config"]:
+                clave = (body.get("clave") or "").strip()
+                if not clave:
+                    return resp(400, {"error": "clave es requerida"})
+                return resp(200, rapi.guardar_config(
+                    clave, body.get("valor"), body.get("quien") or body.get("actor_email", "")))
+            if method == "GET" and parts == ["relevo", "reglas"]:
+                return resp(200, rapi.leer_reglas())
+            if method == "POST" and parts == ["relevo", "probar"]:
+                return resp(200, rapi.probar(body))
+            if method == "POST" and parts == ["relevo", "resolver"]:
+                return resp(200, rapi.resolver_ahora(body))
+            return resp(404, {"error": f"ruta de relevo no encontrada: {method} /{'/'.join(parts)}"})
 
         # GET /rules
         if method == "GET" and parts == ["rules"]:
@@ -6068,15 +6101,20 @@ def relevo_salud():
         fuera["escritura"] = False
         fuera["error_escritura"] = str(e)[:200]
 
+    # Los conteos salen del snapshot, no de leer el depósito completo: contar
+    # los mensajes de a uno costaba 8,3 s y un health check no puede tardar eso.
     try:
-        from relevo import almacen, casos
+        from relevo import casos, vista
         acciones = casos.leer_acciones()
+        snap = vista.leer() or {}
         fuera["conteos"] = {
-            "mensajes": len(almacen.leer()),
+            "mensajes": snap.get("n_mensajes", 0),
+            "transacciones": len(snap.get("transacciones") or []),
             "casos_con_acciones": len(acciones),
             "acciones": sum(len(v) for v in acciones.values()),
-            "clientes_en_cache": len(deposito.claves("clientes")),
+            "clientes_en_cache": len(snap.get("cache") or {}),
         }
+        fuera["snapshot_generado_en"] = snap.get("generado_en")
     except Exception as e:
         fuera["error_conteos"] = str(e)[:200]
 
