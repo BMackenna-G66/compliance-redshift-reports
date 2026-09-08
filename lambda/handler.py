@@ -1233,6 +1233,23 @@ def handler(event, context):  # noqa: ARG001
     # NO enciende el cluster (§6): si está dormido, la resolución se encola y
     # se reintenta en la próxima vuelta. Por eso este camino retorna antes de
     # llegar a la lógica de wake/pause del flujo normal de reportes.
+    # ── Módulo Relevo: snapshot de la vista ───────────────────────────────
+    # La parte cara de armar la pantalla (correos → motor → transacciones)
+    # tarda ~25 s y no puede pagarse en cada carga: la Lambda del API corta a
+    # los 60 s. Se precalcula acá y el API sirve el snapshot. Ver vista.py.
+    if report_name == "relevo_vista":
+        try:
+            from relevo import vista
+            v = vista.guardar()
+            resultado = {"generado_en": v["generado_en"], "segundos": v["segundos"],
+                         "n_mensajes": v["n_mensajes"],
+                         "n_transacciones": len(v["transacciones"])}
+            logger.info("Relevo vista: %s", json.dumps(resultado, default=str))
+            return resultado
+        except Exception as e:
+            logger.exception("Relevo vista falló")
+            return {"status": "error", "error": str(e)[:300]}
+
     if report_name == "relevo_resolver":
         try:
             from relevo import resolucion
