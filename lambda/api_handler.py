@@ -1217,6 +1217,25 @@ CAMPOS_BUSQUEDA = {
 }
 
 
+def _customer_ids_por_documento(safe: str) -> list[int]:
+    """Los customer_id que tienen ese número de documento.
+
+    Se resuelve APARTE y no dentro de la consulta grande. Medido: metido como
+    subconsulta, el filtro por documento llevaba la ficha a 17-28 s —
+    peligrosamente cerca de los 30 s a los que corta el API Gateway— porque
+    UPPER() sobre 2,6 M de filas no puede aprovechar ningún orden. Resuelto
+    aparte tarda 1-5 s, y la consulta grande queda filtrando por customer_id,
+    que es el camino rápido (~2 s).
+
+    Bonus: si no hay ningún id, ni siquiera se corre la consulta grande.
+    """
+    sql = (f'SELECT DISTINCT customer_id FROM "db_prod"."customer"."kyc_document" '
+           f"WHERE UPPER(document_number) = UPPER('{safe}') "
+           f"AND customer_id IS NOT NULL LIMIT 50")
+    filas = _rs_exec_multi([sql], timeout_s=45)[0]
+    return [int(f["customer_id"]) for f in filas if f.get("customer_id") is not None]
+
+
 def _lookup_customer_rows(identifier: str, kind: str = "b2c",
                           campo: str | None = None) -> list[dict]:
     """Ficha KYC/compliance de un cliente (b2c) o empresa (b2b).
@@ -1274,27 +1293,40 @@ def _lookup_customer_rows(identifier: str, kind: str = "b2c",
         # UPPER en los dos lados: el dígito verificador chileno se escribe
         # tanto "24807079K" como "24807079k", y quien lo tipea usa minúscula
         # la mitad de las veces.
-        doc = (f"EXISTS (SELECT 1 FROM \"db_prod\".\"customer\".\"kyc_document\" k2 "
-               f"WHERE k2.customer_id = c.customer_id "
-               f"AND UPPER(k2.document_number) = UPPER('{safe}'))")
+        # El filtro por documento se arma con los ids ya resueltos (ver
+        # _customer_ids_por_documento): meterlo como subconsulta dejaba la
+        # ficha a 17-28 s, contra los 30 s del corte del API Gateway.
+        def _filtro_documento():
+            ids = _customer_ids_por_documento(safe)
+            if not ids:
+                return None                      # nadie: se corta antes
+            return "AND c.customer_id IN (" + ", ".join(str(i) for i in ids) + ")"
+
         if campo == "customer_id":
             if not cabe_como_id:
                 raise ValueError("el ID de cliente tiene que ser un número")
             extra = f"AND c.customer_id = {int(identifier)}"
         elif campo == "documento":
-            extra = f"AND {doc}"
+            extra = _filtro_documento()
+            if extra is None:
+                return []
         elif campo == "correo":
             extra = f"AND LOWER(c.email) = LOWER('{safe}')"
         elif "@" in identifier:
             extra = f"AND LOWER(c.email) = LOWER('{safe}')"
         elif es_numero:
-            partes = [doc]
+            # Ambiguo: puede ser el id o un documento. Se juntan los dos.
+            ids = _customer_ids_por_documento(safe)
             if cabe_como_id:
-                partes.insert(0, f"c.customer_id = {int(identifier)}")
-            extra = "AND (" + " OR ".join(partes) + ")"
+                ids.append(int(identifier))
+            if not ids:
+                return []
+            extra = "AND c.customer_id IN (" + ", ".join(str(i) for i in sorted(set(ids))) + ")"
         else:
             # Documentos con K (RUT chileno) o alfanuméricos: sólo documento.
-            extra = f"AND {doc}"
+            extra = _filtro_documento()
+            if extra is None:
+                return []
         sql = _B2C_QUERY.replace("__FILTER__", extra)
 
     return _rs_exec_multi([sql], timeout_s=90)[0]
