@@ -48,10 +48,20 @@ checklist de documentos, y el aviso a Slack.
 | Ingesta de correo | Lambda | EventBridge, cada 5 min |
 | Resolución del cliente | Lambda → Redshift Data API | dentro de la ingesta |
 | Poller de respuestas del cliente | Lambda | EventBridge, cada 10 min |
+| Snapshot de la vista | Lambda | EventBridge, cada 5 min |
 | API del módulo | rutas nuevas en `api_handler.py` | API Gateway + Cognito |
 | Front del módulo | pestaña nueva en `frontend/index.html` | CloudFront |
-| Datos operativos | **DynamoDB** | — |
-| Espejo analítico | esquema nuevo en Redshift | lote diario |
+| Datos operativos | **S3**, un objeto por registro — ver el desvío abajo | — |
+| Espejo analítico | esquema `relevo` en Redshift (§18) | EventBridge, 12:45 UTC |
+
+**Desvío respecto de §4, dicho acá para que no sorprenda:** los datos operativos quedaron en
+**S3**, no en DynamoDB. El rol de esta cuenta tiene `dynamodb:CreateTable` en implicitDeny
+—con cualquier nombre de tabla, verificado con `simulate-principal-policy`— así que las siete
+tablas de §4 no se pueden crear sin pedir permisos nuevos. Los dos argumentos con los que §4
+eligió Dynamo se sostienen igual en S3 (un objeto por registro es append-only de verdad, y S3
+no depende del cluster); lo que se pierde es la consulta por clave de ordenamiento, que se
+compensa con la jerarquía de la clave. El razonamiento completo está en el encabezado de
+`lambda/relevo/deposito.py`. Migrar es reescribir sólo ese archivo.
 
 **No hay proceso de larga duración.** Todo son invocaciones. La ingesta de Relevo hoy es un
 demonio de 60 s; pasa a ser una invocación cada 5 min, que para el volumen de RFI sobra.
@@ -552,7 +562,21 @@ GET    /relevo/reglas                   reglas.json, para el probador
 POST   /relevo/probar                   corre el motor sobre un asunto/cuerpo de prueba
 GET    /relevo/salud                    estado de ingesta, poller, Redshift y Gmail
 POST   /relevo/resolver                 dispara la resolución a pedido
+GET    /relevo/casos/{id}/checklist      estado tri-estado de los documentos (§9)
+POST   /relevo/casos/{id}/checklist      cambio manual; `entregado` exige autor
+GET    /relevo/vencidos                  la cola de recontacto (§7)
+POST   /relevo/casos/{id}/recontactar    previsualiza / manda el recontacto
+POST   /relevo/interruptores             prende o apaga el envío, con autor
+POST   /relevo/casos/{id}/devolucion     compone la respuesta al partner / la registra
+GET    /relevo/espejo                    resultado de la última corrida del lote
+POST   /relevo/espejo                    dispara el lote (Event, no corre en la API)
 ```
+
+`POST /relevo/espejo` **no corre el lote**: lo dispara en `InvocationType=Event` a la Lambda
+de reportes. Medido en producción: la corrida completa tarda ~26 s y el **API Gateway corta a
+los 30**, así que hacerlo síncrono daba 503. El runner tiene 900 s. `correr()` guarda su
+resultado en el depósito y el GET lo devuelve — sin eso, la única forma de saber si el espejo
+se actualizó sería leer CloudWatch, y entonces nadie lo mira.
 
 `POST /relevo/casos/{id}/accion` debe **registrar quién** la ejecutó, tomándolo del JWT. En
 una herramienta que mueve documentos de clientes, "quién hizo esto" tiene que tener respuesta.
@@ -629,13 +653,25 @@ dynamodb:GetItem, PutItem, UpdateItem, Query, Scan, BatchWriteItem  ← tablas r
 s3:PutObject, GetObject                  ← prefijo relevo/ del bucket
 ```
 
-### Infra a crear
+### Infra — estado real
 
-- Las 7 tablas de DynamoDB (on-demand; el volumen es chico).
-- Dos reglas de EventBridge: ingesta cada 5 min, poller cada 10 min.
-- El secreto de Gmail.
-- Los permisos IAM de arriba sobre el rol existente de la Lambda.
-- El esquema nuevo en Redshift para el espejo analítico (sólo cuando se llegue a eso).
+| Pieza | Estado |
+|---|---|
+| Persistencia operativa | ✅ S3, prefijo `relevo/` del bucket de reportes (no Dynamo: ver §2) |
+| `...-relevo-ingesta` | ✅ `rate(5 minutes)` |
+| `...-relevo-vista` | ✅ `rate(5 minutes)` |
+| `...-relevo-recepcion` | ✅ `rate(10 minutes)` |
+| `...-relevo-resolver` | ✅ `rate(15 minutes)` |
+| `...-relevo-espejo` | ✅ `cron(45 12 * * ? *)` |
+| Secreto de Gmail | ✅ `compliance-redshift-reports/relevo-gmail` |
+| Esquema `relevo` en Redshift | ✅ se crea solo: el lote corre su DDL idempotente en cada corrida |
+
+**El scope `gmail.send` sigue faltando.** El token está en `gmail.readonly`, así que el paso 6
+no puede mandar el pedido al cliente. Al re-consentir, pedir **`gmail.modify`**: cubre eso y
+además habilita el borrador de la devolución (decisión 10 de §16).
+
+El DDL del espejo se corre en cada corrida a propósito: es barato, y hace que el esquema se
+instale solo en un ambiente nuevo en vez de ser un paso manual que alguien va a olvidar.
 
 ---
 
@@ -725,8 +761,9 @@ Sin estimaciones: el orden es lo que importa, porque cada paso se apoya en el an
    e interruptores apagados por defecto; primero un envío a mano, después el lote.
 7. **Recepción.** El poller, los adjuntos, el checklist.
 8. **Recontacto.** Los dos mantenedores y la cola de vencidos.
-9. **Devolución al partner y espejo analítico.** El borrador, y el esquema nuevo de Redshift
-   escrito en lote.
+9. **Devolución al partner y espejo analítico.** ✅ **Hecho.** El borrador se resolvió como
+   texto en pantalla para copiar (decisión 10, abajo) y el espejo entró como esquema `relevo`
+   cargado por `COPY` desde S3 (§18). Regla `...-relevo-espejo`, `cron(45 12 * * ? *)`.
 
 Los pasos 1 a 5 **no dependen de nada externo** y son los que sacan el proceso del Mac. El 6
 espera el scope de Gmail.
@@ -763,7 +800,7 @@ Ninguna bloquea el arranque. Se deciden cuando se llegue al paso correspondiente
 | 7 | B2C o B2B: define plantilla. `customer.customer` tiene `is_company` y hoy no lo traemos. Y hay que resolver qué pasa con los clientes **sin fila ahí**, que son justamente los B2B | 6 |
 | 8 | Los roles: qué ve CX y qué ve sólo Compliance; y si un analista AML ve los casos RFI | 5 |
 | 9 | Los 217 correos apartados, anteriores al token, sin forma automática de correlacionarlos: descartar, cola manual, o emparejar por remitente y fecha | 7 |
-| 10 | La devolución al partner: borrador en Gmail (otro scope) o en pantalla para copiar | 9 |
+| 10 | ~~La devolución al partner: borrador en Gmail o en pantalla para copiar~~ **RESUELTA: en pantalla.** El borrador necesita `gmail.compose`/`gmail.modify`, que es un re-consentimiento *distinto* del `gmail.send` que el paso 6 ya espera; escribir esa rama hoy sería código que no corre ni se prueba. **Cuando se re-consienta, pedir `gmail.modify`**: cubre enviar el pedido Y dejar el borrador en un solo viaje, y agregar el borrador pasa a ser ~15 líneas contra `drafts.create` | 9 ✅ |
 | — | `cc_external_id`: cómo se compone. 9 casos a revisión manual hasta entonces | — |
 
 ---
@@ -783,3 +820,84 @@ Medido el 2026-09-07 sobre `compliance.masivo@global66.com`:
 | Resoluciones en caché | 110 de 110 |
 | Verificaciones cruzadas | 41 comparables, 0 en desacuerdo |
 | Tests | 104 que corren, en ~0,1 s, sin dependencias |
+
+Estado en WatchTower al cerrar el paso 9 (2026-09-09): **771 correos, 181 transacciones,
+170 casos, 150 con cliente y correo, 4 partners, 146 tests.** Los 5 procesos programados
+—ingesta 5', vista 5', recepción 10', resolución 15', espejo diario— corren sin el Mac.
+
+---
+
+## 18. El espejo analítico: esquema `relevo` en Redshift
+
+Escrito por el paso 9. **No es la fuente de verdad**: la fuente es el depósito en S3, y esto
+es una copia que se **rehace completa** en cada corrida. Una diferencia entre el espejo y la
+pantalla es un bug del espejo, no un dato nuevo.
+
+### Cómo se carga, y por qué así
+
+Las filas se escriben como **JSON Lines a S3** y entran con **`COPY`**. No se interpolan en el
+SQL. Tres restricciones reales lo obligan, las tres verificadas antes de escribir el código:
+
+1. El rol de la Lambda tiene `redshift-data:ExecuteStatement` pero **no
+   `BatchExecuteStatement`** — no hay forma de mandar N sentencias parametrizadas en una
+   transacción por esa vía.
+2. Interpolar los valores es exactamente lo que `redshift.py` prohíbe, y con razón: el texto
+   viene de correos de terceros.
+3. El rol del cluster (`AmazonRedshiftAllCommandsFullAccess`) tiene `s3:GetObject` sobre
+   `arn:aws:s3:::*redshift*/*`, y el bucket se llama `compliance-redshift-reports-…`, así que
+   **matchea**. Sin esa coincidencia habría que tocar IAM.
+
+El `DELETE` y el `COPY` de cada tabla viajan en **una sola sentencia** con `BEGIN; … END;`:
+si el `COPY` falla, el `DELETE` se va con él y la tabla queda con los datos de ayer, que es
+mucho mejor que quedar vacía.
+
+**Con el cluster pausado se salta la corrida y lo registra; no lo enciende.** Es reporting:
+no justifica el costo, y como cada corrida rehace todo, la del día siguiente no pierde nada.
+`{"forzar": true}` lo despierta, para correrlo a mano.
+
+### Las siete tablas
+
+| Tabla | Grano | Para qué sirve |
+|---|---|---|
+| `relevo.casos` | un caso | el tablero: estado, partner, cliente, SLA |
+| `relevo.acciones` | una acción | el histórico auditable de quién hizo qué |
+| `relevo.transacciones` | una transacción de un caso | volumen y montos por partner |
+| `relevo.items` | un documento pedido | qué se pide más, y qué se entrega |
+| `relevo.solicitudes` | un intento de envío | incluye los **fallidos**, con su error |
+| `relevo.respuestas` | una respuesta del cliente | cuántos responden y con qué |
+| `relevo.devoluciones` | una devolución al partner | cierre del ciclo, parcial o completa |
+
+Columnas que valen la pena conocer en `relevo.casos`:
+
+- `horas_pedido_a_respuesta` y `horas_respuesta_a_devolucion` — los dos tramos del SLA, ya
+  calculados. Salen de las acciones, así que no pueden desincronizarse.
+- `ck_total`, `ck_pendiente`, `ck_recibido`, `ck_entregado` — el checklist resumido.
+- `devuelto_en`, `devuelto_por`, `devolucion_parcial`.
+- `snapshot_en` — de cuándo son los datos. Está en **todas** las tablas.
+
+### Tres cosas que hay que saber al consultarlo
+
+1. **Los timestamps son UTC sin zona.** Conviven cuatro formatos en el módulo (el
+   `internalDate` de Gmail en milisegundos, el ISO con offset del registro de acciones, el
+   `gmtime` del depósito, y strings vacíos); todos se normalizan a UTC. Lo que no se pudo leer
+   queda **NULL**, nunca una fecha inventada.
+2. **`items.estado = 'sin_checklist'`** significa que el pedido nunca salió desde acá, así que
+   nadie registró estado por ítem. No es "pendiente": es "no se sabe", y son cosas distintas.
+   Con el envío apagado, **todos** los ítems están así.
+3. **`solicitudes` y `respuestas` van completas, no filtradas por caso.** Una solicitud que
+   falló puede apuntar a un caso que ya no aparece en la vista, y perderla sería perder justo
+   el intento que hay que revisar.
+
+### Medido en la primera corrida real (2026-09-09)
+
+| | |
+|---|---|
+| Casos / transacciones / ítems | 170 / 181 / 334 |
+| Ids duplicados | 0 (170 de 170 distintos) |
+| Partners | 4 (dLocal, Nium, Currencycloud, OZ Câmbio) |
+| Casos con cliente y correo resueltos | 150 de 170 |
+| Casos con número de caso del partner | 97 de 170 |
+| Casos sin fecha de correo | 4 — **fiel al dato**: la API también devuelve `''` ahí |
+| Armado de las filas | 0,1 s |
+| Corrida completa (DDL + 7 tablas) | 26,5 s |
+| Segunda corrida | mismos conteos, `snapshot_en` nuevo: el refresh completo no duplica |
