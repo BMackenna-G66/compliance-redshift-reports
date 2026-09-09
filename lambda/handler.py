@@ -1277,6 +1277,22 @@ def handler(event, context):  # noqa: ARG001
             logger.exception("Relevo resolución falló")
             return {"status": "error", "error": str(e)[:300]}
 
+    # ── Módulo Relevo: espejo analítico en Redshift ───────────────────────
+    # Paso 9. Lote diario: rehace el esquema `relevo` completo desde el
+    # depósito. Igual que la resolución, NO despierta el cluster por su cuenta
+    # —cada corrida rehace todo, así que saltarse un día no pierde nada— y va
+    # en su propio try para no arrastrar al resto de los reportes.
+    if report_name == "relevo_espejo":
+        try:
+            from relevo import espejo
+            resultado = espejo.correr(forzar=bool(event.get("forzar")),
+                                      solo=event.get("solo"))
+            logger.info("Relevo espejo: %s", json.dumps(resultado, default=str))
+            return resultado
+        except Exception as e:
+            logger.exception("Relevo espejo falló")
+            return {"status": "error", "error": str(e)[:300]}
+
     # ── Módulo especial: Análisis AML Individual ──────────────────────────
     if report_name == "individual_aml_analysis":
         customer_ids = event.get("customer_ids", [])

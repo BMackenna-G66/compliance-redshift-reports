@@ -2698,6 +2698,27 @@ def handler(event, context):  # noqa: ARG001
                 cfg = rapi.guardar_config("interruptores", actual, quien)
                 return resp(200, {"interruptores": cfg.get("interruptores"),
                                   "cambiado": clave, "por": quien})
+            # POST /relevo/casos/{id}/devolucion — el paso 9. Sin
+            # "registrar": true sólo compone la respuesta al partner y no
+            # escribe nada. No manda correo en ningún caso: el token de Gmail
+            # está en gmail.readonly, así que la devolución se copia a mano
+            # (decisión 10 de §16, resuelta en devolucion.py).
+            if method == "POST" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "devolucion":
+                from relevo import devolucion
+                if body.get("registrar"):
+                    return resp(200, devolucion.marcar_devuelto(
+                        parts[2], quien=body.get("quien") or body.get("actor_email", ""),
+                        nota=body.get("nota", ""),
+                        medio=body.get("medio") or "correo_manual",
+                        idioma=body.get("idioma", "")))
+                return resp(200, devolucion.previsualizar(
+                    parts[2], idioma=body.get("idioma", ""), nota=body.get("nota", "")))
+            # POST /relevo/espejo — corre el lote analítico a mano. El
+            # programado es relevo_espejo en handler.py, una vez al día.
+            if method == "POST" and parts == ["relevo", "espejo"]:
+                from relevo import espejo
+                return resp(200, espejo.correr(forzar=bool(body.get("forzar")),
+                                               solo=body.get("solo") or None))
             # POST /relevo/pedidos/lote — exige confirmado:true y respeta el tope.
             if method == "POST" and parts == ["relevo", "pedidos", "lote"]:
                 from relevo import envio

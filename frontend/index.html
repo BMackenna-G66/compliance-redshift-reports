@@ -1378,6 +1378,14 @@
                           class="text-xs px-3 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-500 text-white border border-orange-500 transition">
                           ✉️ Ver y enviar el pedido
                         </button>
+                        <!-- Paso 9: armar la devolución. Se ofrece también en
+                             respuesta_parcial porque a veces se le devuelve al
+                             partner lo que hay y se le avisa qué falta. -->
+                        <button x-show="['respuesta_recibida','respuesta_parcial','devuelto'].includes(c.estado)"
+                          @click="relevoAbrirDevolucion(c)"
+                          class="text-xs px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 text-white border border-sky-600 transition">
+                          📤 Armar la devolución al partner
+                        </button>
                         <template x-for="a in relevoAccionesDe(c.estado)" :key="a.k">
                           <button @click="relevoRegistrar(c, a.k)" :disabled="relevoAccionando"
                             class="text-xs px-3 py-1.5 rounded-lg border transition"
@@ -1385,7 +1393,8 @@
                                               : 'bg-slate-700 hover:bg-slate-600 text-slate-200 border-slate-600'"
                             x-text="a.l"></button>
                         </template>
-                        <span x-show="relevoAccionesDe(c.estado).length===0" class="text-xs text-slate-600">
+                        <span x-show="relevoAccionesDe(c.estado).length===0 && !relevoTieneBotonPropio(c.estado)"
+                          class="text-xs text-slate-600">
                           Sin acciones: este estado es terminal.
                         </span>
                       </div>
@@ -1572,6 +1581,134 @@
           </div>
         </div>
 
+        <!-- modal de devolución al partner (paso 9) -->
+        <div x-show="relevoDev.abierto" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="relevoDev.abierto=false"></div>
+          <div class="relative bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl max-h-[92vh] overflow-y-auto">
+            <div class="flex items-center justify-between px-5 py-4 border-b border-slate-700 sticky top-0 bg-slate-900">
+              <div>
+                <h3 class="text-white font-semibold">Devolución al partner</h3>
+                <p class="text-xs text-slate-500"
+                   x-text="(relevoDev.datos.partner || '') + (relevoDev.datos.para ? ' · ' + relevoDev.datos.para : ' · sin correo resuelto')"></p>
+              </div>
+              <button @click="relevoDev.abierto=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+            </div>
+            <div class="p-5">
+              <div x-show="relevoDev.cargando" class="text-slate-400 text-sm">Componiendo la respuesta…</div>
+              <div x-show="!relevoDev.cargando">
+                <div x-show="relevoDev.datos.error"
+                     class="mb-3 px-3 py-2 rounded-lg bg-red-900/30 border border-red-800 text-red-200 text-xs"
+                     x-text="'🚫 ' + relevoDev.datos.error"></div>
+                <div x-show="relevoDev.datos.ya_devuelto"
+                     class="mb-3 px-3 py-2 rounded-lg bg-sky-900/30 border border-sky-800 text-sky-200 text-xs"
+                     x-text="'ℹ️ ' + relevoDev.datos.motivo_devuelto + '. Podés volver a copiar el texto, pero no se registra de nuevo.'"></div>
+                <template x-for="(a,i) in (relevoDev.datos.avisos || [])" :key="'da'+i">
+                  <div class="mb-2 px-3 py-2 rounded-lg bg-yellow-900/30 border border-yellow-800 text-yellow-200 text-xs" x-text="'⚠ ' + a"></div>
+                </template>
+
+                <!-- idioma y asunto -->
+                <div class="flex flex-wrap items-end gap-3 mb-4">
+                  <div>
+                    <p class="text-xs text-slate-500 mb-1">Idioma de la respuesta</p>
+                    <div class="flex gap-1">
+                      <template x-for="i in (relevoDev.datos.idiomas || ['en','es','pt'])" :key="i">
+                        <button @click="relevoDev.idioma = i; relevoCargarDevolucion()"
+                          class="text-xs px-3 py-1.5 rounded-lg border transition uppercase"
+                          :class="(relevoDev.datos.idioma||'')===i
+                            ? 'bg-sky-700 text-white border-sky-600'
+                            : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'"
+                          x-text="i"></button>
+                      </template>
+                    </div>
+                  </div>
+                  <div class="flex-1 min-w-[240px]">
+                    <p class="text-xs text-slate-500 mb-1">Asunto (responde el hilo del partner)</p>
+                    <p class="text-slate-200 text-xs bg-slate-800 rounded-lg px-3 py-2 break-words"
+                       x-text="relevoDev.datos.asunto || '—'"></p>
+                  </div>
+                  <a x-show="relevoDev.datos.en_respuesta_a?.url_gmail"
+                     :href="relevoDev.datos.en_respuesta_a?.url_gmail" target="_blank" rel="noopener"
+                     class="text-xs px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">
+                    Abrir el hilo en Gmail ↗
+                  </a>
+                </div>
+
+                <!-- checklist resumido -->
+                <div class="grid md:grid-cols-3 gap-3 mb-4 text-xs">
+                  <div class="bg-slate-800 rounded-lg p-3">
+                    <p class="text-slate-500 mb-1">Entregado</p>
+                    <p class="text-green-300" x-text="(relevoDev.datos.entregados||[]).length + ' ítem(s)'"></p>
+                  </div>
+                  <div class="bg-slate-800 rounded-lg p-3">
+                    <p class="text-slate-500 mb-1">Pendiente</p>
+                    <p :class="(relevoDev.datos.pendientes||[]).length ? 'text-yellow-300' : 'text-slate-300'"
+                       x-text="(relevoDev.datos.pendientes||[]).length + ' ítem(s)'"></p>
+                  </div>
+                  <div class="bg-slate-800 rounded-lg p-3">
+                    <p class="text-slate-500 mb-1">Archivos del cliente</p>
+                    <p class="text-slate-200" x-text="(relevoDev.datos.adjuntos||[]).length + ' archivo(s)'"></p>
+                  </div>
+                </div>
+
+                <!-- archivos: se bajan de acá, NO van como enlace en el correo -->
+                <div class="mb-4" x-show="(relevoDev.datos.adjuntos||[]).length">
+                  <p class="text-xs text-slate-500 mb-1">Bajá los archivos y adjuntalos vos al correo:</p>
+                  <div class="space-y-1">
+                    <template x-for="(a,i) in (relevoDev.datos.adjuntos||[])" :key="'f'+i">
+                      <div class="flex items-center gap-2 bg-slate-900/60 border border-slate-700 rounded px-2 py-1.5 text-xs">
+                        <span class="text-slate-200 flex-1 truncate" x-text="a.nombre"></span>
+                        <span class="text-slate-500" x-text="relevoTamano(a.tamano)"></span>
+                        <span class="text-slate-600" x-text="(a.cuando||'').slice(0,10)"></span>
+                        <a :href="a.url" target="_blank" rel="noopener" x-show="a.url"
+                           class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200">Bajar</a>
+                        <span x-show="!a.url" class="text-red-400" x-text="a.error_enlace || 'sin enlace'"></span>
+                      </div>
+                    </template>
+                  </div>
+                  <p class="text-[11px] text-yellow-300/80 mt-1.5" x-text="relevoDev.datos.nota_enlaces"></p>
+                </div>
+
+                <!-- nota del analista -->
+                <div class="mb-3">
+                  <p class="text-xs text-slate-500 mb-1">Nota para el partner (opcional, texto libre)</p>
+                  <textarea x-model="relevoDev.nota" rows="2"
+                    @change="relevoCargarDevolucion()"
+                    placeholder="Ej: el cliente confirmó el origen de los fondos por teléfono el 04/09."
+                    class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"></textarea>
+                </div>
+
+                <!-- el texto a copiar -->
+                <div class="flex items-center justify-between mb-1">
+                  <p class="text-xs text-slate-500">Respuesta lista para copiar:</p>
+                  <button @click="relevoCopiarDevolucion()"
+                    class="text-xs px-3 py-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600">
+                    <span x-text="relevoDev.copiado ? '✓ Copiado' : '⧉ Copiar el texto'"></span>
+                  </button>
+                </div>
+                <pre class="bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 overflow-auto whitespace-pre-wrap"
+                     style="max-height:340px" x-text="relevoDev.datos.texto || ''"></pre>
+              </div>
+            </div>
+            <div class="flex items-center justify-between gap-3 px-5 py-4 border-t border-slate-700 sticky bottom-0 bg-slate-900">
+              <p class="text-xs text-slate-500">
+                Esto no manda nada: el correo lo mandás vos. «Marcar devuelto» sólo registra el
+                cierre del caso, con tu nombre y qué se devolvió.
+              </p>
+              <div class="flex gap-2">
+                <button @click="relevoDev.abierto=false"
+                  class="text-xs px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg">Cerrar</button>
+                <button @click="relevoMarcarDevuelto()"
+                  :disabled="relevoDev.datos.ya_devuelto || relevoDev.registrando || !!relevoDev.datos.error"
+                  class="text-xs px-4 py-2 rounded-lg text-white transition"
+                  :class="(relevoDev.datos.ya_devuelto || relevoDev.datos.error)
+                    ? 'bg-slate-700 cursor-not-allowed opacity-50' : 'bg-sky-700 hover:bg-sky-600'">
+                  <span :class="relevoDev.registrando ? 'spin inline-block' : ''">📤</span> Marcar devuelto
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- ── COLA DE RECONTACTO ── -->
         <div x-show="relevoSub==='vencidos'">
           <div class="flex items-center gap-3 mb-3 flex-wrap">
@@ -1678,12 +1815,44 @@
             </div>
           </div>
 
+          <!-- espejo analítico (paso 9) -->
+          <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 mb-5 max-w-3xl">
+            <div class="flex items-start justify-between gap-4">
+              <div class="flex-1">
+                <h4 class="text-sm text-white font-medium mb-1">Espejo analítico en Redshift</h4>
+                <p class="text-xs text-slate-500">
+                  Lote diario que rehace el esquema <code class="text-slate-400">relevo</code> completo
+                  desde el depósito, para poder consultarlo con SQL. No es la fuente de verdad: es una
+                  copia, y cada corrida la reemplaza entera.
+                </p>
+                <p class="text-xs text-slate-500 mt-2">
+                  Si el clúster está pausado se salta la corrida y lo dice: es reporting, no justifica
+                  encenderlo. «Forzar» lo despierta.
+                </p>
+              </div>
+              <div class="flex flex-col gap-2">
+                <button @click="relevoCorrerEspejo(false)" :disabled="relevoEspejoCorriendo"
+                  class="text-xs px-4 py-2 rounded-lg text-white whitespace-nowrap bg-slate-700 hover:bg-slate-600 border border-slate-600">
+                  <span :class="relevoEspejoCorriendo ? 'spin inline-block' : ''">↻</span> Correr ahora
+                </button>
+                <button @click="relevoCorrerEspejo(true)" :disabled="relevoEspejoCorriendo"
+                  class="text-xs px-4 py-2 rounded-lg text-yellow-200 whitespace-nowrap bg-yellow-900/30 hover:bg-yellow-900/50 border border-yellow-800">
+                  Forzar (enciende el clúster)
+                </button>
+              </div>
+            </div>
+            <pre x-show="relevoEspejoResultado" class="mt-3 bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-300 overflow-auto"
+              style="max-height:260px" x-text="relevoEspejoResultado"></pre>
+          </div>
+
           <!-- mantenedores -->
           <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 max-w-3xl">
-            <h4 class="text-sm text-white font-medium mb-1">Mantenedores de recontacto</h4>
+            <h4 class="text-sm text-white font-medium mb-1">Mantenedores de recontacto e idioma</h4>
             <p class="text-xs text-slate-500 mb-3">
-              Precedencia: el plazo que escribió el partner en su correo gana; si no hay, la política del
-              partner; si no hay, la general.
+              Recontacto: el plazo que escribió el partner en su correo gana; si no hay, la política del
+              partner (<code class="text-slate-400">politica_&lt;partner&gt;</code>); si no hay, la general.
+              Idioma de la devolución: <code class="text-slate-400">idioma_&lt;partner&gt;</code>, después
+              <code class="text-slate-400">idioma_general</code>, y por defecto inglés.
             </p>
             <pre class="text-xs text-slate-300 overflow-auto" style="max-height:240px"
               x-text="JSON.stringify(relevoConfig, null, 2)"></pre>
@@ -6556,6 +6725,10 @@
       relevoPedido: { abierto: false, cargando: false, enviando: false, caso: null, para: '', datos: {} },
       relevoCola: [], relevoSoloColaVencidos: true, relevoGuardandoSw: false,
       relevoPruebaResultado: '',
+      // Paso 9. `idioma` vacío = el que decida el backend por partner.
+      relevoDev: { abierto: false, cargando: false, registrando: false, copiado: false,
+                   caso: null, idioma: '', nota: '', datos: {} },
+      relevoEspejoCorriendo: false, relevoEspejoResultado: '',
       // Los estados los define el motor (§7). Se listan acá sólo para el filtro.
       relevoEstados: ['informativo','sin_cliente','sin_correo','listo_para_pedir',
                       'pedido_enviado','recontactado','respuesta_parcial',
@@ -6600,10 +6773,19 @@
           respuesta_parcial:  [{k:'recontactado', l:'Recontactar por lo que falta'},
                                {k:'respuesta_recibida', l:'Respondió todo'},
                                {k:'sin_respuesta', l:'Dar por sin respuesta', peligro:true}],
-          respuesta_recibida: [{k:'devuelto', l:'Marcar devuelto al partner'}],
+          // `devuelto` NO está acá desde el paso 9: se registra desde el
+          // panel de devolución, que guarda además QUÉ se devolvió. Dejar los
+          // dos caminos garantizaba que se usara el que no deja rastro.
+          respuesta_recibida: [],
           devuelto:           [{k:'cerrado', l:'Cerrar caso'}],
         };
         return M[estado] || [];
+      },
+      // Estados que tienen su propio botón arriba, así que un "sin acciones"
+      // en pantalla sería falso.
+      relevoTieneBotonPropio(estado) {
+        return ['listo_para_pedir', 'respuesta_recibida', 'respuesta_parcial',
+                'devuelto'].includes(estado);
       },
       // §7: la etapa del cliente es la del caso MENOS avanzado que siga vivo.
       // Lo que hay que mirar es si al cliente le falta algo, no si algo avanzó.
@@ -6788,6 +6970,81 @@
         const d = await this.api('POST', '/relevo/probar', this.relevoPrueba);
         this.relevoProbando = false;
         this.relevoPruebaResultado = d ? JSON.stringify(d, null, 2) : 'Sin respuesta.';
+      },
+
+      // ── paso 9: devolución al partner ──────────────────────────────
+      // No manda correo: compone la respuesta y la persona la pega en Gmail.
+      // El token está en gmail.readonly, así que no hay envío ni borrador.
+      relevoAbrirDevolucion(c) {
+        this.relevoDev = { abierto: true, cargando: true, registrando: false, copiado: false,
+                           caso: c, idioma: '', nota: '', datos: {} };
+        this.relevoCargarDevolucion();
+      },
+
+      async relevoCargarDevolucion() {
+        const d0 = this.relevoDev;
+        if (!d0.caso) return;
+        d0.cargando = true;
+        d0.copiado = false;
+        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(d0.caso.id) + '/devolucion',
+                                 { idioma: d0.idioma, nota: d0.nota });
+        this.relevoDev.cargando = false;
+        this.relevoDev.datos = d || { error: 'sin respuesta del servidor' };
+      },
+
+      async relevoCopiarDevolucion() {
+        const t = this.relevoDev.datos.texto || '';
+        if (!t) return;
+        try {
+          await navigator.clipboard.writeText(t);
+          this.relevoDev.copiado = true;
+          setTimeout(() => { this.relevoDev.copiado = false; }, 2500);
+        } catch (e) {
+          // Sin permiso de portapapeles el texto sigue seleccionable a mano:
+          // avisar es mejor que dejar un botón que no hace nada visible.
+          this.globalError = 'El navegador no dejó copiar; seleccioná el texto a mano.';
+        }
+      },
+
+      async relevoMarcarDevuelto() {
+        const d0 = this.relevoDev;
+        const pend = (d0.datos.pendientes || []).length;
+        const aviso = pend
+          ? `Quedan ${pend} ítem(s) sin entregar: la devolución queda registrada como PARCIAL.\n\n`
+          : '';
+        if (!confirm(aviso + '¿Ya mandaste el correo al partner? Esto sólo registra el cierre '
+                     + 'del caso con tu nombre; no envía nada.')) return;
+        d0.registrando = true;
+        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(d0.caso.id) + '/devolucion',
+                                 { registrar: true, idioma: d0.datos.idioma || d0.idioma,
+                                   nota: d0.nota, medio: 'correo_manual',
+                                   quien: this.currentUserEmail || this.userEmail || '' });
+        this.relevoDev.registrando = false;
+        if (d?.registrado) {
+          this.relevoDev.abierto = false;
+          this.relevoDetalle = null;
+          await this.relevoCargar(true);
+        } else if (d?.error) {
+          this.globalError = 'No se registró la devolución: ' + d.error;
+        }
+      },
+
+      relevoTamano(n) {
+        const b = Number(n || 0);
+        if (!b) return '';
+        if (b < 1024) return b + ' B';
+        if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
+        return (b / 1024 / 1024).toFixed(1) + ' MB';
+      },
+
+      async relevoCorrerEspejo(forzar) {
+        if (forzar && !confirm('Forzar enciende el clúster de Redshift si está pausado, '
+                               + 'y eso cuesta. ¿Seguimos?')) return;
+        this.relevoEspejoCorriendo = true;
+        this.relevoEspejoResultado = '';
+        const d = await this.api('POST', '/relevo/espejo', { forzar: !!forzar });
+        this.relevoEspejoCorriendo = false;
+        this.relevoEspejoResultado = d ? JSON.stringify(d, null, 2) : 'Sin respuesta.';
       },
 
       async api(method, path, body = null) {

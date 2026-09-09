@@ -633,6 +633,8 @@
       {
         "item": "nombre_remitente",
         "es": "Nombre completo del remitente",
+        "en": "Sender's full legal name",
+        "pt": "Nome completo do remetente",
         "patrones": [
           "full legal name of sender",
           "full legal name including",
@@ -643,6 +645,8 @@
       {
         "item": "razon_social",
         "es": "Razón social del remitente",
+        "en": "Sender's registered company name",
+        "pt": "Razão social do remetente",
         "patrones": [
           "full legal name of sender company",
           "registered name",
@@ -652,6 +656,8 @@
       {
         "item": "documento_identidad",
         "es": "Documento de identidad (frente y dorso)",
+        "en": "Identity document (front and back)",
+        "pt": "Documento de identidade (frente e verso)",
         "patrones": [
           "gov.?t issued id",
           "government issued id",
@@ -666,6 +672,8 @@
       {
         "item": "fecha_nacimiento",
         "es": "Fecha de nacimiento",
+        "en": "Date of birth",
+        "pt": "Data de nascimento",
         "patrones": [
           "date of birth",
           "fecha de nacimiento"
@@ -674,6 +682,8 @@
       {
         "item": "lugar_nacimiento",
         "es": "Lugar de nacimiento",
+        "en": "Place of birth",
+        "pt": "Local de nascimento",
         "patrones": [
           "place of birth",
           "lugar de nacimiento"
@@ -682,6 +692,8 @@
       {
         "item": "ciudadania",
         "es": "Ciudadanía / nacionalidad",
+        "en": "Citizenship / nationality",
+        "pt": "Cidadania / nacionalidade",
         "patrones": [
           "citizenship",
           "nationality",
@@ -692,6 +704,8 @@
       {
         "item": "domicilio",
         "es": "Domicilio",
+        "en": "Residential address",
+        "pt": "Endereço",
         "patrones": [
           "physical address",
           "registered address",
@@ -703,6 +717,8 @@
       {
         "item": "giro_negocio",
         "es": "Giro del negocio",
+        "en": "Nature of business",
+        "pt": "Ramo de atividade",
         "patrones": [
           "nature of.*business",
           "business activity",
@@ -713,6 +729,8 @@
       {
         "item": "sitio_web",
         "es": "Sitio web",
+        "en": "Website",
+        "pt": "Site",
         "patrones": [
           "^website",
           "\\bwebsite\\b",
@@ -722,6 +740,8 @@
       {
         "item": "relacion_beneficiario",
         "es": "Relación entre remitente y beneficiario",
+        "en": "Relationship between sender and beneficiary",
+        "pt": "Relação entre remetente e beneficiário",
         "patrones": [
           "relationship between the sender and the beneficiar",
           "nature of the relationship",
@@ -731,6 +751,8 @@
       {
         "item": "motivo_transaccion",
         "es": "Motivo de la transacción",
+        "en": "Purpose of the transaction",
+        "pt": "Motivo da transação",
         "patrones": [
           "reason for the transaction",
           "purpose of (?:the )?(?:payment|transaction|transfer)",
@@ -741,6 +763,8 @@
       {
         "item": "origen_fondos",
         "es": "Origen de los fondos",
+        "en": "Source of funds",
+        "pt": "Origem dos recursos",
         "patrones": [
           "source of funds",
           "bank statement reflecting",
@@ -750,6 +774,8 @@
       {
         "item": "remitente_final",
         "es": "Confirmación del remitente final",
+        "en": "Confirmation of the ultimate sender",
+        "pt": "Confirmação do remetente final",
         "patrones": [
           "ultimate sender",
           "beneficial owner",
@@ -759,6 +785,8 @@
       {
         "item": "nombre_beneficiario",
         "es": "Nombre del beneficiario",
+        "en": "Beneficiary's name",
+        "pt": "Nome do beneficiário",
         "patrones": [
           "beneficiary name",
           "nombre del beneficiario"
@@ -767,6 +795,8 @@
       {
         "item": "factura_contrato",
         "es": "Factura o contrato de respaldo",
+        "en": "Supporting invoice or contract",
+        "pt": "Fatura ou contrato de respaldo",
         "patrones": [
           "invoice",
           "contract",
