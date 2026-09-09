@@ -7037,14 +7037,32 @@
         return (b / 1024 / 1024).toFixed(1) + ' MB';
       },
 
+      // El lote no corre en la API: se dispara a la Lambda de reportes y el
+      // resultado se lee después. Medido: la corrida completa se pasaba de
+      // los 30 s del API Gateway.
       async relevoCorrerEspejo(forzar) {
         if (forzar && !confirm('Forzar enciende el clúster de Redshift si está pausado, '
                                + 'y eso cuesta. ¿Seguimos?')) return;
         this.relevoEspejoCorriendo = true;
-        this.relevoEspejoResultado = '';
+        this.relevoEspejoResultado = 'Disparando el lote…';
+        const antes = (await this.api('GET', '/relevo/espejo'))?.ultima?.arrancado_en || '';
         const d = await this.api('POST', '/relevo/espejo', { forzar: !!forzar });
+        if (!d) { this.relevoEspejoCorriendo = false; this.relevoEspejoResultado = 'Sin respuesta.'; return; }
+        this.relevoEspejoResultado = 'Corriendo en la Lambda de reportes…';
+        // Se espera un resultado NUEVO: comparar contra el anterior evita
+        // mostrar la corrida de ayer como si fuera ésta.
+        for (let i = 0; i < 40; i++) {
+          await new Promise(r => setTimeout(r, 3000));
+          const u = (await this.api('GET', '/relevo/espejo'))?.ultima;
+          if (u && u.arrancado_en && u.arrancado_en !== antes) {
+            this.relevoEspejoCorriendo = false;
+            this.relevoEspejoResultado = JSON.stringify(u, null, 2);
+            return;
+          }
+        }
         this.relevoEspejoCorriendo = false;
-        this.relevoEspejoResultado = d ? JSON.stringify(d, null, 2) : 'Sin respuesta.';
+        this.relevoEspejoResultado = 'El lote se disparó pero no dejó resultado en 2 minutos. '
+          + 'Revisá los logs de la Lambda compliance-redshift-reports.';
       },
 
       async api(method, path, body = null) {

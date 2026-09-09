@@ -191,11 +191,44 @@ def _cliente_de(caso):
     return cl.get("cliente") if isinstance(cl.get("cliente"), dict) else cl
 
 
+def _checklists():
+    """{caso_id: documentos} leyendo la colección UNA vez.
+
+    Antes esto era `checklist.leer(cid)` + `checklist.resumen(cid)` por caso:
+    dos GET a S3 secuenciales × 163 casos ≈ 25 s, medido cuando el lote se
+    pasó de los 30 s del API Gateway. `deposito.todos` lee en paralelo y de
+    una sola vez. Es el mismo arreglo que vista.py le hizo al caché de
+    clientes por la misma razón.
+    """
+    fuera = {}
+    if not deposito.activo():
+        return fuera
+    try:
+        for doc in deposito.todos(checklist.COLECCION):
+            cid = doc.get("caso_id")
+            if cid:
+                fuera[cid] = doc.get("documentos") or {}
+    except Exception as e:
+        print(f"[relevo/espejo] no pude leer los checklists: {e}")
+    return fuera
+
+
+def _resumen(docs):
+    """Igual que checklist.resumen pero sobre documentos ya en memoria."""
+    r = {e: 0 for e in checklist.ESTADOS}
+    for d in (docs or {}).values():
+        e = d.get("estado") or checklist.PENDIENTE
+        r[e] = r.get(e, 0) + 1
+    r["total"] = len(docs or {})
+    return r
+
+
 def construir(datos, ahora=None):
     """{tabla: [filas]} a partir de la vista completa. No toca la red."""
     ahora = ahora or time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     filas = {t: [] for t in TABLAS}
     lista = datos.get("casos") or []
+    checklists = _checklists()
 
     # Las devoluciones se leen una vez, no por caso: son pocas y están en su
     # propia colección desde el paso 9.
@@ -212,8 +245,8 @@ def construir(datos, ahora=None):
         cid = c.get("id") or ""
         d = _cliente_de(c) or {}
         seg = c.get("seguimiento") or {}
-        res = checklist.resumen(cid)
-        ck_docs = (checklist.leer(cid).get("documentos") or {})
+        ck_docs = checklists.get(cid) or {}
+        res = _resumen(ck_docs)
 
         acciones = c.get("acciones") or []
         primer_pedido = next((_ts(a.get("cuando")) for a in acciones
@@ -428,6 +461,36 @@ def _estado_cluster(cfg):
     return r["Clusters"][0]["ClusterStatus"]
 
 
+CLAVE_ULTIMA = "ultima"
+COL_CORRIDAS = "espejo"
+
+
+def _guardar_corrida(r):
+    """Deja el resultado de la última corrida donde se pueda leer después.
+
+    El lote corre en la Lambda de reportes, disparado en Event (asíncrono):
+    quien lo dispara no recibe la respuesta. Sin esto, la única forma de saber
+    si el espejo se actualizó sería leer CloudWatch, y entonces nadie lo
+    mira. También sirve para responder «¿de cuándo son estos datos?».
+    """
+    try:
+        if deposito.activo():
+            deposito.poner(COL_CORRIDAS, CLAVE_ULTIMA, r)
+    except Exception as e:
+        print(f"[relevo/espejo] no pude guardar el resultado de la corrida: {e}")
+    return r
+
+
+def ultima():
+    """El resultado de la última corrida, o None si nunca corrió."""
+    if not deposito.activo():
+        return None
+    try:
+        return deposito.obtener(COL_CORRIDAS, CLAVE_ULTIMA)
+    except Exception:
+        return None
+
+
 def correr(forzar=False, solo=None):
     """El lote. Devuelve el detalle de qué escribió y qué no.
 
@@ -435,7 +498,9 @@ def correr(forzar=False, solo=None):
     el cluster si está pausado.
     """
     arranque = time.time()
-    r = {"esquema": ESQUEMA, "tablas": {}, "error": None, "saltado": False}
+    r = {"esquema": ESQUEMA, "tablas": {}, "error": None, "saltado": False,
+         "arrancado_en": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+         "forzado": bool(forzar)}
 
     if not deposito.activo():
         r["error"] = "el depósito de S3 no está activo (falta RELEVO_BUCKET)"
@@ -455,7 +520,8 @@ def correr(forzar=False, solo=None):
             r["error"] = ("el cluster está pausado y no se despierta por un lote de "
                           "reporting: la próxima corrida rehace todo igual. "
                           "Con forzar=true se enciende.")
-            return r
+            r["segundos"] = round(time.time() - arranque, 1)
+            return _guardar_corrida(r)
         import boto3
         boto3.client("redshift", region_name=cfg["region"]).resume_cluster(
             ClusterIdentifier=cfg["cluster"])
@@ -469,19 +535,27 @@ def correr(forzar=False, solo=None):
     datos, meta = vista.completa()
     if datos is None:
         r["error"] = f"no hay snapshot de la vista: {meta.get('nota')}"
-        return r
+        r["segundos"] = round(time.time() - arranque, 1)
+        return _guardar_corrida(r)
     r["meta_vista"] = meta
 
+    t0 = time.time()
     filas = construir(datos)
     r["filas"] = {t: len(v) for t, v in filas.items()}
+    r["segundos_armado"] = round(time.time() - t0, 1)
 
     try:
         for sql in ddl():
             _correr(sql, cfg, cliente)
         r["ddl"] = "ok"
     except Exception as e:
-        r["error"] = f"DDL: {str(e)[:300]}"
-        return r
+        detalle = str(e)[:300]
+        if "not available" in detalle:
+            detalle += (" — el cluster parece pausado y no se pudo verificar "
+                        "antes (ver aviso_estado)")
+        r["error"] = f"DDL: {detalle}"
+        r["segundos"] = round(time.time() - arranque, 1)
+        return _guardar_corrida(r)
 
     rol = None
     for tabla, v in filas.items():
@@ -516,4 +590,4 @@ def correr(forzar=False, solo=None):
     if fallidas:
         r["error"] = f"fallaron {len(fallidas)} tabla(s): {', '.join(fallidas)}"
     r["segundos"] = round(time.time() - arranque, 1)
-    return r
+    return _guardar_corrida(r)

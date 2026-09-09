@@ -2713,12 +2713,31 @@ def handler(event, context):  # noqa: ARG001
                         idioma=body.get("idioma", "")))
                 return resp(200, devolucion.previsualizar(
                     parts[2], idioma=body.get("idioma", ""), nota=body.get("nota", "")))
-            # POST /relevo/espejo — corre el lote analítico a mano. El
-            # programado es relevo_espejo en handler.py, una vez al día.
-            if method == "POST" and parts == ["relevo", "espejo"]:
+            # GET  /relevo/espejo — el resultado de la última corrida del lote.
+            if method == "GET" and parts == ["relevo", "espejo"]:
                 from relevo import espejo
-                return resp(200, espejo.correr(forzar=bool(body.get("forzar")),
-                                               solo=body.get("solo") or None))
+                u = espejo.ultima()
+                return resp(200, {"ultima": u, "corriendo": u is None,
+                                  "nota": ("el lote todavía no corrió nunca"
+                                           if u is None else "")})
+            # POST /relevo/espejo — dispara el lote analítico a mano.
+            #
+            # Va en Event (asíncrono) a la Lambda de reportes y NO se corre
+            # acá: medido, el lote completo se pasaba de los 30 s del API
+            # Gateway. El runner tiene 900 s y es donde corre el programado.
+            # El resultado se lee con GET /relevo/espejo.
+            if method == "POST" and parts == ["relevo", "espejo"]:
+                lambda_client.invoke(
+                    FunctionName=REPORT_LAMBDA_NAME,
+                    InvocationType="Event",
+                    Payload=json.dumps({"report_name": "relevo_espejo",
+                                        "forzar": bool(body.get("forzar")),
+                                        "solo": body.get("solo") or None}),
+                )
+                return resp(202, {"disparado": True,
+                                  "forzar": bool(body.get("forzar")),
+                                  "nota": "el lote corre en la Lambda de reportes; "
+                                          "el resultado aparece en GET /relevo/espejo"})
             # POST /relevo/pedidos/lote — exige confirmado:true y respeta el tope.
             if method == "POST" and parts == ["relevo", "pedidos", "lote"]:
                 from relevo import envio

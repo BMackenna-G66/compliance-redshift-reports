@@ -189,6 +189,57 @@ class Contenido(unittest.TestCase):
         self.assertEqual(i["item"], "origen_fondos")
         self.assertEqual(i["estado"], "sin_checklist")
 
+    def _con_checklist(self):
+        """El checklist se lee de la colección completa, no caso por caso.
+        Si la indexación por caso_id se rompe, TODOS los casos parecen no
+        tener checklist y nada falla a la vista: de ahí este test."""
+        self.dep.datos[("checklist", "k1")] = {
+            "caso_id": "nium:caso:1088170", "ref": "abc12345",
+            "documentos": {
+                "origen_fondos": {"etiqueta": "Origen de los fondos",
+                                  "estado": "entregado", "quien": "ana@global66.com",
+                                  "cuando": "2026-09-04 10:00:00"},
+                "documento_identidad": {"etiqueta": "Documento de identidad",
+                                        "estado": "pendiente", "quien": "",
+                                        "cuando": "2026-09-02 09:00:00"},
+            },
+        }
+        return self._filas()
+
+    def test_el_checklist_se_indexa_por_caso(self):
+        items = self._con_checklist()["items"]
+        self.assertEqual(len(items), 2)
+        por_clave = {i["item"]: i for i in items}
+        self.assertEqual(por_clave["origen_fondos"]["estado"], "entregado")
+        self.assertEqual(por_clave["origen_fondos"]["quien"], "ana@global66.com")
+        self.assertEqual(por_clave["documento_identidad"]["estado"], "pendiente")
+        self.assertNotIn("sin_checklist", {i["estado"] for i in items})
+
+    def test_los_conteos_del_checklist_llegan_al_caso(self):
+        c = self._con_checklist()["casos"][0]
+        self.assertEqual(c["ck_total"], 2)
+        self.assertEqual(c["ck_entregado"], 1)
+        self.assertEqual(c["ck_pendiente"], 1)
+        # El 0 SÍ va: "cero documentos en recibido" es un hecho, no una
+        # ausencia. Sólo None y "" se omiten para que queden NULL.
+        self.assertEqual(c["ck_recibido"], 0)
+
+    def test_un_booleano_falso_se_guarda_como_falso_y_no_como_null(self):
+        """`vencido: False` omitido sería un caso vencido en el reporte."""
+        c = self._filas()["casos"][0]
+        self.assertIs(c["vencido"], False)
+        self.assertIs(c["agotado"], False)
+        self.assertIs(c["devolucion_parcial"], False)
+
+    def test_un_checklist_de_otro_caso_no_se_mezcla(self):
+        self.dep.datos[("checklist", "k9")] = {
+            "caso_id": "dlocal:rmt:99999",
+            "documentos": {"domicilio": {"etiqueta": "Domicilio", "estado": "recibido"}},
+        }
+        items = self._con_checklist()["items"]
+        self.assertEqual({i["caso_id"] for i in items}, {"nium:caso:1088170"})
+        self.assertNotIn("domicilio", {i["item"] for i in items})
+
     def test_las_solicitudes_van_completas_no_por_caso(self):
         """Una solicitud fallida puede no tener caso en la vista; perderla
         sería perder justo el intento que hay que revisar."""
