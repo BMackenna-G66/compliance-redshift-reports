@@ -2701,17 +2701,20 @@ def handler(event, context):  # noqa: ARG001
             # POST /relevo/interruptores — prender o apagar el envío. Es la
             # única vía: el interruptor arranca apagado y sólo una persona lo
             # mueve, con su nombre registrado.
+            # GET  /relevo/interruptores — el tablero completo, con autoría.
+            if method == "GET" and parts == ["relevo", "interruptores"]:
+                from relevo import interruptores as sw
+                return resp(200, sw.estado())
+            # POST /relevo/interruptores — mueve uno. Exige autor y sólo
+            # acepta claves del catálogo: un typo no puede crear un
+            # interruptor fantasma que nadie mira y que no apaga nada.
             if method == "POST" and parts == ["relevo", "interruptores"]:
-                quien = (body.get("quien") or body.get("actor_email") or "").strip()
-                if not quien:
-                    return resp(400, {"error": "quien es requerido: mover este interruptor "
-                                               "habilita escribirle a clientes reales"})
-                clave = (body.get("clave") or "envio_general").strip()
-                actual = dict(rapi.leer_config().get("interruptores") or {})
-                actual[clave] = bool(body.get("valor"))
-                cfg = rapi.guardar_config("interruptores", actual, quien)
-                return resp(200, {"interruptores": cfg.get("interruptores"),
-                                  "cambiado": clave, "por": quien})
+                from relevo import interruptores as sw
+                r = sw.cambiar(
+                    (body.get("clave") or "envio_general").strip(),
+                    bool(body.get("valor")),
+                    quien=body.get("quien") or body.get("actor_email", ""))
+                return resp(400 if r.get("error") else 200, r)
             # POST /relevo/casos/{id}/devolucion — el paso 9. Sin
             # "registrar": true sólo compone la respuesta al partner y no
             # escribe nada. No manda correo en ningún caso: el token de Gmail

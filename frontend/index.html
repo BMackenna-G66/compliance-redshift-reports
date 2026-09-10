@@ -1865,48 +1865,113 @@
 
         <!-- ── 5. CONFIGURACIÓN ── -->
         <div x-show="relevoSub==='config'">
-          <!-- EL INTERRUPTOR -->
-          <div class="rounded-xl border p-4 mb-5 max-w-3xl"
-            :class="relevoEnvioActivo() ? 'bg-red-950/40 border-red-800' : 'bg-slate-800 border-slate-700'">
-            <div class="flex items-start justify-between gap-4">
-              <div class="flex-1">
-                <h3 class="text-white font-semibold flex items-center gap-2">
-                  <span x-text="relevoEnvioActivo() ? '🔴' : '⚪'"></span>
-                  Envío de correos al cliente
-                </h3>
-                <p class="text-xs mt-1" :class="relevoEnvioActivo() ? 'text-red-200' : 'text-slate-400'"
-                   x-text="relevoEnvioActivo()
-                     ? 'ACTIVO — los analistas pueden escribirle a clientes reales.'
-                     : 'APAGADO — ningún correo sale, ni a mano ni por lote.'"></p>
-                <p class="text-xs text-slate-500 mt-2">
-                  Ningún proceso programado envía: la ingesta, el snapshot, la recepción y la resolución
-                  no pueden contactar a nadie. Este interruptor sólo habilita los botones que aprieta una persona.
+          <!-- ── EL TABLERO ── un interruptor por cosa, con autor ── -->
+          <div class="rounded-xl border p-4 mb-5 max-w-4xl"
+            :class="relevoSwProcesosApagados().length ? 'bg-yellow-950/30 border-yellow-800'
+                  : relevoSwValor('envio_general') ? 'bg-red-950/30 border-red-800'
+                  : 'bg-slate-800 border-slate-700'">
+            <div class="flex items-start justify-between gap-4 mb-1">
+              <div>
+                <h3 class="text-white font-semibold">Tablero de interruptores</h3>
+                <p class="text-xs text-slate-400 mt-0.5">
+                  Cada uno se prende y apaga acá, y queda con el nombre de quien lo movió.
                 </p>
               </div>
-              <button @click="relevoToggleEnvio()" :disabled="relevoGuardandoSw"
-                class="text-xs px-4 py-2 rounded-lg text-white whitespace-nowrap transition"
-                :class="relevoEnvioActivo() ? 'bg-red-700 hover:bg-red-600' : 'bg-green-700 hover:bg-green-600'">
-                <span :class="relevoGuardandoSw ? 'spin inline-block' : ''"></span>
-                <span x-text="relevoEnvioActivo() ? 'Apagar el envío' : 'Activar el envío'"></span>
+              <button @click="relevoCargarSw()" :disabled="relevoGuardandoSw"
+                class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 border border-slate-600">
+                <span :class="relevoGuardandoSw ? 'spin inline-block' : ''">↺</span> Refrescar
               </button>
+            </div>
+            <p x-show="relevoSwProcesosApagados().length"
+               class="text-xs text-yellow-200 mt-2"
+               x-text="'⚠ Procesos apagados: ' + relevoSwProcesosApagados().join(', ')
+                     + '. Nada nuevo va a entrar mientras sigan así.'"></p>
+          </div>
+
+          <!-- maestro -->
+          <template x-for="i in relevoSwDe('maestro')" :key="i.clave">
+            <div class="rounded-xl border p-4 mb-4 max-w-4xl"
+                 :class="i.valor === false ? 'bg-red-950/40 border-red-700' : 'bg-slate-800 border-slate-700'">
+              <div class="flex items-start justify-between gap-4">
+                <div class="flex-1">
+                  <h4 class="text-sm text-white font-medium flex items-center gap-2">
+                    <span x-text="i.valor === false ? '🛑' : '🟢'"></span>
+                    <span x-text="i.etiqueta"></span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400">maestro</span>
+                  </h4>
+                  <p class="text-xs text-slate-400 mt-1" x-text="i.descripcion"></p>
+                  <p class="text-xs text-slate-500 mt-1" x-text="'Al apagarlo: ' + i.al_apagar"></p>
+                  <p class="text-[11px] text-slate-600 mt-1" x-show="i.quien"
+                     x-text="'Último cambio: ' + i.quien + ' · ' + (i.cuando||'')"></p>
+                </div>
+                <button @click="relevoToggleSw(i)" :disabled="relevoGuardandoSw"
+                  class="text-xs px-4 py-2 rounded-lg text-white whitespace-nowrap"
+                  :class="i.valor === false ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'"
+                  x-text="i.valor === false ? 'Encender el módulo' : 'Apagar TODO'"></button>
+              </div>
+            </div>
+          </template>
+
+          <!-- procesos programados -->
+          <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 mb-4 max-w-4xl">
+            <h4 class="text-sm text-white font-medium mb-1">Procesos programados</h4>
+            <p class="text-xs text-slate-500 mb-3">
+              Sólo leen: no le escriben a nadie. Apagarlos no es peligroso, pero es invisible
+              —el síntoma se parece a una semana tranquila—, así que el resumen diario avisa.
+            </p>
+            <div class="space-y-2">
+              <template x-for="i in relevoSwDe('proceso')" :key="i.clave">
+                <div class="flex items-start gap-3 bg-slate-900/50 rounded-lg px-3 py-2">
+                  <button @click="relevoToggleSw(i)" :disabled="relevoGuardandoSw"
+                    class="mt-0.5 w-10 h-5 rounded-full transition relative shrink-0"
+                    :class="i.valor ? 'bg-green-600' : 'bg-slate-600'">
+                    <span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
+                          :class="i.valor ? 'left-[22px]' : 'left-0.5'"></span>
+                  </button>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs text-slate-200 flex items-center gap-2">
+                      <span x-text="i.etiqueta"></span>
+                      <span class="text-[10px] text-slate-500" x-text="i.cada"></span>
+                    </p>
+                    <p class="text-[11px] text-slate-500" x-text="i.descripcion"></p>
+                    <p class="text-[11px] text-yellow-300/70" x-show="!i.valor"
+                       x-text="i.al_apagar"></p>
+                    <p class="text-[11px] text-slate-600" x-show="i.quien"
+                       x-text="i.quien + ' · ' + (i.cuando||'')"></p>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
 
-          <!-- interruptores por partner -->
-          <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 mb-5 max-w-3xl">
-            <h4 class="text-sm text-white font-medium mb-1">Por partner</h4>
+          <!-- salidas: lo que toca al cliente -->
+          <div class="rounded-xl border p-4 mb-5 max-w-4xl"
+               :class="relevoSwValor('envio_general') ? 'bg-red-950/30 border-red-800' : 'bg-slate-800 border-slate-700'">
+            <h4 class="text-sm text-white font-medium mb-1">Envío a clientes</h4>
             <p class="text-xs text-slate-500 mb-3">
-              Sirven para apagar un partner sin apagar todo. Un partner sin interruptor propio sigue al general.
+              Esto sí toca el mundo. Ningún proceso programado envía: habilita los botones
+              que aprieta una persona. Si la configuración no se puede leer, no sale nada.
             </p>
-            <div class="flex flex-wrap gap-2">
-              <template x-for="p in relevoPartners()" :key="p">
-                <button @click="relevoTogglePartner(p)" :disabled="relevoGuardandoSw"
-                  class="text-xs px-3 py-1.5 rounded-lg border transition"
-                  :class="relevoPartnerActivo(p)
-                    ? 'bg-green-900/40 text-green-300 border-green-800'
-                    : 'bg-slate-700 text-slate-400 border-slate-600'">
-                  <span x-text="relevoPartnerActivo(p) ? '● ' : '○ '"></span><span x-text="p"></span>
-                </button>
+            <div class="space-y-2">
+              <template x-for="i in relevoSwDe('salida')" :key="i.clave">
+                <div class="flex items-start gap-3 bg-slate-900/50 rounded-lg px-3 py-2">
+                  <button @click="relevoToggleSw(i)" :disabled="relevoGuardandoSw"
+                    class="mt-0.5 w-10 h-5 rounded-full transition relative shrink-0"
+                    :class="relevoSwEfectivo(i) ? 'bg-red-600' : 'bg-slate-600'">
+                    <span class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
+                          :class="relevoSwEfectivo(i) ? 'left-[22px]' : 'left-0.5'"></span>
+                  </button>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs text-slate-200 flex items-center gap-2">
+                      <span x-text="i.etiqueta"></span>
+                      <span x-show="i.partner && !i.declarado"
+                        class="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400">sigue al general</span>
+                    </p>
+                    <p class="text-[11px] text-slate-500" x-text="i.descripcion"></p>
+                    <p class="text-[11px] text-slate-600" x-show="i.quien"
+                       x-text="i.quien + ' · ' + (i.cuando||'')"></p>
+                  </div>
+                </div>
               </template>
             </div>
           </div>
@@ -6825,9 +6890,10 @@
       relevoDev: { abierto: false, cargando: false, registrando: false, copiado: false,
                    caso: null, idioma: '', nota: '', datos: {} },
       relevoEspejoCorriendo: false, relevoEspejoResultado: '',
+      relevoSw: { interruptores: [] },
       relevoCk: {}, relevoCkGuardando: false,
       // Los estados los define el motor (§7). Se listan acá sólo para el filtro.
-      relevoEstados: ['informativo','sin_cliente','sin_correo','listo_para_pedir',
+      relevoEstados: ['informativo','sin_cliente','sin_correo','sin_requerimiento','listo_para_pedir',
                       'pedido_enviado','recontactado','respuesta_parcial',
                       'respuesta_recibida','devuelto','cerrado','sin_respuesta','descartado'],
 
@@ -6945,6 +7011,7 @@
         if (cfg) this.relevoConfig = cfg;
         if (this.relevoSub === 'bandeja') await this.relevoCargarBandeja();
         if (this.relevoSub === 'vencidos') await this.relevoCargarCola();
+        if (refrescar || !(this.relevoSw.interruptores||[]).length) await this.relevoCargarSw();
         this.relevoCargando = false;
       },
 
@@ -7046,36 +7113,51 @@
       },
 
       // ── interruptor de envío ──────────────────────────────────────
-      relevoEnvioActivo() { return !!(this.relevoConfig?.interruptores?.envio_general); },
-      relevoPartnerActivo(p) {
-        const sw = this.relevoConfig?.interruptores || {};
-        const k = 'envio_' + String(p).toLowerCase().replace(/ /g, '_');
-        // Sin interruptor propio, un partner sigue al general.
-        return (k in sw) ? !!sw[k] : this.relevoEnvioActivo();
+      // ── tablero de interruptores ───────────────────────────────
+      relevoEnvioActivo() { return !!this.relevoSwValor('envio_general'); },
+      relevoSwDe(tipo) {
+        return (this.relevoSw.interruptores || []).filter(i => i.tipo === tipo);
       },
-      async relevoGuardarSw(clave, valor, aviso) {
-        if (!confirm(aviso)) return;
+      relevoSwValor(clave) {
+        const i = (this.relevoSw.interruptores || []).find(x => x.clave === clave);
+        return i ? i.valor : null;
+      },
+      // Un partner sin interruptor propio sigue al general: mostrarlo apagado
+      // cuando el general está prendido sería mentir sobre lo que va a pasar.
+      relevoSwEfectivo(i) {
+        if (i.partner && !i.declarado) return !!this.relevoSwValor('envio_general');
+        return !!i.valor;
+      },
+      relevoSwProcesosApagados() {
+        return this.relevoSwDe('proceso').filter(i => i.valor === false).map(i => i.etiqueta);
+      },
+      async relevoCargarSw() {
+        const d = await this.api('GET', '/relevo/interruptores');
+        if (d) this.relevoSw = d;
+      },
+      async relevoToggleSw(i) {
+        const prender = !this.relevoSwEfectivo(i);
+        // Sólo se confirma lo que tiene consecuencia hacia afuera o hacia
+        // adentro; pedir confirmación para todo entrena a no leerla.
+        const grave = (i.tipo === 'maestro' && !prender)
+                   || (i.tipo === 'salida' && prender)
+                   || (i.tipo === 'proceso' && !prender);
+        if (grave) {
+          const msg = i.tipo === 'salida'
+            ? `Vas a HABILITAR el envío de correos a clientes reales (${i.etiqueta}).\n\n¿Seguro?`
+            : `Vas a APAGAR "${i.etiqueta}".\n\n${i.al_apagar}\n\n¿Seguro?`;
+          if (!confirm(msg)) return;
+        }
         this.relevoGuardandoSw = true;
         const d = await this.api('POST', '/relevo/interruptores', {
-          clave, valor, quien: this.currentUserEmail || this.userEmail || '',
+          clave: i.clave, valor: prender,
+          quien: this.currentUserEmail || this.userEmail || '',
         });
         this.relevoGuardandoSw = false;
-        if (d?.interruptores) this.relevoConfig = { ...this.relevoConfig, interruptores: d.interruptores };
-      },
-      relevoToggleEnvio() {
-        const prender = !this.relevoEnvioActivo();
-        this.relevoGuardarSw('envio_general', prender, prender
-          ? 'Vas a ACTIVAR el envío de correos a clientes reales.\n\nA partir de ahora los analistas pueden escribirles desde la app. ¿Confirmás?'
-          : 'Vas a APAGAR el envío. Ningún correo saldrá, ni a mano ni por lote.\n\n¿Confirmás?');
-      },
-      relevoTogglePartner(p) {
-        const k = 'envio_' + String(p).toLowerCase().replace(/ /g, '_');
-        const prender = !this.relevoPartnerActivo(p);
-        this.relevoGuardarSw(k, prender,
-          `Vas a ${prender ? 'ACTIVAR' : 'apagar'} el envío para ${p}. ¿Confirmás?`);
+        if (d?.error) { this.globalError = d.error; return; }
+        if (d?.estado) this.relevoSw = d.estado;
       },
 
-      // ── cola de recontacto ────────────────────────────────────────
       async relevoCargarCola() {
         const q = new URLSearchParams({ solo_vencidos: this.relevoSoloColaVencidos ? '1' : '0' });
         const d = await this.api('GET', '/relevo/vencidos?' + q.toString());

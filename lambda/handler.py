@@ -1218,6 +1218,13 @@ def handler(event, context):  # noqa: ARG001
     # arrastrarse al resto de los reportes.
     if report_name == "relevo_ingesta":
         try:
+            # El interruptor primero: apagarlo tiene que parar el proceso
+            # sin tocar EventBridge. Falla ABIERTO (ver interruptores.py).
+            from relevo import interruptores as _sw
+            _ok, _motivo = _sw.puede_correr("ingesta")
+            if not _ok:
+                logger.info("Relevo ingesta: saltado — %s", _motivo)
+                return {"saltado": True, "motivo": _motivo}
             from relevo import ingesta
             resultado = ingesta.correr(
                 maximo=event.get("maximo"),
@@ -1227,6 +1234,12 @@ def handler(event, context):  # noqa: ARG001
             return resultado
         except Exception as e:
             logger.exception("Relevo ingesta falló")
+            # Sin esto, el modo de falla del módulo es el silencio.
+            try:
+                from relevo import aviso as _av
+                _av.falla("ingesta", e)
+            except Exception:
+                pass
             return {"status": "error", "error": str(e)[:300]}
 
     # ── Módulo Relevo: resolución del cliente en Redshift ─────────────────
@@ -1239,6 +1252,13 @@ def handler(event, context):  # noqa: ARG001
     # los 60 s. Se precalcula acá y el API sirve el snapshot. Ver vista.py.
     if report_name == "relevo_vista":
         try:
+            # El interruptor primero: apagarlo tiene que parar el proceso
+            # sin tocar EventBridge. Falla ABIERTO (ver interruptores.py).
+            from relevo import interruptores as _sw
+            _ok, _motivo = _sw.puede_correr("vista")
+            if not _ok:
+                logger.info("Relevo vista: saltado — %s", _motivo)
+                return {"saltado": True, "motivo": _motivo}
             from relevo import vista
             v = vista.guardar()
             resultado = {"generado_en": v["generado_en"], "segundos": v["segundos"],
@@ -1248,6 +1268,12 @@ def handler(event, context):  # noqa: ARG001
             return resultado
         except Exception as e:
             logger.exception("Relevo vista falló")
+            # Sin esto, el modo de falla del módulo es el silencio.
+            try:
+                from relevo import aviso as _av
+                _av.falla("vista", e)
+            except Exception:
+                pass
             return {"status": "error", "error": str(e)[:300]}
 
     # ── Módulo Relevo: recepción de la respuesta del cliente ──────────────
@@ -1256,16 +1282,36 @@ def handler(event, context):  # noqa: ARG001
     # solapan. Dedup por ledger de Message-ID, nunca por el flag \Seen.
     if report_name == "relevo_recepcion":
         try:
+            # El interruptor primero: apagarlo tiene que parar el proceso
+            # sin tocar EventBridge. Falla ABIERTO (ver interruptores.py).
+            from relevo import interruptores as _sw
+            _ok, _motivo = _sw.puede_correr("recepcion")
+            if not _ok:
+                logger.info("Relevo recepción: saltado — %s", _motivo)
+                return {"saltado": True, "motivo": _motivo}
             from relevo import recepcion
             resultado = recepcion.correr(maximo=event.get("maximo"))
             logger.info("Relevo recepción: %s", json.dumps(resultado, default=str))
             return resultado
         except Exception as e:
             logger.exception("Relevo recepción falló")
+            # Sin esto, el modo de falla del módulo es el silencio.
+            try:
+                from relevo import aviso as _av
+                _av.falla("recepcion", e)
+            except Exception:
+                pass
             return {"status": "error", "error": str(e)[:300]}
 
     if report_name == "relevo_resolver":
         try:
+            # El interruptor primero: apagarlo tiene que parar el proceso
+            # sin tocar EventBridge. Falla ABIERTO (ver interruptores.py).
+            from relevo import interruptores as _sw
+            _ok, _motivo = _sw.puede_correr("resolucion")
+            if not _ok:
+                logger.info("Relevo resolución: saltado — %s", _motivo)
+                return {"saltado": True, "motivo": _motivo}
             from relevo import resolucion
             resultado = resolucion.correr(
                 maximo=event.get("maximo"),
@@ -1275,6 +1321,26 @@ def handler(event, context):  # noqa: ARG001
             return resultado
         except Exception as e:
             logger.exception("Relevo resolución falló")
+            # Sin esto, el modo de falla del módulo es el silencio.
+            try:
+                from relevo import aviso as _av
+                _av.falla("resolucion", e)
+            except Exception:
+                pass
+            return {"status": "error", "error": str(e)[:300]}
+
+    # ── Módulo Relevo: latido diario a Slack ─────────────────────────────
+    # No lleva interruptor de proceso a propósito: es el aviso que dice qué
+    # está apagado. Un latido que se puede apagar deja de servir justo cuando
+    # hace falta. Se silencia con RELEVO_AVISOS=0 si el canal molesta.
+    if report_name == "relevo_latido":
+        try:
+            from relevo import aviso
+            mandado = aviso.latido()
+            logger.info("Relevo latido: mandado=%s", mandado)
+            return {"mandado": mandado}
+        except Exception as e:
+            logger.exception("Relevo latido falló")
             return {"status": "error", "error": str(e)[:300]}
 
     # ── Módulo Relevo: espejo analítico en Redshift ───────────────────────
@@ -1284,6 +1350,13 @@ def handler(event, context):  # noqa: ARG001
     # en su propio try para no arrastrar al resto de los reportes.
     if report_name == "relevo_espejo":
         try:
+            # El interruptor primero: apagarlo tiene que parar el proceso
+            # sin tocar EventBridge. Falla ABIERTO (ver interruptores.py).
+            from relevo import interruptores as _sw
+            _ok, _motivo = _sw.puede_correr("espejo")
+            if not _ok:
+                logger.info("Relevo espejo: saltado — %s", _motivo)
+                return {"saltado": True, "motivo": _motivo}
             from relevo import espejo
             resultado = espejo.correr(forzar=bool(event.get("forzar")),
                                       solo=event.get("solo"))
@@ -1291,6 +1364,12 @@ def handler(event, context):  # noqa: ARG001
             return resultado
         except Exception as e:
             logger.exception("Relevo espejo falló")
+            # Sin esto, el modo de falla del módulo es el silencio.
+            try:
+                from relevo import aviso as _av
+                _av.falla("espejo", e)
+            except Exception:
+                pass
             return {"status": "error", "error": str(e)[:300]}
 
     # ── Módulo especial: Análisis AML Individual ──────────────────────────

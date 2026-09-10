@@ -11,7 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from relevo import casos, checklist, correo, envio, recepcion  # noqa: E402
+from relevo import (casos, checklist, correo, envio,  # noqa: E402
+                    interruptores, recepcion)
 
 
 class FalsoDeposito:
@@ -60,10 +61,15 @@ class Base(unittest.TestCase):
         recepcion.deposito = self.dep
         # El caso y el interruptor, sin tocar la red.
         envio._buscar_caso = lambda cid: (CASO if cid == CASO["id"] else None, {})
-        self._sw = {"envio_general": True}
-        envio.interruptores = lambda: self._sw
+        # Se parchea la FUENTE de la configuración, no `puede_enviar`: así los
+        # tests ejercitan la lógica real del tablero (maestro, general y por
+        # partner) en vez de un doble que podría no coincidir con ella.
+        self.cfg = {"sw_envio_general": True}
+        self._config_real = interruptores._config
+        interruptores._config = lambda: self.cfg
 
     def tearDown(self):
+        interruptores._config = self._config_real
         (envio.deposito, checklist.deposito, casos.deposito,
          recepcion.deposito) = self.previos
 
@@ -71,14 +77,16 @@ class Base(unittest.TestCase):
 class LaPuertaDeAtrasNoEsMasFloja(Base):
     def test_respeta_el_interruptor_general(self):
         """Mandar a mano sigue siendo escribirle a un cliente real."""
-        self._sw = {"envio_general": False}
+        self.cfg = {"sw_envio_general": False}
+        interruptores._config = lambda: self.cfg
         r = envio.registrar_manual(CASO["id"], quien="ana@global66.com", confirmado=True)
         self.assertFalse(r["registrado"])
         self.assertTrue(r["bloqueado"])
         self.assertIn("interruptor general", r["error"])
 
     def test_respeta_el_interruptor_del_partner(self):
-        self._sw = {"envio_general": True, "envio_dlocal": False}
+        self.cfg = {"sw_envio_general": True, "sw_envio_dlocal": False}
+        interruptores._config = lambda: self.cfg
         r = envio.registrar_manual(CASO["id"], quien="ana@global66.com", confirmado=True)
         self.assertFalse(r["registrado"])
         self.assertIn("dLocal", r["error"])
