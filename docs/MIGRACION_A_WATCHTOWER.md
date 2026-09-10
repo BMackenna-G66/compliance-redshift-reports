@@ -772,22 +772,37 @@ espera el scope de Gmail.
 
 ## 15. Verificación
 
-Cada uno tiene que dar exactamente esto, medido sobre la casilla real:
+Cada uno tiene que dar exactamente esto, medido sobre la casilla real.
+**Estado al 2026-09-10: 8 de 12 verificados, y los 4 que faltan dependen del mismo
+scope de Gmail.**
 
 ```
-[ ] 104 tests pasan dentro del repo de WatchTower
-[ ] La ingesta lee la casilla desde Lambda y el historyId avanza sin huecos
-[ ] 4 partners identificados por X-Original-Sender (dLocal, Nium, Currencycloud, OZ)
-[ ] Los casos agrupan: el cliente 3950037 aparece como UN caso de Nium con 6 transacciones
-[ ] La resolución da 110 de 110 con correo de cliente
-[ ] La verificación cruzada compara ~41 casos y da CERO desacuerdos
-[ ] Con el cluster pausado: la ingesta sigue leyendo y las resoluciones se encolan
+[x] Los tests pasan dentro del repo de WatchTower       → 146 (eran 104)
+[x] La ingesta lee la casilla desde Lambda y el historyId avanza sin huecos
+[x] 4 partners identificados por X-Original-Sender      → Currencycloud 88, dLocal 50,
+                                                            Nium 16, OZ Câmbio 16
+[x] El cliente 3950037 es UN caso de Nium con 6 transacciones
+                                                        → nium:caso:1088170, n=6 ✔
+[x] La resolución da con correo de cliente              → 116 de 117 resolubles.
+      Los 17 casos `sin_cliente` son 16 de `cc_external_id` (llave que no sabemos
+      componer, decisión abierta) + 1 `cc_transaction_id`. Está en su techo.
+[x] La verificación cruzada da CERO desacuerdos         → 73 casos comparables
+      (el plan esperaba ~41), 146 comparaciones de campo, 0 desacuerdos
+[x] Con el cluster pausado: la ingesta sigue leyendo y las resoluciones se encolan
 [ ] El correo de prueba llega con el token [rfi: ...] y su threadId queda guardado
 [ ] El poller de WatchTower NO toca ese correo ni su respuesta
 [ ] La respuesta con adjunto pasa el checklist a "recibido" y NO a "entregado"
 [ ] Una respuesta parcial deja bien calculado lo que falta
-[ ] El launchd del Mac está apagado y el túnel de ngrok cerrado
+[x] El launchd del Mac está apagado y el túnel de ngrok cerrado
+      → descargados con `launchctl unload -w` el 2026-09-10; ngrok ya no corría.
+        Antes de apagarlo se comparó id por id: 912 correos en el Mac, 912 en S3,
+        cero de un solo lado. Para revertir: `launchctl load -w <plist>`.
 ```
+
+**Los cuatro que faltan son el mismo bloqueo.** El token está en `gmail.readonly`, así que
+el paso 6 no puede escribirle a un cliente; y como los pasos 7 y 8 reaccionan a esa
+respuesta, están construidos pero nunca se ejercitaron de punta a punta. Se destraban los
+cuatro juntos con un re-consentimiento — pidiendo **`gmail.modify`** (§16, decisión 10).
 
 ---
 
