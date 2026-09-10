@@ -171,8 +171,7 @@ def enviar(caso_id, quien="", nota="", saltar_bloqueo_doble=False):
         return {"enviado": False, "error": "el caso no tiene correo de cliente resuelto"}
 
     try:
-        g = ingesta.cliente()
-        r = g.enviar(correo.a_mime(c, REMITENTE))
+        r, transporte = _despachar(c)
         thread_id = str(r.get("threadId") or "")
     except Exception as e:
         # Se registra el intento fallido: que no salga no significa que no pasó.
@@ -197,8 +196,92 @@ def enviar(caso_id, quien="", nota="", saltar_bloqueo_doble=False):
         print(f"[relevo] correo enviado pero no pude anotar la acción de {caso_id}: {e}")
 
     return {"enviado": True, "para": c["para"], "asunto": c["asunto"],
-            "ref": c["token"], "thread_id": thread_id,
+            "ref": c["token"], "thread_id": thread_id, "transporte": transporte,
             "request_id": reg["request_id"]}
+
+
+# ── el transporte ────────────────────────────────────────────────────────
+#
+# §5 de la especificación dice "Gmail API, no SMTP", y el motivo era bueno:
+# la API devuelve el `threadId`, que correlaciona la respuesta del cliente
+# aunque edite el asunto. Pero eso hizo que todo el envío quedara colgado de
+# un scope de OAuth que no tenemos, y **el repo anfitrión ya mandaba correos
+# por SMTP todo este tiempo**: `_send_email` en api_handler.py, con una app
+# password en Secrets Manager, sale como `compliance@global66.com` y le
+# escribe a clientes reales en gmail.com. Verificado en los logs.
+#
+# Así que el envío no dependía del scope. Dependía de que alguien mirara.
+#
+# Se replica la lógica acá en vez de importarla (§1: réplica adaptada, no
+# reuso), y se comparte sólo la credencial, que es un dato y no código.
+#
+# Lo que se pierde frente a la API es el `threadId`. La correlación cae al
+# **token del asunto**, que §9 ya define como segundo camino y recepcion.py
+# implementa. Cuando llegue `gmail.modify`, cambiar de transporte es una
+# variable de entorno y se recupera el threadId.
+TRANSPORTE = os.environ.get("RELEVO_TRANSPORTE", "smtp").strip().lower()
+SMTP_USUARIO = os.environ.get("GMAIL_USER", "benjamin.mackenna@global66.com")
+SMTP_SECRETO = os.environ.get("GMAIL_PASSWORD_SECRET_NAME",
+                              "compliance-redshift-reports/gmail-app-password")
+_clave_smtp = None
+
+
+def _password_smtp():
+    """La app password, de Secrets Manager. Se cachea por invocación tibia."""
+    global _clave_smtp
+    if _clave_smtp is None:
+        import boto3
+        bruto = boto3.client(
+            "secretsmanager",
+            region_name=os.environ.get("AWS_REGION", "us-east-1")
+        ).get_secret_value(SecretId=SMTP_SECRETO).get("SecretString", "")
+        _clave_smtp = "".join((bruto or "").split())
+    return _clave_smtp
+
+
+def _enviar_smtp(compuesto, remitente=None):
+    """Manda el pedido por SMTP. Devuelve {"thread_id": ""} para igualar la
+    forma de la API, que sí lo trae.
+
+    **El Reply-To es la pieza que hace funcionar el ciclo.** Tiene que ser el
+    grupo: verificado en los headers de los correos ingeridos, todo lo que
+    llega a `compliance@global66.com` se entrega en
+    `compliance.masivo@global66.com`, que es la casilla que el poller lee. Si
+    la respuesta del cliente cayera en otra bandeja, el caso quedaría
+    esperando para siempre.
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    de = remitente or REMITENTE_GRUPO
+    m = MIMEMultipart("alternative")
+    m["Subject"] = compuesto["asunto"]
+    m["From"] = de
+    m["To"] = compuesto["para"]
+    m["Reply-To"] = REMITENTE_GRUPO
+    m.attach(MIMEText(compuesto["texto"], "plain", "utf-8"))
+    m.attach(MIMEText(compuesto["html"], "html", "utf-8"))
+
+    clave = _password_smtp()
+    if not clave:
+        raise RuntimeError(
+            f"no hay app password en Secrets Manager ({SMTP_SECRETO}): no se puede enviar")
+    # 20 s y no menos: el handshake TLS más el login contra Gmail desde una
+    # Lambda fría se pasaba de 8 s y el correo se perdía sin aviso. Es la
+    # misma lección que ya había aprendido `_send_email`.
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as s:
+        s.login(SMTP_USUARIO, clave)
+        s.sendmail(de, [compuesto["para"]], m.as_string())
+    return {"id": "", "threadId": ""}
+
+
+def _despachar(compuesto):
+    """Manda por el transporte configurado. (respuesta, transporte_usado)."""
+    if TRANSPORTE == "gmail_api":
+        g = ingesta.cliente()
+        return g.enviar(correo.a_mime(compuesto, REMITENTE)), "gmail_api"
+    return _enviar_smtp(compuesto), "smtp"
 
 
 # ── envío a mano: el ciclo sin el scope de Gmail ─────────────────────────

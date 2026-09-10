@@ -1399,6 +1399,54 @@
                         </span>
                       </div>
                     </div>
+                    <!-- lo que mandó el cliente: checklist tri-estado + archivos -->
+                    <div class="mb-4" x-show="relevoCk.caso_id === c.id && (relevoCk.resumen?.total || 0) > 0">
+                      <div class="flex items-center gap-2 mb-2">
+                        <p class="text-xs text-slate-500">Lo que mandó el cliente</p>
+                        <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300"
+                          x-text="(relevoCk.resumen?.pendiente||0) + ' pend · '
+                                + (relevoCk.resumen?.recibido||0) + ' recib · '
+                                + (relevoCk.resumen?.entregado||0) + ' entreg'"></span>
+                      </div>
+                      <div class="space-y-1 mb-2">
+                        <template x-for="(d, clave) in (relevoCk.checklist?.documentos || {})" :key="clave">
+                          <div class="flex items-center gap-2 bg-slate-900/50 rounded px-2 py-1.5 text-xs">
+                            <span class="px-1.5 py-0.5 rounded text-[11px]"
+                              :class="d.estado==='entregado' ? 'bg-green-900/50 text-green-300'
+                                    : d.estado==='recibido'  ? 'bg-sky-900/50 text-sky-300'
+                                                             : 'bg-slate-700 text-slate-400'"
+                              x-text="d.estado"></span>
+                            <span class="text-slate-200 flex-1" x-text="d.etiqueta || clave"></span>
+                            <span class="text-slate-600 text-[11px]" x-text="d.quien || ''"></span>
+                            <!-- §9: `entregado` SIEMPRE lo pone una persona. El
+                                 sistema sabe que llegó un archivo, no que sirva. -->
+                            <button x-show="d.estado !== 'entregado'"
+                              @click="relevoMarcarEntregado(c, clave, d.etiqueta || clave)"
+                              :disabled="relevoCkGuardando"
+                              class="px-2 py-0.5 rounded bg-green-900/40 hover:bg-green-800/60 text-green-300 border border-green-800 disabled:opacity-40">
+                              Dar por entregado
+                            </button>
+                          </div>
+                        </template>
+                      </div>
+                      <div x-show="(relevoCk.archivos||[]).length" class="space-y-1">
+                        <p class="text-xs text-slate-500">Archivos recibidos:</p>
+                        <template x-for="(a,i) in (relevoCk.archivos||[])" :key="'ck'+i">
+                          <div class="flex items-center gap-2 bg-slate-900/50 rounded px-2 py-1.5 text-xs">
+                            <span class="text-slate-200 flex-1 truncate" x-text="a.nombre"></span>
+                            <span class="text-slate-500" x-text="relevoTamano(a.tamano)"></span>
+                            <span class="text-slate-600" x-text="(a.cuando||'').slice(0,10)"></span>
+                            <a :href="a.url" target="_blank" rel="noopener" x-show="a.url"
+                               class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200">Bajar</a>
+                          </div>
+                        </template>
+                      </div>
+                      <template x-for="(t,i) in (relevoCk.respuestas||[])" :key="'rt'+i">
+                        <p class="text-xs text-slate-400 bg-slate-900/50 rounded px-2 py-1.5 mt-1 whitespace-pre-wrap"
+                           x-text="t.texto"></p>
+                      </template>
+                    </div>
+
                     <!-- ítems pedidos -->
                     <div class="mb-4" x-show="(c.items||[]).length">
                       <p class="text-xs text-slate-500 mb-1">Lo que pidió el partner:</p>
@@ -6777,6 +6825,7 @@
       relevoDev: { abierto: false, cargando: false, registrando: false, copiado: false,
                    caso: null, idioma: '', nota: '', datos: {} },
       relevoEspejoCorriendo: false, relevoEspejoResultado: '',
+      relevoCk: {}, relevoCkGuardando: false,
       // Los estados los define el motor (§7). Se listan acá sólo para el filtro.
       relevoEstados: ['informativo','sin_cliente','sin_correo','listo_para_pedir',
                       'pedido_enviado','recontactado','respuesta_parcial',
@@ -6908,12 +6957,40 @@
       },
 
       async relevoAbrir(c) {
-        if (this.relevoDetalle?.id === c.id) { this.relevoDetalle = null; return; }
+        if (this.relevoDetalle?.id === c.id) { this.relevoDetalle = null; this.relevoCk = {}; return; }
         this.relevoDetalle = { id: c.id };
+        this.relevoCk = {};
         this.relevoDetalleCargando = true;
-        const d = await this.api('GET', '/relevo/casos/' + encodeURIComponent(c.id));
+        // El checklist va en paralelo: es lo que el cliente mandó, y sin esto
+        // la respuesta que llegó no se veía en ninguna parte de la pantalla.
+        const [d, ck] = await Promise.all([
+          this.api('GET', '/relevo/casos/' + encodeURIComponent(c.id)),
+          this.api('GET', '/relevo/casos/' + encodeURIComponent(c.id) + '/checklist'),
+        ]);
         this.relevoDetalleCargando = false;
         if (d?.caso) this.relevoDetalle = { id: c.id, ...d.caso };
+        if (ck) this.relevoCk = ck;
+      },
+
+      async relevoRecargarCk(casoId) {
+        const ck = await this.api('GET', '/relevo/casos/' + encodeURIComponent(casoId) + '/checklist');
+        if (ck) this.relevoCk = ck;
+      },
+
+      // §9: `entregado` lo pone SIEMPRE una persona, nunca el sistema. El
+      // sistema puede saber que llegó un archivo, no que satisfaga lo pedido.
+      async relevoMarcarEntregado(c, clave, etiqueta) {
+        if (!confirm(`¿Dar por entregado "${etiqueta}"?\n\n`
+                     + 'Estás confirmando que revisaste el documento y sirve. '
+                     + 'Queda registrado con tu nombre.')) return;
+        this.relevoCkGuardando = true;
+        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(c.id) + '/checklist', {
+          documento: clave, estado: 'entregado',
+          quien: this.currentUserEmail || this.userEmail || '',
+        });
+        this.relevoCkGuardando = false;
+        if (d?.error) { this.globalError = d.error; return; }
+        await this.relevoRecargarCk(c.id);
       },
 
       async relevoRegistrar(c, accion) {

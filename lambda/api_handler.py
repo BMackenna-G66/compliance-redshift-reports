@@ -2666,9 +2666,14 @@ def handler(event, context):  # noqa: ARG001
                 return resp(200, envio.previsualizar(parts[2], nota=body.get("nota", "")))
             # GET  /relevo/casos/{id}/checklist — estado tri-estado de §9.
             if method == "GET" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "checklist":
-                from relevo import checklist as ck
+                from relevo import checklist as ck, devolucion
+                # Los archivos van acá y no en una ruta aparte: "qué pidió" y
+                # "qué mandó" es una sola pregunta para quien mira el caso, y
+                # separarlas obligaba a la pantalla a hacer dos viajes.
                 return resp(200, {"caso_id": parts[2], "checklist": ck.leer(parts[2]),
-                                  "resumen": ck.resumen(parts[2])})
+                                  "resumen": ck.resumen(parts[2]),
+                                  "archivos": devolucion.adjuntos_de(parts[2]),
+                                  "respuestas": devolucion._texto_cliente(parts[2])})
             # POST /relevo/casos/{id}/checklist — cambio manual. `entregado`
             # sólo puede venir por acá, y exige autor: el sistema no lo pone.
             if method == "POST" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "checklist":
