@@ -1558,6 +1558,54 @@
                     <p class="text-slate-200">Ninguno — no es una solicitud KYC</p>
                   </div>
                 </div>
+                <!-- envío a mano: no necesita el scope de Gmail.
+                     Los botones de copiar están detrás del MISMO permiso que el
+                     envío automático: poder copiar el correo mientras el sistema
+                     dice "no se envía" haría del interruptor un adorno. -->
+                <div class="mb-4 rounded-lg border p-3"
+                     :class="relevoPedido.datos.puede_enviar
+                       ? 'border-sky-800 bg-sky-950/30' : 'border-slate-700 bg-slate-800/40'">
+                  <p class="text-xs font-medium mb-1"
+                     :class="relevoPedido.datos.puede_enviar ? 'text-sky-200' : 'text-slate-400'">
+                    Mandarlo a mano (no necesita el permiso de Gmail)
+                  </p>
+                  <p x-show="!relevoPedido.datos.puede_enviar"
+                     class="text-[11px] text-yellow-300/90 mb-2">
+                    Bloqueado por lo que dice arriba. Mientras el envío esté apagado no se
+                    copia ni se registra: si no, el interruptor no protegería nada.
+                  </p>
+                  <p class="text-[11px] text-sky-300/80 mb-2">
+                    Mandalo desde <strong>compliance@global66.com</strong> y la respuesta del
+                    cliente vuelve sola al grupo, que entrega en la casilla que leemos.
+                    Si sale desde tu correo personal, la respuesta cae en TU bandeja y el
+                    caso queda esperando para siempre. <strong>No edites el asunto</strong>:
+                    el token <code>[rfi: …]</code> es lo que ata la respuesta al caso.
+                  </p>
+                  <div class="flex flex-wrap gap-2">
+                    <button @click="relevoCopiarPedido('texto')"
+                      :disabled="!relevoPedido.datos.puede_enviar"
+                      class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 disabled:opacity-40 disabled:cursor-not-allowed">
+                      <span x-text="relevoPedido.copiado==='texto' ? '✓ Copiado' : '⧉ Copiar el texto'"></span>
+                    </button>
+                    <button @click="relevoCopiarPedido('asunto')"
+                      :disabled="!relevoPedido.datos.puede_enviar"
+                      class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 disabled:opacity-40 disabled:cursor-not-allowed">
+                      <span x-text="relevoPedido.copiado==='asunto' ? '✓ Copiado' : '⧉ Copiar el asunto'"></span>
+                    </button>
+                    <button @click="relevoCopiarPedido('para')"
+                      :disabled="!relevoPedido.datos.puede_enviar"
+                      class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 disabled:opacity-40 disabled:cursor-not-allowed">
+                      <span x-text="relevoPedido.copiado==='para' ? '✓ Copiado' : '⧉ Copiar el destinatario'"></span>
+                    </button>
+                    <button @click="relevoMarcarEnviadoAMano()"
+                      :disabled="relevoPedido.enviando || !relevoPedido.datos.puede_enviar"
+                      class="text-xs px-3 py-1.5 rounded-lg bg-sky-700 hover:bg-sky-600 text-white border border-sky-600 disabled:opacity-50">
+                      <span :class="relevoPedido.enviando ? 'spin inline-block' : ''">✓</span>
+                      Ya lo mandé — registrarlo
+                    </button>
+                  </div>
+                </div>
+
                 <p class="text-xs text-slate-500 mb-2">Así lo va a ver el cliente:</p>
                 <iframe :srcdoc="relevoPedido.datos.html || ''" class="w-full rounded-lg border border-slate-700 bg-white"
                         style="height:420px" sandbox=""></iframe>
@@ -6722,7 +6770,7 @@
       relevoSoloVencidos: false, relevoSoloPendientes: false, relevoSoloAccionables: false,
       relevoBuscar: '',
       relevoPrueba: { remitente: '', asunto: '', cuerpo: '' },
-      relevoPedido: { abierto: false, cargando: false, enviando: false, caso: null, para: '', datos: {} },
+      relevoPedido: { abierto: false, cargando: false, enviando: false, caso: null, para: '', datos: {}, copiado: '' },
       relevoCola: [], relevoSoloColaVencidos: true, relevoGuardandoSw: false,
       relevoPruebaResultado: '',
       // Paso 9. `idioma` vacío = el que decida el backend por partner.
@@ -6970,6 +7018,39 @@
         const d = await this.api('POST', '/relevo/probar', this.relevoPrueba);
         this.relevoProbando = false;
         this.relevoPruebaResultado = d ? JSON.stringify(d, null, 2) : 'Sin respuesta.';
+      },
+
+      // ── envío a mano: el ciclo sin el scope de Gmail ───────────────
+      async relevoCopiarPedido(campo) {
+        const t = this.relevoPedido.datos?.[campo] || '';
+        if (!t) return;
+        try {
+          await navigator.clipboard.writeText(t);
+          this.relevoPedido.copiado = campo;
+          setTimeout(() => { this.relevoPedido.copiado = ''; }, 2500);
+        } catch (e) {
+          this.globalError = 'El navegador no dejó copiar; seleccioná el texto a mano.';
+        }
+      },
+
+      async relevoMarcarEnviadoAMano() {
+        const p = this.relevoPedido;
+        if (!confirm('¿Ya mandaste el correo desde compliance@global66.com?\n\n'
+                     + 'Esto registra el pedido y arma el checklist. Si todavía no lo '
+                     + 'mandaste, cancelá: el caso quedaría marcado como pedido sin serlo.')) return;
+        p.enviando = true;
+        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(p.caso.id) + '/pedido', {
+          manual: true, confirmado: true,
+          quien: this.currentUserEmail || this.userEmail || '',
+        });
+        this.relevoPedido.enviando = false;
+        if (d?.registrado) {
+          this.relevoPedido.abierto = false;
+          this.relevoDetalle = null;
+          await this.relevoCargar(true);
+        } else if (d?.error) {
+          this.globalError = 'No se registró: ' + d.error;
+        }
       },
 
       // ── paso 9: devolución al partner ──────────────────────────────
