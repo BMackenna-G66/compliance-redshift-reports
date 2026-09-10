@@ -2649,6 +2649,15 @@ def handler(event, context):  # noqa: ARG001
             # Sin "enviar": true sólo previsualiza y no toca la red.
             if method == "POST" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "pedido":
                 from relevo import envio
+                # "manual": el módulo compone y registra, la persona manda.
+                # No necesita gmail.send: la respuesta del cliente vuelve al
+                # grupo compliance@global66.com, que entrega en la casilla que
+                # el poller lee, y se correlaciona por el token del asunto.
+                if body.get("manual"):
+                    return resp(200, envio.registrar_manual(
+                        parts[2], quien=body.get("quien") or body.get("actor_email", ""),
+                        nota=body.get("nota", ""),
+                        confirmado=bool(body.get("confirmado"))))
                 if body.get("enviar"):
                     return resp(200, envio.enviar(
                         parts[2], quien=body.get("quien") or body.get("actor_email", ""),

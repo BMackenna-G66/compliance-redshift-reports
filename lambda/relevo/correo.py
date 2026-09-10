@@ -144,6 +144,29 @@ def nombre_cliente(caso):
     return str((d or {}).get("cliente_nombre") or "").strip()
 
 
+# Sufijos y palabras que delatan una razón social. Medido sobre los casos
+# resueltos: 15 de 159 (9%) son empresas — POWERLAND LLC, BLESS CORP SPA,
+# Nataly Yepes Pinilla SAS. A todos ellos el correo les decía "Hola Fulano,
+# una de TUS operaciones", que a una LLC se lee mal.
+#
+# **Por qué por el nombre y no por `is_company`.** El campo existe en
+# `customer.customer` pero hoy no lo traemos: agregarlo obliga a tocar
+# consultas.json y re-resolver los 170 casos. Esto es una heurística y se dice
+# que lo es — va con un aviso en la previsualización para que quien manda lo
+# vea y pueda desmentirlo. Errar hacia el trato formal es barato; errar hacia
+# el tuteo con una sociedad no.
+_EMPRESA = re.compile(
+    r"(?i)(?:^|[\s,.])(?:s\.?p\.?a|s\.?a\.?s?|s\.?a\.?c|ltda?|limitada|e\.?i\.?r\.?l|"
+    r"inc|llc|corp|corporation|company|cia|compa[ñn][ií]a|holding|group|trading|"
+    r"import(?:adora|aciones)?|export(?:adora|aciones)?|comercial(?:izadora)?|"
+    r"servicios|soluciones|tecnolog[ií]a)s?(?:[\s,.]|$)")
+
+
+def es_empresa(nombre):
+    """True si el nombre parece una razón social. Heurística, no verdad."""
+    return bool(_EMPRESA.search(str(nombre or "")))
+
+
 def _plazo(caso):
     """El plazo del correo del partner, si lo trajo. Es lo más específico (§7)."""
     p = caso.get("plazo")
@@ -166,6 +189,8 @@ def componer(caso, token=None, nota=""):
     nombre = nombre_cliente(caso)
     plazo = _plazo(caso)
 
+    empresa = es_empresa(nombre)
+
     avisos = []
     if not para:
         avisos.append("El caso no tiene correo de cliente resuelto: no se puede enviar.")
@@ -173,8 +198,33 @@ def componer(caso, token=None, nota=""):
         avisos.append("El partner no dejó un requerimiento identificable; hay que redactarlo a mano.")
     elif not catalogo:
         avisos.append("Ningún ítem se mapeó al catálogo: el pedido va en crudo y conviene revisarlo.")
+    if empresa:
+        avisos.append(f"«{nombre}» parece una empresa, así que el correo trata de usted. "
+                      "Es una deducción por el nombre: si es una persona, corregí el texto.")
 
-    saludo = "Hola" + (" " + nombre if nombre else "") + ","
+    # Persona: la voz de siempre, sin tocar. Empresa: usted y plural.
+    T = {
+        "saludo": ("Estimados," if not nombre else f"Estimados de {nombre}:") if empresa
+                  else ("Hola" + (" " + nombre if nombre else "") + ","),
+        "intro": ("Estamos realizando una revisión de rutina sobre una de sus operaciones y "
+                  "necesitamos algunos antecedentes para poder completarla.") if empresa else
+                 ("Estamos realizando una revisión de rutina sobre una de tus operaciones y "
+                  "necesitamos algunos antecedentes para poder completarla."),
+        "pedimos": ("Para poder continuar necesitamos que nos envíen:" if empresa
+                    else "Para poder continuar necesitamos que nos envíes:"),
+        "responder": ("Les pedimos responder" if empresa else "Te pedimos responder"),
+        "puede_responder": ("Pueden responder directamente a este correo adjuntando los "
+                            "documentos.") if empresa else
+                           ("Puedes responder directamente a este correo adjuntando los "
+                            "documentos."),
+        "mantener": ("<strong>Mantengan el asunto tal como está</strong>" if empresa
+                     else "<strong>Mantené el asunto tal como está</strong>"),
+        "pie": ("Este correo se envió porque tienen una operación en revisión. Si creen que "
+                "es un error, respondan este mismo mensaje.") if empresa else
+               ("Este correo se envió porque tenés una operación en revisión. Si creés que "
+                "es un error, respondé este mismo mensaje."),
+    }
+    saludo = T["saludo"]
 
     filas_datos = "".join(
         f'<tr><td style="padding:6px 12px 6px 0;color:#666;font-size:14px">{_e(etq)}</td>'
@@ -189,7 +239,7 @@ def componer(caso, token=None, nota=""):
         f'<li style="margin:0 0 8px;font-size:16px;color:#111">{_e(x)}</li>' for x in catalogo)
     bloque_items = (
         f'<p style="margin:0 0 8px;font-size:16px;color:#111">'
-        f'Para poder continuar necesitamos que nos envíes:</p>'
+        f'{T["pedimos"]}</p>'
         f'<ol style="margin:0 0 20px;padding-left:22px">{items_html}</ol>'
     ) if items_html else ""
 
@@ -203,9 +253,9 @@ def componer(caso, token=None, nota=""):
 
     bloque_plazo = (
         f'<p style="margin:0 0 20px;font-size:16px;color:#111">'
-        f'Te pedimos responder <strong>{_e(plazo)}</strong>.</p>') if plazo else (
-        '<p style="margin:0 0 20px;font-size:16px;color:#111">'
-        'Te pedimos responder a la brevedad.</p>')
+        f'{T["responder"]} <strong>{_e(plazo)}</strong>.</p>') if plazo else (
+        f'<p style="margin:0 0 20px;font-size:16px;color:#111">'
+        f'{T["responder"]} a la brevedad.</p>')
 
     bloque_nota = (f'<p style="margin:0 0 20px;font-size:16px;color:#111">{_e(nota)}</p>'
                    if nota else "")
@@ -225,8 +275,7 @@ def componer(caso, token=None, nota=""):
   <tr><td style="padding:32px">
     <p style="margin:0 0 16px;font-size:16px;color:#111">{_e(saludo)}</p>
     <p style="margin:0 0 20px;font-size:16px;color:#111">
-      Estamos realizando una revisión de rutina sobre una de tus operaciones y
-      necesitamos algunos antecedentes para poder completarla.
+      {_e(T["intro"])}
     </p>
     {bloque_datos}
     {bloque_items}
@@ -234,42 +283,40 @@ def componer(caso, token=None, nota=""):
     {bloque_plazo}
     {bloque_nota}
     <p style="margin:0 0 20px;font-size:14px;color:#666">
-      Puedes responder directamente a este correo adjuntando los documentos.
-      <strong>Mantené el asunto tal como está</strong>: nos permite asociar tu
+      {T["puede_responder"]}
+      {T["mantener"]}: nos permite asociar la
       respuesta a la solicitud.
     </p>
     <p style="margin:0;font-size:14px;color:#666">Equipo de Compliance · Global66</p>
   </td></tr>
   <tr><td style="background:#fafafa;padding:16px 32px;border-top:1px solid #eee">
     <p style="margin:0;font-size:12px;color:#999">
-      Este correo se envió porque tenés una operación en revisión. Si creés que
-      es un error, respondé este mismo mensaje.
+      {T["pie"]}
     </p>
   </td></tr>
 </table>
 </td></tr></table>
 </body></html>"""
 
-    lineas = [saludo, "",
-              "Estamos realizando una revisión de rutina sobre una de tus operaciones "
-              "y necesitamos algunos antecedentes para poder completarla.", ""]
+    lineas = [saludo, "", T["intro"], ""]
     if datos:
         lineas.append("Operación:")
         lineas += [f"  {etq}: {_plano(v)}" for etq, v in datos]
         lineas.append("")
     if catalogo:
-        lineas.append("Necesitamos que nos envíes:")
+        lineas.append(T["pedimos"].replace("Para poder continuar necesitamos", "Necesitamos"))
         lineas += [f"  {i}. {x}" for i, x in enumerate(catalogo, 1)]
         lineas.append("")
     elif crudo:
         lineas.append("Necesitamos la siguiente información:")
         lineas += [f"  {x}" for x in crudo]
         lineas.append("")
-    lineas.append(f"Te pedimos responder {plazo}." if plazo else "Te pedimos responder a la brevedad.")
+    lineas.append(f'{T["responder"]} {plazo}.' if plazo else f'{T["responder"]} a la brevedad.')
     if nota:
         lineas += ["", nota]
-    lineas += ["", "Podés responder directamente a este correo adjuntando los documentos. "
-                   "Mantené el asunto tal como está.", "", "Equipo de Compliance · Global66"]
+    lineas += ["", T["puede_responder"] + " " +
+               re.sub(r"</?strong>", "", T["mantener"]) + ".",
+               "", "Equipo de Compliance · Global66"]
 
     return {
         "asunto": asunto_de(token),

@@ -27,6 +27,11 @@ COLECCION = "solicitudes"
 # en pocos.
 MAX_LOTE = int(os.environ.get("RELEVO_MAX_LOTE", "20"))
 REMITENTE = os.environ.get("RELEVO_FROM_ADDR", correo.REMITENTE_POR_DEFECTO)
+# La dirección del grupo. No es cosmética: `list-id: <compliance.global66.com>`
+# y `delivered-to: compliance.masivo@global66.com` en los correos ingeridos
+# prueban que lo que llega al grupo cae en la casilla que el poller lee. Es la
+# única dirección desde la que un envío a mano vuelve a entrar solo.
+REMITENTE_GRUPO = os.environ.get("RELEVO_GRUPO_ADDR", "compliance@global66.com")
 
 
 # ── registro ─────────────────────────────────────────────────────────────
@@ -194,6 +199,105 @@ def enviar(caso_id, quien="", nota="", saltar_bloqueo_doble=False):
     return {"enviado": True, "para": c["para"], "asunto": c["asunto"],
             "ref": c["token"], "thread_id": thread_id,
             "request_id": reg["request_id"]}
+
+
+# ── envío a mano: el ciclo sin el scope de Gmail ─────────────────────────
+#
+# El token está en `gmail.readonly` y el re-consentimiento depende de un
+# trámite con Google que puede tardar. Esto destraba el ciclo sin esperarlo.
+#
+# **Por qué funciona.** Verificado en los headers de los correos ya ingeridos:
+#
+#     to:           compliance@global66.com          ← el grupo
+#     delivered-to: compliance.masivo@global66.com   ← la casilla que leemos
+#     list-id:      <compliance.global66.com>
+#
+# Todo lo que llega al grupo cae en la casilla que el poller lee. Así que si
+# el cliente responde al grupo, la respuesta entra igual — y la correlación
+# por **token del asunto** (§9, el segundo camino) la ata al caso sin
+# necesidad del threadId, que es lo único que se pierde al no mandar por API.
+#
+# Lo que NO se afloja: el interruptor. Mandar a mano sigue siendo escribirle a
+# un cliente real, así que pasa por la misma llave. Un interruptor que se
+# puede saltar por otra puerta no es un interruptor.
+MEDIO_MANUAL = "manual"
+
+
+def registrar_manual(caso_id, quien="", nota="", confirmado=False):
+    """Compone el pedido, lo registra como enviado a mano y arma el checklist.
+
+    NO toca la red. Devuelve el texto para copiar y las instrucciones de desde
+    dónde mandarlo, que son la parte que hay que hacer bien: si sale desde el
+    correo personal del analista, la respuesta del cliente vuelve a su bandeja
+    y el poller no la ve nunca.
+    """
+    quien = str(quien or "").strip()
+    if not quien:
+        return {"registrado": False,
+                "error": "quien es requerido: no se le escribe a un cliente sin autor"}
+
+    caso, meta = _buscar_caso(caso_id)
+    if caso is None:
+        return {"registrado": False, "error": f"caso '{caso_id}' no encontrado"}
+
+    permitido, motivo = puede_enviar(caso.get("partner"))
+    if not permitido:
+        return {"registrado": False, "bloqueado": True, "error": motivo}
+
+    pedido, motivo_pedido = ya_pedido(caso_id)
+    if pedido:
+        return {"registrado": False, "bloqueado": True,
+                "error": f"doble envío bloqueado: {motivo_pedido}"}
+
+    c = correo.componer(caso, nota=nota)
+    if not c["para"]:
+        return {"registrado": False, "error": "el caso no tiene correo de cliente resuelto"}
+
+    if not confirmado:
+        # Se compone y se devuelve, pero no se registra: primero se mira.
+        return {"registrado": False, "requiere_confirmacion": True,
+                "caso_id": caso_id, **_para_copiar(c)}
+
+    # thread_id vacío a propósito: no lo mandamos nosotros, así que no hay
+    # hilo que guardar. La correlación va a caer por token, que es el camino
+    # de respaldo que §9 ya define y recepcion.py ya implementa.
+    reg = _registrar(caso_id, c, True, thread_id="", quien=quien)
+    try:
+        checklist.crear(caso_id, caso.get("items") or [], ref=c["token"], quien=quien)
+    except Exception as e:
+        print(f"[relevo] registrado a mano pero no pude armar el checklist de {caso_id}: {e}")
+    try:
+        casos.registrar(caso_id, "pedido_enviado", quien=quien,
+                        detalle={"ref": c["token"], "medio": MEDIO_MANUAL,
+                                 "correo": c["para"], "thread_id": "",
+                                 "documentos": c["items_catalogo"]})
+    except Exception as e:
+        print(f"[relevo] registrado a mano pero no pude anotar la acción de {caso_id}: {e}")
+
+    return {"registrado": True, "caso_id": caso_id, "medio": MEDIO_MANUAL,
+            "request_id": reg["request_id"], **_para_copiar(c)}
+
+
+def _para_copiar(c):
+    """Lo que la pantalla necesita para que alguien mande esto a mano."""
+    return {
+        "para": c["para"],
+        "asunto": c["asunto"],
+        "html": c["html"],
+        "texto": c["texto"],
+        "ref": c["token"],
+        "items_catalogo": c["items_catalogo"],
+        "items_crudo": c["items_crudo"],
+        "avisos": c["avisos"],
+        # Lo único que hay que hacer bien, y por eso viaja explícito.
+        "enviar_desde": REMITENTE_GRUPO,
+        "instrucciones": [
+            f"Mandalo desde {REMITENTE_GRUPO} (o poné esa dirección como Reply-To).",
+            "Si sale desde tu correo personal, la respuesta del cliente vuelve a TU "
+            "bandeja y el poller no la ve: el caso queda esperando para siempre.",
+            "NO edites el asunto: el token [rfi: …] es lo que ata la respuesta al caso.",
+        ],
+    }
 
 
 # ── lote ─────────────────────────────────────────────────────────────────
