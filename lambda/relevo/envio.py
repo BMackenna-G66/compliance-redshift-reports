@@ -103,6 +103,28 @@ def _buscar_caso(caso_id):
     return next((c for c in d["casos"] if c.get("id") == caso_id), None), meta
 
 
+def hay_algo_que_pedir(compuesto):
+    """(sí, motivo). Un pedido vacío no se manda.
+
+    Medido antes de prender el interruptor: **43 de 146 casos accionables
+    (29%) no tienen ni un ítem del catálogo**, y 16 de ellos —todo OZ Câmbio—
+    estaban en `listo_para_pedir`. Sin este bloqueo, el correo salía igual y
+    decía "Necesitamos la siguiente información" seguido de nada, o peor, de
+    una frase interna de diagnóstico.
+
+    No es un aviso: es un bloqueo. Un aviso lo lee quien mira; esto tiene que
+    frenar también al lote, que por definición nadie mira caso por caso.
+    Se puede saltar a propósito, con `revisado=True`, cuando alguien redactó
+    el pedido a mano y se hace cargo.
+    """
+    if compuesto.get("items_catalogo") or compuesto.get("items_crudo"):
+        return True, ""
+    return False, ("el pedido no tiene ningún documento concreto: el partner no dejó un "
+                   "requerimiento identificable. Redactalo a mano y mandalo con "
+                   "revisado=true, o cerrá el caso — no se le puede escribir a un "
+                   "cliente para no pedirle nada")
+
+
 def ya_pedido(caso_id):
     """(sí, motivo). Mira el registro Y las acciones: cualquiera de los dos
     basta, porque un pedido puede haberse marcado a mano sin pasar por acá."""
@@ -123,8 +145,10 @@ def previsualizar(caso_id, nota=""):
     c = correo.componer(caso, nota=nota)
     pedido, motivo_pedido = ya_pedido(caso_id)
     permitido, motivo_sw = puede_enviar(caso.get("partner"))
+    concreto, motivo_vacio = hay_algo_que_pedir(c)
     return {
         "caso_id": caso_id,
+        "hay_algo_que_pedir": concreto,
         "partner": caso.get("partner"),
         "estado": caso.get("estado"),
         "asunto": c["asunto"],
@@ -136,11 +160,12 @@ def previsualizar(caso_id, nota=""):
         "datos": c["datos"],
         "plazo": c["plazo"],
         "avisos": c["avisos"],
-        "puede_enviar": bool(permitido and c["para"] and not pedido),
+        "puede_enviar": bool(permitido and c["para"] and not pedido and concreto),
         "bloqueos": [x for x in (
             motivo_sw,
             motivo_pedido and f"doble envío: {motivo_pedido}",
             "" if c["para"] else "el caso no tiene correo de cliente",
+            "" if concreto else motivo_vacio,
         ) if x],
         # El adjunto no existe a propósito: esto no es una solicitud KYC (§8).
         "adjuntos": [],
@@ -148,7 +173,7 @@ def previsualizar(caso_id, nota=""):
 
 
 # ── enviar de a uno ──────────────────────────────────────────────────────
-def enviar(caso_id, quien="", nota="", saltar_bloqueo_doble=False):
+def enviar(caso_id, quien="", nota="", saltar_bloqueo_doble=False, revisado=False):
     """Manda el pedido. Registra el intento salga o no, y anota la acción."""
     if not str(quien or "").strip():
         return {"enviado": False, "error": "quien es requerido: no se le escribe a un cliente sin autor"}
@@ -169,6 +194,10 @@ def enviar(caso_id, quien="", nota="", saltar_bloqueo_doble=False):
     c = correo.componer(caso, nota=nota)
     if not c["para"]:
         return {"enviado": False, "error": "el caso no tiene correo de cliente resuelto"}
+    if not revisado:
+        ok, motivo = hay_algo_que_pedir(c)
+        if not ok:
+            return {"enviado": False, "bloqueado": True, "error": motivo}
 
     try:
         r, transporte = _despachar(c)
@@ -306,7 +335,7 @@ def _despachar(compuesto):
 MEDIO_MANUAL = "manual"
 
 
-def registrar_manual(caso_id, quien="", nota="", confirmado=False):
+def registrar_manual(caso_id, quien="", nota="", confirmado=False, revisado=False):
     """Compone el pedido, lo registra como enviado a mano y arma el checklist.
 
     NO toca la red. Devuelve el texto para copiar y las instrucciones de desde
@@ -335,6 +364,10 @@ def registrar_manual(caso_id, quien="", nota="", confirmado=False):
     c = correo.componer(caso, nota=nota)
     if not c["para"]:
         return {"registrado": False, "error": "el caso no tiene correo de cliente resuelto"}
+    if not revisado:
+        ok, motivo = hay_algo_que_pedir(c)
+        if not ok:
+            return {"registrado": False, "bloqueado": True, "error": motivo}
 
     if not confirmado:
         # Se compone y se devuelve, pero no se registra: primero se mira.
@@ -384,7 +417,7 @@ def _para_copiar(c):
 
 
 # ── lote ─────────────────────────────────────────────────────────────────
-def enviar_lote(caso_ids, quien="", confirmado=False):
+def enviar_lote(caso_ids, quien="", confirmado=False, revisado=False):
     """Nada sale sin confirmación explícita y sin tope (§8)."""
     ids = [str(x).strip() for x in (caso_ids or []) if str(x).strip()]
     if not ids:
@@ -399,7 +432,7 @@ def enviar_lote(caso_ids, quien="", confirmado=False):
 
     resultados = []
     for cid in ids:
-        r = enviar(cid, quien=quien)
+        r = enviar(cid, quien=quien, revisado=revisado)
         resultados.append({"caso_id": cid, **r})
     enviados = sum(1 for r in resultados if r.get("enviado"))
     return {"enviados": enviados, "fallidos": len(resultados) - enviados,

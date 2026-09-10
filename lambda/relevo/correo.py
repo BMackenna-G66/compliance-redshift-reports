@@ -75,7 +75,27 @@ def _e(v):
 
 
 def _items_del_caso(caso):
-    """(del_catalogo, en_crudo). Sólo el primero va como lista numerada."""
+    """(del_catalogo, en_crudo). Sólo el primero va como lista numerada.
+
+    **`resumen` NO entra acá, y ese era un defecto grave.** Antes, cuando no
+    se mapeaba ningún ítem, se promovía `caso["resumen"]` al cuerpo del
+    correo. Pero `resumen` no es una cita del partner: es una frase de
+    diagnóstico que `requerimiento.py` escribe **para el analista**. Medido
+    sobre casos reales que estaban a un clic de salir:
+
+        «OZ Câmbio abrió un requerimiento de 14844610 y no se pudo extraer
+         qué pide. Hay que leer el correo.»
+        «dLocal revisó la documentación y dice que necesita corrección. Hay
+         que volver a pedirle al cliente lo que rechazaron…»
+
+    Eso le habría llegado a un cliente, bajo el título "Necesitamos la
+    siguiente información". Es estado interno filtrado hacia afuera y un
+    incidente de compliance, no un typo.
+
+    Lo que SÍ es texto del partner es `no_reconocido`: las líneas de su
+    pedido que no matchearon el catálogo. Esas se pueden mostrar en crudo
+    porque son suyas, no nuestras.
+    """
     catalogo, crudo = [], []
     for it in (caso.get("items") or []):
         if isinstance(it, dict):
@@ -86,9 +106,11 @@ def _items_del_caso(caso):
                 crudo.append(str(it.get("crudo") or it.get("texto")).strip())
         elif isinstance(it, str) and it.strip():
             catalogo.append(it.strip())
-    # `resumen` del caso puede traer el pedido textual cuando no se mapeó nada.
-    if not catalogo and caso.get("resumen"):
-        crudo.append(str(caso["resumen"]).strip())
+    if not catalogo:
+        for linea in (caso.get("no_reconocido") or []):
+            t = str(linea).strip()
+            if t and t not in crudo:
+                crudo.append(t)
     return catalogo, crudo
 
 

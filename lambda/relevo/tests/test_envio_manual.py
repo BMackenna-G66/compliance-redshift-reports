@@ -188,3 +188,56 @@ class TratoSegunElCliente(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnPedidoVacioNoSale(Base):
+    """43 de 146 casos accionables (29%) no tienen ni un ítem del catálogo, y
+    16 estaban en `listo_para_pedir`. Sin bloqueo, el correo salía igual."""
+
+    SIN_NADA = {**CASO, "items": [], "no_reconocido": [],
+                "resumen": "OZ Câmbio abrió un requerimiento y no se pudo extraer "
+                           "qué pide. Hay que leer el correo."}
+
+    def test_el_resumen_interno_NO_llega_al_cuerpo(self):
+        c = correo.componer(self.SIN_NADA)
+        self.assertEqual(c["items_catalogo"], [])
+        self.assertEqual(c["items_crudo"], [])
+        self.assertNotIn("no se pudo extraer", c["texto"])
+        self.assertNotIn("Hay que leer el correo", c["texto"])
+        self.assertNotIn("no se pudo extraer", c["html"])
+
+    def test_las_lineas_del_partner_SI_pueden_ir_en_crudo(self):
+        """`no_reconocido` es texto del partner, no nuestro: eso sí se muestra."""
+        caso = {**self.SIN_NADA,
+                "no_reconocido": ["Comprovante de residência atualizado"]}
+        c = correo.componer(caso)
+        self.assertEqual(c["items_crudo"], ["Comprovante de residência atualizado"])
+        self.assertIn("Comprovante de residência atualizado", c["texto"])
+
+    def test_enviar_lo_bloquea(self):
+        envio._buscar_caso = lambda cid: (self.SIN_NADA, {})
+        r = envio.enviar(self.SIN_NADA["id"], quien="ana@global66.com")
+        self.assertFalse(r["enviado"])
+        self.assertTrue(r["bloqueado"])
+        self.assertIn("ningún documento concreto", r["error"])
+
+    def test_el_envio_a_mano_tambien_lo_bloquea(self):
+        envio._buscar_caso = lambda cid: (self.SIN_NADA, {})
+        r = envio.registrar_manual(self.SIN_NADA["id"], quien="ana@global66.com",
+                                   confirmado=True)
+        self.assertFalse(r["registrado"])
+        self.assertTrue(r["bloqueado"])
+
+    def test_se_puede_saltar_a_proposito_con_revisado(self):
+        """Quien redactó el pedido a mano se hace cargo."""
+        envio._buscar_caso = lambda cid: (self.SIN_NADA, {})
+        ok, _ = envio.hay_algo_que_pedir(correo.componer(self.SIN_NADA))
+        self.assertFalse(ok)
+        r = envio.registrar_manual(self.SIN_NADA["id"], quien="ana@global66.com",
+                                   confirmado=True, revisado=True)
+        self.assertTrue(r["registrado"])
+
+    def test_un_caso_con_items_no_se_bloquea(self):
+        ok, motivo = envio.hay_algo_que_pedir(correo.componer(CASO))
+        self.assertTrue(ok)
+        self.assertEqual(motivo, "")
