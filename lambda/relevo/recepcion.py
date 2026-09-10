@@ -87,11 +87,33 @@ def correlacionar(mensaje, por_hilo=None, por_token=None):
     return None, ""
 
 
+NUESTRAS = ("compliance@global66.com", "compliance.masivo@global66.com")
+
+
 def _es_del_cliente(mensaje, solicitud=None):
-    """Filtra nuestro propio correo saliente, que también cae en el hilo."""
-    h = {str(k).lower(): str(v) for k, v in (mensaje.get("headers") or {}).items()}
-    de = (h.get("from") or "") + " " + (h.get("x-original-sender") or "")
-    return "compliance@global66.com" not in de and "compliance.masivo@global66.com" not in de
+    """Filtra nuestro propio correo saliente, que también cae en el hilo.
+
+    **Hay que mirar `X-Original-Sender`, no el `From`.** Es la misma lección
+    que `partner.py` tiene escrita en su encabezado, y que acá se había
+    olvidado: `compliance@global66.com` es una lista de Google Groups y
+    **reescribe el `From` de TODO lo que distribuye**. Verificado sobre los
+    correos reales de dLocal ya ingeridos:
+
+        From              : "'d·Local' via Compliance" <compliance@global66.com>
+        X-Original-Sender : no_reply@dlocal.com
+
+    Mirando el `From`, la respuesta de un cliente que entra por el grupo se
+    clasificaba como correo nuestro, se marcaba procesada y no se volvía a
+    mirar nunca. En silencio, que es lo peor: el caso queda esperando para
+    siempre una respuesta que sí llegó.
+
+    Se cae al `From` sólo cuando no hay `X-Original-Sender`, que es el caso de
+    lo que mandamos nosotros por la API (no pasa por el grupo, así que nadie
+    reescribe nada) y el de una respuesta directa a la casilla.
+    """
+    h = {str(k).lower(): str(v).lower() for k, v in (mensaje.get("headers") or {}).items()}
+    real = (h.get("x-original-sender") or h.get("x-original-from") or h.get("from") or "")
+    return not any(d in real for d in NUESTRAS)
 
 
 # ── adjuntos ─────────────────────────────────────────────────────────────
