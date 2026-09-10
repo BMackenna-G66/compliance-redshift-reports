@@ -58,6 +58,8 @@ ESTADOS = {
     "informativo":      "Sólo notificaciones. No requiere acción.",
     "sin_cliente":      "No se pudo ubicar al cliente. No se le puede pedir nada todavía.",
     "sin_correo":       "Se ubicó al cliente pero no tiene correo. Se arregla en la base.",
+    "sin_requerimiento": "El partner escribió pero no se pudo determinar qué pide. "
+                         "Hay que leer el correo y contestarle a él, no al cliente.",
     "listo_para_pedir": "Cliente ubicado con correo. Falta pedirle la documentación.",
     "pedido_enviado":   "Se le pidió la documentación al cliente. Esperando respuesta.",
     "recontactado":     "Se le volvió a pedir. Esperando respuesta.",
@@ -72,7 +74,7 @@ ESTADOS = {
 # Etapa numérica, para ordenar y para pintar el flujograma. Los negativos son
 # los estados que no están sobre el carril feliz.
 ETAPA = {"informativo": -2, "descartado": -2, "sin_respuesta": -2,
-         "sin_cliente": -1, "sin_correo": -1,
+         "sin_cliente": -1, "sin_correo": -1, "sin_requerimiento": -1,
          "listo_para_pedir": 0, "pedido_enviado": 1, "recontactado": 1,
          "respuesta_parcial": 2, "respuesta_recibida": 2, "devuelto": 3, "cerrado": 4}
 
@@ -184,6 +186,17 @@ def _estado(caso):
         return "sin_cliente"
     if not cli.get("cliente_correo"):
         return "sin_correo"
+    # Cliente ubicado, pero el motor no pudo decir QUÉ pide el partner: ni un
+    # ítem del catálogo ni una línea suelta que citarle. Eso no es "listo para
+    # pedir", porque no hay nada que pedir. Medido: 43 de 146 casos
+    # accionables (29%), y 16 —todo OZ Câmbio— estaban en `listo_para_pedir`
+    # con un correo listo para salir que no pedía nada.
+    #
+    # Se deriva del dato y no del nombre del partner a propósito: OZ es el
+    # caso más visible porque no manda RFI estructurados, pero también hay
+    # 11 de Currencycloud, 12 de dLocal y 4 de Nium.
+    if not (caso.get("items") or caso.get("no_reconocido")):
+        return "sin_requerimiento"
     return "listo_para_pedir"
 
 

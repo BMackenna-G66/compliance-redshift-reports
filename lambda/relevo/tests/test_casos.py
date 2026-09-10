@@ -19,7 +19,10 @@ from relevo import casos as C                       # noqa: E402
 def tx(**kw):
     base = {"partner": "Nium", "llave": "nium_payout_id", "valor": "79360845",
             "crudo": "PY79360845", "caso_partner": "", "accionable": True,
-            "items": [], "no_reconocido": [], "plazo": "", "resumen": "",
+            # Con un ítem: un caso sin nada que pedir ya no es
+            # `listo_para_pedir`, tiene su propio estado (`sin_requerimiento`).
+            "items": [{"item": "origen_fondos", "es": "Origen de los fondos"}],
+            "no_reconocido": [], "plazo": "", "resumen": "",
             "datos": {}, "correos": [], "ultima": "2026-09-06 10:00", "n_correos": 1,
             "cliente": None}
     base.update(kw)
@@ -256,3 +259,51 @@ class EjeCliente(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SinRequerimiento(unittest.TestCase):
+    """Cliente ubicado, pero el partner no dejó nada identificable que pedir.
+
+    Antes eso caía en `listo_para_pedir` y quedaba a un clic de mandarle a un
+    cliente un correo que no le pedía nada. Medido: 43 de 146 casos
+    accionables (29%), 16 de ellos de OZ Câmbio, que no manda RFI
+    estructurados sino avisos y conversación.
+    """
+
+    def _caso(self, **kw):
+        t = tx(items=[], no_reconocido=[], cliente=resuelto(), **kw)
+        return C.construir([t])[0]
+
+    def test_sin_items_ni_lineas_sueltas_NO_esta_listo(self):
+        self.assertEqual(self._caso()["estado"], "sin_requerimiento")
+
+    def test_con_un_item_del_catalogo_si_esta_listo(self):
+        t = tx(items=[{"item": "domicilio", "es": "Domicilio"}], cliente=resuelto())
+        self.assertEqual(C.construir([t])[0]["estado"], "listo_para_pedir")
+
+    def test_una_linea_suelta_del_partner_ALCANZA(self):
+        """`no_reconocido` es texto del partner: se le puede citar al cliente
+        aunque no haya matcheado el catálogo."""
+        t = tx(items=[], no_reconocido=["Comprovante de residência"], cliente=resuelto())
+        self.assertEqual(C.construir([t])[0]["estado"], "listo_para_pedir")
+
+    def test_no_pisa_a_sin_cliente(self):
+        """El orden importa: sin cliente no se puede pedir nada igual."""
+        t = tx(items=[], no_reconocido=[], cliente=None)
+        self.assertEqual(C.construir([t])[0]["estado"], "sin_cliente")
+
+    def test_no_pisa_a_informativo(self):
+        t = tx(items=[], no_reconocido=[], accionable=False, cliente=resuelto())
+        self.assertEqual(C.construir([t])[0]["estado"], "informativo")
+
+    def test_una_accion_registrada_manda_sobre_el_estado_derivado(self):
+        """Si alguien redactó el pedido a mano y lo marcó, el caso avanza."""
+        t = tx(items=[], no_reconocido=[], cliente=resuelto())
+        acc = {C.id_de(t): [{"accion": "pedido_enviado", "quien": "ana",
+                             "cuando": "2026-09-06T10:00:00", "detalle": {}}]}
+        self.assertEqual(C.construir([t], acciones=acc)[0]["estado"], "pedido_enviado")
+
+    def test_esta_fuera_del_carril_feliz_pero_no_es_terminal(self):
+        self.assertEqual(C.ETAPA["sin_requerimiento"], -1)
+        self.assertNotIn("sin_requerimiento", C.TERMINALES)
+        self.assertIn("sin_requerimiento", C.ESTADOS)

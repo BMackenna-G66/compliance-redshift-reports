@@ -83,16 +83,15 @@ def interruptores():
 
 
 def puede_enviar(partner=""):
-    """(permitido, motivo). Apagado por defecto, y por partner si se declara."""
-    sw = interruptores()
-    if not sw.get("envio_general"):
-        return False, ("el interruptor general de envío está apagado "
-                       "(Admin → Relevo → Configuración)")
-    if partner:
-        clave = f"envio_{str(partner).lower().replace(' ', '_')}"
-        if clave in sw and not sw[clave]:
-            return False, f"el interruptor de {partner} está apagado ({clave})"
-    return True, ""
+    """(permitido, motivo). Apagado por defecto, y por partner si se declara.
+
+    Delega en el tablero (`interruptores.py`) en vez de leer la config por su
+    cuenta: dos lugares decidiendo lo mismo terminan discrepando, y el día que
+    discrepen va a ser el día en que uno de los dos deje salir un correo.
+    Ahí vive también el maestro, que apaga esto sin tocarlo.
+    """
+    from . import interruptores as sw
+    return sw.puede_salir(partner)
 
 
 # ── el caso ──────────────────────────────────────────────────────────────
