@@ -66,51 +66,60 @@ def disponible():
         return False
 
 
-def _parrafo(texto):
-    return f'<p style="margin:0 0 12px">{texto}</p>'
+# El hueco de la plantilla vive DENTRO de un <p> y un <span>:
+#
+#   <p style="..."><span style="...">TEXTO LIBRE<br>TEXTO LIBRE<br>...</span></p>
+#
+# Así que lo que se inyecta tiene que ser **contenido en línea**. Un <p>, una
+# <table> o un <ol> ahí adentro son HTML inválido: el navegador cierra el
+# párrafo por su cuenta y el bloque se escapa del contenedor con estilo,
+# perdiendo tipografía y color. En Outlook —y la plantilla trae
+# `mso-line-height-alt`, o sea que está hecha para Outlook— se rompe peor.
+#
+# Es el mismo contrato que respeta `_render_email_template` de WatchTower, que
+# inyecta sólo texto escapado con <br>. Por eso los correos AML se ven bien.
+SALTO = "<br>"
+DOBLE = "<br><br>"
+
+
+def _e(v):
+    return _html.escape(str(v or "").strip())
 
 
 def bloque(datos=None, catalogo=None, plazo="", nota="", empresa=False):
-    """El medio del correo, en HTML, listo para entrar en la plantilla.
+    """El medio del correo, **en línea**, listo para entrar en la plantilla.
 
     `datos` es [(etiqueta, valor)] y `catalogo` la lista de documentos ya
     traducida. Todo se escapa: los valores vienen de un correo de un tercero
     y de nuestra propia base, y ninguno de los dos es HTML de confianza.
     """
-    e = lambda v: _html.escape(str(v or "").strip())  # noqa: E731
-    partes = [_parrafo(
-        "Estamos realizando una revisión de rutina sobre una de "
-        f"{'sus' if empresa else 'tus'} operaciones y necesitamos algunos "
-        "antecedentes para poder completarla.")]
+    partes = ["Estamos realizando una revisión de rutina sobre una de "
+              f"{'sus' if empresa else 'tus'} operaciones y necesitamos algunos "
+              "antecedentes para poder completarla."]
 
     if datos:
-        filas = "".join(
-            f'<tr><td style="padding:4px 12px 4px 0;color:#666">{e(k)}</td>'
-            f'<td style="padding:4px 0"><strong>{e(v)}</strong></td></tr>'
-            for k, v in datos)
-        partes.append(_parrafo("Se trata de esta operación:"))
-        partes.append(f'<table style="border-collapse:collapse;margin:0 0 12px">{filas}</table>')
+        filas = SALTO.join(f"<strong>{_e(k)}:</strong> {_e(v)}" for k, v in datos)
+        partes.append("Se trata de esta operación:" + SALTO + filas)
 
     if catalogo:
-        items = "".join(f"<li style='margin:0 0 6px'>{e(x)}</li>" for x in catalogo)
-        partes.append(_parrafo("Para poder continuar necesitamos que nos "
-                               f"{'envíen' if empresa else 'envíes'}:"))
-        partes.append(f'<ol style="margin:0 0 12px;padding-left:22px">{items}</ol>')
+        items = SALTO.join(f"{i}. {_e(x)}" for i, x in enumerate(catalogo, 1))
+        partes.append("Para poder continuar necesitamos que nos "
+                      f"{'envíen' if empresa else 'envíes'}:" + SALTO + items)
 
-    partes.append(_parrafo(
+    partes.append(
         f"{'Les' if empresa else 'Te'} pedimos responder "
-        f"<strong>{e(plazo)}</strong>." if plazo else
-        f"{'Les' if empresa else 'Te'} pedimos responder a la brevedad."))
+        f"<strong>{_e(plazo)}</strong>." if plazo else
+        f"{'Les' if empresa else 'Te'} pedimos responder a la brevedad.")
 
     if nota:
-        partes.append(_parrafo(e(nota)))
+        partes.append(_e(nota))
 
-    partes.append(_parrafo(
+    partes.append(
         f"{'Pueden' if empresa else 'Puedes'} responder directamente a este correo "
-        f"adjuntando los documentos. <strong>"
+        "adjuntando los documentos. <strong>"
         f"{'Mantengan' if empresa else 'Mantén'} el asunto tal como está</strong>: "
-        "es lo que nos permite asociar la respuesta a la solicitud."))
-    return "".join(partes)
+        "es lo que nos permite asociar la respuesta a la solicitud.")
+    return DOBLE.join(partes)
 
 
 def componer(nombre, contenido_html, empresa=False):

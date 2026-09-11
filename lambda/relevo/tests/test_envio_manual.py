@@ -334,3 +334,38 @@ class FormatoCorporativo(unittest.TestCase):
         finally:
             plantilla.RUTA = real
             plantilla._cache = None
+
+    def test_lo_inyectado_es_SOLO_contenido_en_linea(self):
+        """El hueco de la plantilla vive dentro de un <p> y un <span>:
+
+            <p style="…"><span style="…">TEXTO LIBRE<br>…</span></p>
+
+        Un <p>, una <table> o un <ol> ahí adentro son HTML inválido — el
+        navegador cierra el párrafo por su cuenta y el bloque se escapa del
+        contenedor con estilo, perdiendo tipografía y color. En Outlook, para
+        el que está hecha la plantilla, se rompe peor. Mi primera versión
+        inyectaba los tres.
+
+        Es el mismo contrato que respeta el renderizador de WatchTower, que
+        inyecta sólo texto escapado con <br>.
+        """
+        import re
+        from relevo import plantilla
+        b = plantilla.bloque(
+            datos=[("Monto", "1500.00")], catalogo=["Origen de los fondos"],
+            plazo="8 de septiembre", nota="Nota.", empresa=False)
+        etiquetas = set(re.findall(r"</?(\w+)", b))
+        BLOQUE = {"p", "table", "tr", "td", "ol", "ul", "li", "div",
+                  "h1", "h2", "h3", "blockquote"}
+        self.assertEqual(etiquetas & BLOQUE, set(),
+                         f"bloque() generó etiquetas de bloque: {etiquetas & BLOQUE}")
+        self.assertTrue(etiquetas <= {"br", "strong", "em", "span", "a"}, etiquetas)
+
+    def test_el_marcador_sigue_dentro_de_un_parrafo(self):
+        """Si la plantilla cambiara y el hueco pasara a ser un contenedor de
+        bloque, el test de arriba estaría cuidando algo que ya no aplica."""
+        from relevo import plantilla
+        html = plantilla.cargar()
+        i = html.index(plantilla.MARCA_TEXTO)
+        self.assertIn("<span", html[max(0, i - 200):i])
+        self.assertIn("<p ", html[max(0, i - 400):i])
