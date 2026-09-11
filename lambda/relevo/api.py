@@ -62,6 +62,13 @@ def _resumen_caso(c):
         "accionable": c.get("accionable"),
         "n_transacciones": c.get("n_transacciones"),
         "n_correos": c.get("n_correos"),
+        # Los identificadores de las remesas (RMT…, IF-…, PY…). Viajan a la
+        # lista porque son con lo que la gente busca: el partner los nombra en
+        # su correo y el analista los tiene a mano. El `id` del caso los trae
+        # sólo para dLocal y OZ; para Currencycloud y Nium lleva el número de
+        # caso del partner, que es otra cosa.
+        "transacciones": [str(t.get("valor") or "") for t in (c.get("transacciones") or [])
+                          if t.get("valor")],
         "cliente_id": datos.get("cliente_id"),
         "cliente_nombre": datos.get("cliente_nombre"),
         "cliente_correo": datos.get("cliente_correo"),
@@ -140,6 +147,15 @@ def listar_clientes(q):
         items = [c for c in items
                  if any((k.get("estado") if isinstance(k, dict) else k) not in terminales
                         for k in (c.get("casos") or []))]
+    # Las remesas de todos sus casos, para que buscar un identificador
+    # encuentre al cliente y no sólo al caso.
+    for c in items:
+        vals = []
+        for k in (c.get("casos") or []):
+            if isinstance(k, dict):
+                vals += [str(t.get("valor") or "")
+                         for t in (k.get("transacciones") or []) if t.get("valor")]
+        c["transacciones_ids"] = sorted(set(vals))
     return {"clientes": items, "total": len(items), "meta": meta}
 
 

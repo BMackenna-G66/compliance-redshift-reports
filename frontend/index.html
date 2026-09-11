@@ -1280,7 +1280,17 @@
                 class="w-3.5 h-3.5 accent-orange-500">
               Solo con casos abiertos
             </label>
-            <span class="text-xs text-slate-500" x-text="relevoClientes.length + ' clientes'"></span>
+            <div class="relative">
+              <input type="text" x-model="relevoBuscarCliente" placeholder="Nombre, correo, customer id o N° de remesa…"
+                class="text-xs pl-7 pr-7 py-1.5 rounded bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-500 w-72 focus:outline-none focus:border-slate-400">
+              <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-xs">🔍</span>
+              <button x-show="relevoBuscarCliente" @click="relevoBuscarCliente=''"
+                class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white text-xs">✕</button>
+            </div>
+            <span class="text-xs text-slate-500"
+              x-text="relevoBuscarCliente
+                ? relevoClientesFiltrados().length + ' de ' + relevoClientes.length + ' clientes'
+                : relevoClientes.length + ' clientes'"></span>
           </div>
           <p class="text-xs text-slate-500 mb-3">
             Un cliente, todos sus casos, <strong class="text-slate-400">un solo pedido</strong>.
@@ -1294,7 +1304,7 @@
                 <th class="text-left p-3">Etapa</th><th class="text-right p-3">Vencidos</th>
               </tr></thead>
               <tbody>
-                <template x-for="c in relevoClientes" :key="c.cliente_id || c.id || JSON.stringify(c).slice(0,40)">
+                <template x-for="c in relevoClientesFiltrados()" :key="c.cliente_id || c.id || JSON.stringify(c).slice(0,40)">
                   <tr class="border-b border-slate-700/50 hover:bg-slate-700/30 transition cursor-pointer"
                       @click="relevoFiltroCliente = c.cliente_id; relevoSub='casos'; relevoCargar(true)">
                     <td class="p-3">
@@ -1312,7 +1322,7 @@
                       x-text="c.vencidos ?? 0"></td>
                   </tr>
                 </template>
-                <tr x-show="relevoClientes.length===0 && !relevoCargando">
+                <tr x-show="relevoClientesFiltrados().length===0 && !relevoCargando">
                   <td colspan="6" class="p-6 text-center text-slate-500">Sin clientes que mostrar.</td>
                 </tr>
               </tbody>
@@ -1323,6 +1333,13 @@
         <!-- ── 2. CASOS ── -->
         <div x-show="relevoSub==='casos'">
           <div class="flex items-center gap-2 mb-3 flex-wrap">
+            <div class="relative">
+              <input type="text" x-model="relevoBuscarCaso" placeholder="Nombre, correo, customer id o N° de remesa…"
+                class="text-xs pl-7 pr-7 py-1.5 rounded bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-500 w-72 focus:outline-none focus:border-slate-400">
+              <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-xs">🔍</span>
+              <button x-show="relevoBuscarCaso" @click="relevoBuscarCaso=''"
+                class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white text-xs">✕</button>
+            </div>
             <select x-model="relevoFiltroPartner" @change="relevoCargar(true)"
               class="text-xs px-2 py-1.5 rounded bg-slate-700 border border-slate-600 text-slate-300">
               <option value="">Todos los partners</option>
@@ -1341,10 +1358,13 @@
               cliente <span x-text="relevoFiltroCliente"></span>
               <button @click="relevoFiltroCliente=''; relevoCargar(true)" class="hover:text-white">✕</button>
             </span>
-            <span class="text-xs text-slate-500 ml-auto" x-text="relevoCasos.length + ' casos'"></span>
+            <span class="text-xs text-slate-500 ml-auto"
+              x-text="relevoBuscarCaso
+                ? relevoCasosFiltrados().length + ' de ' + relevoCasos.length + ' casos'
+                : relevoCasos.length + ' casos'"></span>
           </div>
           <div class="space-y-2">
-            <template x-for="c in relevoCasos" :key="c.id">
+            <template x-for="c in relevoCasosFiltrados()" :key="c.id">
               <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
                 <div class="flex items-center gap-3 px-4 py-3 cursor-pointer" @click="relevoAbrir(c)">
                   <span class="text-slate-400 text-sm" :class="relevoDetalle?.id===c.id ? 'rotate-90' : ''"
@@ -1485,9 +1505,11 @@
                 </div>
               </div>
             </template>
-            <p x-show="relevoCasos.length===0 && !relevoCargando" class="text-center text-slate-500 py-8 text-sm">
-              Sin casos con esos filtros.
-            </p>
+            <p x-show="relevoCasosFiltrados().length===0 && !relevoCargando"
+               class="text-center text-slate-500 py-8 text-sm"
+               x-text="relevoBuscarCaso
+                 ? 'Nada coincide con «' + relevoBuscarCaso + '».'
+                 : 'Sin casos con esos filtros.'"></p>
           </div>
         </div>
 
@@ -6881,7 +6903,7 @@
       relevoBandejaTotal: 0, relevoConfig: {}, relevoDetalle: null, relevoVencidos: 0,
       relevoFiltroPartner: '', relevoFiltroEstado: '', relevoFiltroCliente: '',
       relevoSoloVencidos: false, relevoSoloPendientes: false, relevoSoloAccionables: false,
-      relevoBuscar: '',
+      relevoBuscar: '', relevoBuscarCaso: '', relevoBuscarCliente: '',
       relevoPrueba: { remitente: '', asunto: '', cuerpo: '' },
       relevoPedido: { abierto: false, cargando: false, enviando: false, caso: null, para: '', datos: {}, copiado: '' },
       relevoCola: [], relevoSoloColaVencidos: true, relevoGuardandoSw: false,
@@ -6971,6 +6993,48 @@
         if (!vivos.length) return (c.casos || []).length ? 'cerrado' : '';
         return vivos.sort((a,b) => orden.indexOf(a) - orden.indexOf(b))[0];
       },
+      // ── búsqueda rápida ───────────────────────────────────────────
+      // Filtra en el navegador, no en el servidor: la pantalla ya tiene todos
+      // los casos cargados, así que ir al backend por cada tecla sería más
+      // lento y además duplicaría la lógica en dos lugares.
+      //
+      // Sin acentos y sin puntos: alguien que busca "maria" tiene que
+      // encontrar a "María", y quien copia un RUT o una remesa la pega con
+      // los separadores que le tocó.
+      relevoNormalizar(v) {
+        return String(v ?? '')
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase().replace(/[.\-_\s]/g, '');
+      },
+      relevoCoincide(campos, termino) {
+        const t = this.relevoNormalizar(termino);
+        if (!t) return true;
+        // Cada palabra por separado: "maria gonzalez" encuentra aunque el
+        // nombre venga como "GONZALEZ, MARIA".
+        return termino.trim().split(/\s+/).every(palabra => {
+          const p = this.relevoNormalizar(palabra);
+          return !p || campos.some(c => this.relevoNormalizar(c).includes(p));
+        });
+      },
+      relevoCasosFiltrados() {
+        const t = this.relevoBuscarCaso;
+        if (!t || !t.trim()) return this.relevoCasos;
+        return this.relevoCasos.filter(c => this.relevoCoincide([
+          c.cliente_nombre, c.cliente_correo, c.cliente_id,
+          c.caso_partner, c.id, c.partner,
+          ...(c.transacciones || []),
+        ], t));
+      },
+      relevoClientesFiltrados() {
+        const t = this.relevoBuscarCliente;
+        if (!t || !t.trim()) return this.relevoClientes;
+        return this.relevoClientes.filter(c => this.relevoCoincide([
+          c.cliente_nombre, c.cliente_correo, c.cliente_id, c.cliente_pais,
+          ...(c.partners || []),
+          ...(c.transacciones_ids || []),
+        ], t));
+      },
+
       relevoPartners() {
         return [...new Set(this.relevoCasos.map(c => c.partner).filter(Boolean))].sort();
       },
