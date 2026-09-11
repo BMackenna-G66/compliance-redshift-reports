@@ -43,6 +43,29 @@ REGION = os.environ.get("AWS_REGION", "us-east-1")
 # propósito: los reales rondan los 28M, así que 39.99x.xxx no colisiona.
 BASE_RMT = 39990000
 
+# Cada partner tiene su llave, su remitente y su forma de correo. Son datos
+# reales de reglas.json y de correos ya ingeridos: un caso de prueba que el
+# motor no reconozca no prueba nada.
+PARTNERS = {
+    "dlocal": {
+        "nombre": "dLocal", "llave": "rmt", "base": BASE_RMT,
+        "remitente": "no_reply@dlocal.com",
+        "display": "\"'d·Local' via Compliance\" <compliance@global66.com>",
+        "asunto": "New RFI is requested - RMT0{id}",
+        "caso_id": "dlocal:rmt:{id}",
+    },
+    "currencycloud": {
+        # `cc_transaction_id`, NO `cc_external_id`: ese último es la llave que
+        # no sabemos componer y sus 16 casos quedan sin resolver. Un caso de
+        # prueba tiene que ejercitar el camino que funciona.
+        "nombre": "Currencycloud", "llave": "cc_transaction_id",
+        "remitente": "kycrequests@currencycloud.com",
+        "display": "\"Currencycloud via Compliance\" <compliance@global66.com>",
+        "asunto": "[Currencycloud] - {tic} - Compliance Query - {nombre}",
+        "caso_id": "currencycloud:caso:{tic}",
+    },
+}
+
 _SEGURO = re.compile(r"[^A-Za-z0-9._-]+")
 s3 = boto3.client("s3", region_name=REGION)
 
@@ -87,14 +110,13 @@ VARIANTES = {
     "completo": {
         "que": "persona, 3 documentos del catálogo — el camino feliz",
         "nombre": "Benjamin Mackenna",
-        "pedidos": ["✔ Front of the document", "✔ Back of the document",
-                    "✔ Statement of source of funds", "✔ Purpose of payment"],
+        "pedidos": ["- Source of funds", "- Purpose of the payment",
+                    "- Relationship between the sender and the beneficiary"],
     },
     "empresa": {
         "que": "razón social — verifica el trato de usted y plural",
         "nombre": "MACKENNA SOLUCIONES SPA",
-        "pedidos": ["✔ Statement of source of funds", "✔ Nature of business",
-                    "✔ Website"],
+        "pedidos": ["- Source of funds", "- Nature of business", "- Website"],
     },
     "sin_items": {
         "que": "el partner no dice qué pide — debe quedar en sin_requerimiento "
@@ -105,20 +127,20 @@ VARIANTES = {
     "uno_solo": {
         "que": "un solo documento — el más rápido para probar ida y vuelta",
         "nombre": "Benjamin Mackenna",
-        "pedidos": ["✔ Statement of source of funds"],
+        "pedidos": ["- Source of funds"],
     },
 }
 
 
-def _cuerpo(rmt, nombre, pedidos):
+def _cuerpo_dlocal(ident, nombre, pedidos):
     lineas = [
         "d•local", "Dear Global 66 - XB,",
         "We would like to advise that we have received a payout request for the "
         "transaction below:",
         "Country\tCL",
         f"Beneficiary Last Name\t{nombre.split()[-1]}\tAmount\tUSD 1234",
-        f"Beneficiary Name\t{nombre.split()[0]}\tPayout ID\t9{rmt}",
-        f"External ID\tRMT0{rmt}",
+        f"Beneficiary Name\t{nombre.split()[0]}\tPayout ID\t9{ident}",
+        f"External ID\tRMT0{ident}",
     ]
     if pedidos:
         lineas.append("According to our Payments Policy and International Compliance "
@@ -126,30 +148,75 @@ def _cuerpo(rmt, nombre, pedidos):
                       "additional information.")
         lineas.append("Supporting documentation required to continue processing payouts:")
         lineas += pedidos
-    # La marca de "esto es una prueba" NO va en el cuerpo: cae dentro de la
-    # ventana que el motor barre después de un arranque y termina extraída
-    # como si fuera un requerimiento del partner. Verificado. Va en un header.
     lineas.append("Sent by dLocal , payment service provider for Global 66 - XB.")
+    return "\n".join(lineas)
+
+
+def _cuerpo_currencycloud(ident, nombre, pedidos, tic):
+    """La forma real de un RFI de Currencycloud: hilo de Zendesk, el pedido en
+    prosa y la firma de un analista. Copiado de correos ya ingeridos."""
+    lineas = [
+        "##- Please type your reply above this line -##",
+        f"Your request ({tic}) has been updated. To add additional comments, "
+        "reply to this email.",
+        "----------------------------------------------",
+        "James Patrick Tadioan, 10 Sept 2026, 18:03 BST",
+        "Hi Team,",
+        "We are conducting a routine review of the transaction below and require "
+        "further information before it can be released.",
+        f"Transaction ID: {ident}",
+        f"Beneficiary: {nombre}",
+        "Amount: USD 2,480.00",
+    ]
+    if pedidos:
+        lineas.append("Please provide the following:")
+        lineas += pedidos
+        lineas.append("If you require more time, please reply to this query and we "
+                      "may be able to offer an extension.")
+    lineas += [
+        "Kind regards,", "James Patrick Tadioan", "Associate Analyst",
+        "Real-Time Transaction Monitoring Team,", "Currencycloud Compliance",
+        "----------------------------------------------",
+    ]
     return "\n".join(lineas)
 
 
 def crear(a):
     v = VARIANTES[a.variante]
-    rmt = str(BASE_RMT + int(time.time()) % 9999)
-    caso_id = f"dlocal:rmt:{rmt}"
-    mid = f"PRUEBA-{rmt}"
+    P = PARTNERS[a.partner]
     nombre = a.nombre or v["nombre"]
+    # El identificador tiene la forma que la regla de extracción exige. Con
+    # cualquier otra el motor no la encuentra, no hay transacción y no hay
+    # caso: el fixture tiene que hablar el idioma del partner.
+    if a.partner == "currencycloud":
+        # cc_transaction_id: IF-AAAAMMDD-XXXXXX  (patrón IF-\d{8}-[A-Z0-9]{5,8})
+        import random
+        import string
+        ident = (time.strftime("IF-%Y%m%d-", time.gmtime())
+                 + "".join(random.choices(string.ascii_uppercase + string.digits, k=6)))
+    else:
+        ident = str(P["base"] + int(time.time()) % 9999)
+    tic = str(1400000 + int(time.time()) % 9999)          # nº de ticket del partner
+    caso_id = P["caso_id"].format(id=ident, tic=tic)
+    mid = f"PRUEBA-{a.partner}-{ident}"
+
+    if a.partner == "currencycloud":
+        cuerpo = _cuerpo_currencycloud(ident, nombre, v["pedidos"], tic)
+        asunto = P["asunto"].format(tic=tic, nombre=nombre)
+        llave_cache = f'{P["llave"]}|{ident}'
+    else:
+        cuerpo = _cuerpo_dlocal(ident, nombre, v["pedidos"])
+        asunto = P["asunto"].format(id=ident)
+        llave_cache = f'{P["llave"]}|{ident}'
 
     poner("mensajes", clave_segura(mid), {
-        "id": mid, "thread_id": mid,
-        "asunto": f"New RFI is requested - RMT0{rmt}",
-        "cuerpo": _cuerpo(rmt, nombre, v["pedidos"]),
+        "id": mid, "thread_id": mid, "asunto": asunto, "cuerpo": cuerpo,
         "headers": {
-            "From": "\"'d·Local' via Compliance\" <compliance@global66.com>",
+            "From": P["display"],
             "To": "compliance@global66.com",
-            "X-Original-Sender": "no_reply@dlocal.com",
-            "Reply-To": "\"d·Local\" <no_reply@dlocal.com>",
-            "Subject": f"New RFI is requested - RMT0{rmt}",
+            "X-Original-Sender": P["remitente"],
+            "Reply-To": P["remitente"],
+            "Subject": asunto,
             "Date": time.strftime("%a, %d %b %Y %H:%M:%S +0000", time.gmtime()),
             "Message-ID": f"<{mid}@prueba.local>",
             "List-ID": "<compliance.global66.com>",
@@ -159,18 +226,18 @@ def crear(a):
         "fecha": str(int(time.time() * 1000)), "_prueba": True,
     })
 
-    poner("clientes", clave_segura(f"rmt|{rmt}"), {
-        "llave": "rmt", "valor": rmt, "estado": "encontrado",
+    poner("clientes", clave_segura(llave_cache), {
+        "llave": P["llave"], "valor": ident, "estado": "encontrado",
         "motivo": "CASO DE PRUEBA — resolución inyectada, no salió de Redshift",
         "cliente": {
-            "cliente_id": 999000000 + int(rmt) % 1000,
+            "cliente_id": 999000000 + (abs(hash(ident)) % 1000),
             "cliente_nombre": nombre, "cliente_correo": a.correo,
             "cliente_pais": "Chile",
-            "tx_monto": "1234.00", "tx_moneda": "USD",
+            "tx_monto": "2480.00", "tx_moneda": "USD",
             "tx_fecha": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
             "tx_estado": "PRUEBA",
             "tx_beneficiario": nombre, "tx_remitente": nombre,
-            "extra": {"ref_nuestra": f"RMT0{rmt}", "_prueba": True},
+            "extra": {"ref_nuestra": str(ident), "_prueba": True},
         },
         "verificacion": {}, "filas": 1, "ms": 0,
         "cuando": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
@@ -178,12 +245,14 @@ def crear(a):
     })
 
     poner("pruebas", clave_segura(caso_id), {
-        "caso_id": caso_id, "rmt": rmt, "message_id": mid,
+        "caso_id": caso_id, "rmt": ident, "ident": ident, "llave": P["llave"],
+        "partner": a.partner, "message_id": mid,
         "variante": a.variante, "correo": a.correo, "nombre": nombre,
         "creado": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
     })
 
     print(f"\n  Caso creado: {caso_id}")
+    print(f"    partner  : {P['nombre']}  ({P['llave']} = {ident})")
     print(f"    variante : {a.variante} — {v['que']}")
     print(f"    cliente  : {nombre} <{a.correo}>")
     print(f"    documentos que va a pedir: {len(v['pedidos'])}")
@@ -206,7 +275,8 @@ def listar(a):
     filas.sort(key=lambda f: f.get("creado", ""))
     print(f"\n  {len(filas)} caso(s) de prueba:\n")
     for f in filas:
-        print(f"    {f['caso_id']:<28} {f.get('variante','?'):<11} "
+        print(f"    {f['caso_id']:<30} {f.get('partner','dlocal'):<14} "
+              f"{f.get('variante','?'):<11} "
               f"{f.get('correo',''):<32} {f.get('creado','')}")
     print()
 
@@ -238,7 +308,8 @@ def borrar(a):
         claves = [
             k_reg,
             _ruta("mensajes", clave_segura(mid)),
-            _ruta("clientes", clave_segura(f"rmt|{rmt}")),
+            _ruta("clientes", clave_segura(
+                f"{d.get('llave', 'rmt')}|{d.get('ident', rmt)}")),
             _ruta("checklist", clave_segura(caso_id)),
         ]
         # Lo que se guarda con clave impredecible se busca por contenido.
@@ -275,6 +346,8 @@ def main():
 
     c = sub.add_parser("crear", help="fabrica un caso apuntando a tu correo")
     c.add_argument("--correo", required=True, help="tu casilla, hace de cliente")
+    c.add_argument("--partner", default="currencycloud", choices=sorted(PARTNERS),
+                   help="con cuál partner fabricar el caso")
     c.add_argument("--variante", default="completo", choices=sorted(VARIANTES),
                    help="; ".join(f"{k}: {v['que']}" for k, v in VARIANTES.items()))
     c.add_argument("--nombre", default="", help="nombre del cliente (según la variante)")
