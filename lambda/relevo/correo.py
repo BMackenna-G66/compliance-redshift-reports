@@ -260,7 +260,7 @@ def componer(caso, token=None, nota=""):
                            ("Puedes responder directamente a este correo adjuntando los "
                             "documentos."),
         "mantener": ("<strong>Mantengan el asunto tal como está</strong>" if empresa
-                     else "<strong>Mantené el asunto tal como está</strong>"),
+                     else "<strong>Mantén el asunto tal como está</strong>"),
         "pie": ("Este correo se envió porque tienen una operación en revisión. Si creen que "
                 "es un error, respondan este mismo mensaje.") if empresa else
                ("Este correo se envió porque tenés una operación en revisión. Si creés que "
@@ -352,6 +352,26 @@ def componer(caso, token=None, nota=""):
     lineas += ["", T["puede_responder"] + " " +
                re.sub(r"</?strong>", "", T["mantener"]) + ".",
                "", "Equipo de Compliance · Global66"]
+
+    # El formato corporativo manda: la plantilla oficial aporta cabecera,
+    # tipografía, saludo, cierre, firma y pie; acá sólo se compone el medio.
+    # Si por lo que sea no está disponible —no viajó en el paquete, cambió el
+    # marcador— se cae al HTML propio en vez de no mandar nada. El correo feo
+    # es un problema menor; el correo que no sale frena un caso.
+    try:
+        from . import plantilla
+        oficial = plantilla.componer(
+            nombre,
+            plantilla.bloque(datos=datos, catalogo=catalogo, plazo=plazo,
+                             nota=nota, empresa=empresa),
+            empresa=empresa)
+        if oficial and not plantilla.quedan_marcadores(oficial):
+            html = oficial
+        elif oficial:
+            avisos.append("La plantilla oficial dejó marcadores sin reemplazar; "
+                          "se usó el formato propio.")
+    except Exception as e:
+        print(f"[relevo/correo] no pude usar la plantilla oficial: {e}")
 
     return {
         "asunto": asunto_de(token),

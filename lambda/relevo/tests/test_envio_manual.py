@@ -263,3 +263,74 @@ class UnPedidoVacioNoSale(Base):
         ok, motivo = envio.hay_algo_que_pedir(correo.componer(CASO))
         self.assertTrue(ok)
         self.assertEqual(motivo, "")
+
+
+class FormatoCorporativo(unittest.TestCase):
+    """El correo sale con la plantilla oficial, la misma del ciclo AML.
+
+    Dos diseños distintos que dicen ser Global66 es exactamente lo que un
+    cliente no puede distinguir de un phishing.
+    """
+
+    CASO = {**CASO, "plazo": "8 de septiembre de 2026"}
+
+    def _html(self, nombre):
+        from relevo import plantilla
+        plantilla._cache = None
+        return correo.componer({**self.CASO, "cliente": {
+            "cliente_id": 1, "cliente_nombre": nombre,
+            "cliente_correo": "a@b.com"}})["html"]
+
+    def test_usa_la_plantilla_oficial(self):
+        from relevo import plantilla
+        self.assertTrue(plantilla.disponible(), "base.html no viajó en el paquete")
+        self.assertIn("Equipo Global66", self._html("Ana Perez"))
+
+    def test_no_deja_marcadores_sin_reemplazar(self):
+        """Un correo que le llega al cliente diciendo "TEXTO LIBRE" o
+        "{!Account.first_name__c}" es peor que uno feo."""
+        for nombre in ("Ana Perez", "MACKENNA SOLUCIONES SPA"):
+            h = self._html(nombre)
+            from relevo import plantilla
+            self.assertFalse(plantilla.quedan_marcadores(h), nombre)
+            self.assertNotIn("TEXTO LIBRE", h)
+            self.assertNotIn("{!", h)
+
+    def test_el_contenido_entra_en_la_plantilla(self):
+        h = self._html("Ana Perez")
+        self.assertIn("Origen de los fondos", h)
+        self.assertIn("8 de septiembre de 2026", h)
+        self.assertIn("Ana Perez", h)
+
+    def test_una_empresa_conserva_el_trato_de_usted(self):
+        h = self._html("MACKENNA SOLUCIONES SPA")
+        for formal in ("Estimados de", "su respuesta", "envíen", "Tienen dudas"):
+            self.assertIn(formal, h, formal)
+        self.assertNotIn("Quedamos atentos a tu respuesta", h)
+
+    def test_una_persona_conserva_el_tuteo_de_la_plantilla(self):
+        h = self._html("Ana Perez")
+        self.assertIn("Hola Ana Perez,", h)
+        self.assertIn("Quedamos atentos a tu respuesta", h)
+        # La plantilla habla de tú; "Mantené" es voseo y se notaba la mezcla.
+        self.assertNotIn("Mantené", h)
+
+    def test_el_nombre_se_escapa(self):
+        """El nombre viene de la base y entra en un HTML."""
+        h = self._html("<script>alert(1)</script>")
+        self.assertNotIn("<script>alert(1)</script>", h)
+        self.assertIn("&lt;script&gt;", h)
+
+    def test_sin_plantilla_cae_al_formato_propio_y_no_rompe(self):
+        """Si base.html no viaja en el paquete, el correo sale feo pero sale:
+        un correo que no sale frena un caso."""
+        from relevo import plantilla
+        real, plantilla.RUTA = plantilla.RUTA, Path("/no/existe.html")
+        plantilla._cache = None
+        try:
+            c = correo.componer(self.CASO)
+            self.assertTrue(c["html"])
+            self.assertIn("Origen de los fondos", c["html"])
+        finally:
+            plantilla.RUTA = real
+            plantilla._cache = None
