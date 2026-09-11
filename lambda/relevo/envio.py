@@ -116,12 +116,14 @@ def hay_algo_que_pedir(compuesto):
     Se puede saltar a propósito, con `revisado=True`, cuando alguien redactó
     el pedido a mano y se hace cargo.
     """
-    if compuesto.get("items_catalogo") or compuesto.get("items_crudo"):
+    if compuesto.get("items_catalogo"):
         return True, ""
-    return False, ("el pedido no tiene ningún documento concreto: el partner no dejó un "
-                   "requerimiento identificable. Redactalo a mano y mandalo con "
-                   "revisado=true, o cerrá el caso — no se le puede escribir a un "
-                   "cliente para no pedirle nada")
+    # `items_crudo` NO alcanza: es texto libre del correo del partner y a
+    # veces es basura (firmas, metadata de Zendesk, CSS). Ver correo.py.
+    return False, ("el pedido no tiene ningún documento del catálogo. El partner escribió "
+                   "algo que el motor no supo mapear: hay que leerlo y redactar el pedido "
+                   "a mano, y mandarlo con revisado=true. No se le puede mandar a un "
+                   "cliente texto suelto del correo del partner")
 
 
 def ya_pedido(caso_id):
