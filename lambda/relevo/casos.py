@@ -195,7 +195,10 @@ def _estado(caso):
     # Se deriva del dato y no del nombre del partner a propósito: OZ es el
     # caso más visible porque no manda RFI estructurados, pero también hay
     # 11 de Currencycloud, 12 de dLocal y 4 de Nium.
-    if not (caso.get("items") or caso.get("no_reconocido")):
+    # Sólo cuentan los ítems del catálogo. `no_reconocido` es texto libre del
+    # correo del partner —a veces firmas, metadata o CSS— y no se le manda a
+    # un cliente: sirve para que el analista lea y redacte el pedido a mano.
+    if not caso.get("items"):
         return "sin_requerimiento"
     return "listo_para_pedir"
 

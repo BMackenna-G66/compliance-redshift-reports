@@ -214,20 +214,34 @@ class UnPedidoVacioNoSale(Base):
         self.assertNotIn("Hay que leer el correo", c["texto"])
         self.assertNotIn("no se pudo extraer", c["html"])
 
-    def test_las_lineas_del_partner_SI_pueden_ir_en_crudo(self):
-        """`no_reconocido` es texto del partner, no nuestro: eso sí se muestra."""
+    def test_las_lineas_del_partner_NO_llegan_al_correo(self):
+        """Se devuelven para que la PANTALLA las muestre, pero no se componen
+        en el cuerpo: son texto libre, y §8 dice que el pedido sale del
+        catálogo. Los casos reales tenían firmas ajenas, metadata de Zendesk
+        y CSS suelto ahí adentro."""
         caso = {**self.SIN_NADA,
-                "no_reconocido": ["Comprovante de residência atualizado"]}
+                "no_reconocido": ["Ma. Carla D. Alarde", "[KKJL2N-9ZN3M]",
+                                  "body[dir=rt"]}
         c = correo.componer(caso)
-        self.assertEqual(c["items_crudo"], ["Comprovante de residência atualizado"])
-        self.assertIn("Comprovante de residência atualizado", c["texto"])
+        self.assertEqual(len(c["items_crudo"]), 3)      # la pantalla sí los ve
+        for basura in ("Ma. Carla D. Alarde", "KKJL2N-9ZN3M", "body[dir=rt"):
+            self.assertNotIn(basura, c["texto"], basura)
+            self.assertNotIn(basura, c["html"], basura)
+
+    def test_con_crudo_pero_sin_catalogo_TAMPOCO_se_manda(self):
+        envio._buscar_caso = lambda cid: (
+            {**self.SIN_NADA, "no_reconocido": ["Ma. Carla D. Alarde"]}, {})
+        r = envio.enviar(self.SIN_NADA["id"], quien="ana@global66.com")
+        self.assertFalse(r["enviado"])
+        self.assertTrue(r["bloqueado"])
+        self.assertIn("catálogo", r["error"])
 
     def test_enviar_lo_bloquea(self):
         envio._buscar_caso = lambda cid: (self.SIN_NADA, {})
         r = envio.enviar(self.SIN_NADA["id"], quien="ana@global66.com")
         self.assertFalse(r["enviado"])
         self.assertTrue(r["bloqueado"])
-        self.assertIn("ningún documento concreto", r["error"])
+        self.assertIn("ningún documento del catálogo", r["error"])
 
     def test_el_envio_a_mano_tambien_lo_bloquea(self):
         envio._buscar_caso = lambda cid: (self.SIN_NADA, {})

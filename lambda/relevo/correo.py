@@ -92,9 +92,27 @@ def _items_del_caso(caso):
     siguiente información". Es estado interno filtrado hacia afuera y un
     incidente de compliance, no un typo.
 
-    Lo que SÍ es texto del partner es `no_reconocido`: las líneas de su
-    pedido que no matchearon el catálogo. Esas se pueden mostrar en crudo
-    porque son suyas, no nuestras.
+    **`no_reconocido` tampoco va al correo, y eso corrige un arreglo mío
+    anterior.** Al sacar `resumen` lo reemplacé por `no_reconocido` —las
+    líneas del pedido del partner que no matchearon el catálogo— razonando
+    que al menos eran texto suyo. Medido sobre los cuatro casos reales que
+    quedaban así, es basura:
+
+        «Ma. Carla D. Alarde»                     ← firma de una analista de Currencycloud
+        «Zendesk App Integration, 6 Sept 2026»    ← metadata del cliente de correo
+        «[KKJL2N-9ZN3M]»                          ← código de ticket
+        «body[dir=rt»                             ← CSS suelto
+        «If you require more time, please…»       ← boilerplate
+
+    Mandarle eso a un cliente bajo el título "Necesitamos la siguiente
+    información" es peor que no mandarle nada. Y el módulo ya tenía la regla
+    escrita en §8: el pedido se compone de ítems del catálogo, **nunca de
+    texto libre**. `no_reconocido` es texto libre.
+
+    Así que se devuelve —la pantalla lo muestra para que el analista vea qué
+    escribió el partner y redacte el pedido a mano— pero **el cuerpo del
+    correo sólo usa el catálogo**. Un caso sin ítems del catálogo no se envía:
+    lo redacta una persona y lo manda con `revisado=true`.
     """
     catalogo, crudo = [], []
     for it in (caso.get("items") or []):
@@ -219,7 +237,9 @@ def componer(caso, token=None, nota=""):
     if not catalogo and not crudo:
         avisos.append("El partner no dejó un requerimiento identificable; hay que redactarlo a mano.")
     elif not catalogo:
-        avisos.append("Ningún ítem se mapeó al catálogo: el pedido va en crudo y conviene revisarlo.")
+        avisos.append("Ningún ítem se mapeó al catálogo. El correo NO se manda así: "
+                      "hay que leer lo que escribió el partner y redactar el pedido "
+                      "a mano.")
     if empresa:
         avisos.append(f"«{nombre}» parece una empresa, así que el correo trata de usted. "
                       "Es una deducción por el nombre: si es una persona, corregí el texto.")
@@ -265,13 +285,9 @@ def componer(caso, token=None, nota=""):
         f'<ol style="margin:0 0 20px;padding-left:22px">{items_html}</ol>'
     ) if items_html else ""
 
+    # El crudo NO se compone en el cuerpo: ver _items_del_caso. Sin ítems del
+    # catálogo no hay correo que mandar, y el envío está bloqueado aparte.
     bloque_crudo = ""
-    if crudo and not items_html:
-        texto_crudo = "<br>".join(_e(x) for x in crudo)
-        bloque_crudo = (
-            f'<p style="margin:0 0 8px;font-size:16px;color:#111">'
-            f'Para poder continuar necesitamos la siguiente información:</p>'
-            f'<p style="margin:0 0 20px;font-size:16px;color:#111">{texto_crudo}</p>')
 
     bloque_plazo = (
         f'<p style="margin:0 0 20px;font-size:16px;color:#111">'
@@ -329,10 +345,7 @@ def componer(caso, token=None, nota=""):
         lineas.append(T["pedimos"].replace("Para poder continuar necesitamos", "Necesitamos"))
         lineas += [f"  {i}. {x}" for i, x in enumerate(catalogo, 1)]
         lineas.append("")
-    elif crudo:
-        lineas.append("Necesitamos la siguiente información:")
-        lineas += [f"  {x}" for x in crudo]
-        lineas.append("")
+
     lineas.append(f'{T["responder"]} {plazo}.' if plazo else f'{T["responder"]} a la brevedad.')
     if nota:
         lineas += ["", nota]

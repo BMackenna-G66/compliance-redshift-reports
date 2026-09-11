@@ -281,11 +281,18 @@ class SinRequerimiento(unittest.TestCase):
         t = tx(items=[{"item": "domicilio", "es": "Domicilio"}], cliente=resuelto())
         self.assertEqual(C.construir([t])[0]["estado"], "listo_para_pedir")
 
-    def test_una_linea_suelta_del_partner_ALCANZA(self):
-        """`no_reconocido` es texto del partner: se le puede citar al cliente
-        aunque no haya matcheado el catálogo."""
-        t = tx(items=[], no_reconocido=["Comprovante de residência"], cliente=resuelto())
-        self.assertEqual(C.construir([t])[0]["estado"], "listo_para_pedir")
+    def test_una_linea_suelta_del_partner_NO_alcanza(self):
+        """Revierte una decisión mía anterior, con evidencia.
+
+        Había supuesto que `no_reconocido` —lo que el partner escribió y el
+        motor no supo mapear— servía para pedirle al cliente. Medido sobre los
+        cuatro casos reales que quedaban así, es basura: la firma de una
+        analista de Currencycloud, metadata de Zendesk, un código de ticket y
+        un fragmento de CSS. Sólo el catálogo decide.
+        """
+        t = tx(items=[], no_reconocido=["Ma. Carla D. Alarde", "body[dir=rt"],
+               cliente=resuelto())
+        self.assertEqual(C.construir([t])[0]["estado"], "sin_requerimiento")
 
     def test_no_pisa_a_sin_cliente(self):
         """El orden importa: sin cliente no se puede pedir nada igual."""
