@@ -2730,6 +2730,12 @@ def handler(event, context):  # noqa: ARG001
             # (decisión 10 de §16, resuelta en devolucion.py).
             if method == "POST" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "devolucion":
                 from relevo import devolucion
+                # "enviar": el sistema manda la devolución al partner.
+                # "registrar": sólo anota el cierre, para quien la mandó a mano.
+                if body.get("enviar"):
+                    return resp(200, devolucion.enviar(
+                        parts[2], quien=body.get("quien") or body.get("actor_email", ""),
+                        nota=body.get("nota", ""), idioma=body.get("idioma", "")))
                 if body.get("registrar"):
                     return resp(200, devolucion.marcar_devuelto(
                         parts[2], quien=body.get("quien") or body.get("actor_email", ""),

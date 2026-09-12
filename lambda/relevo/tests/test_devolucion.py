@@ -273,3 +273,68 @@ class DescargaEnLote(Base):
         self.assertTrue(n.endswith("-documentos.zip"))
         self.assertIn("1409820", n)
         self.assertNotIn(":", n)
+
+
+class PlantillaDelPartner(unittest.TestCase):
+    """La devolución va a un banco, no a un cliente."""
+
+    def test_no_lleva_el_pie_de_consumo(self):
+        """La plantilla de cliente trae «¿Tienes dudas?», centro de ayuda,
+        WhatsApp y las tiendas de apps. A un analista de un corresponsal eso
+        se le lee como una campaña de marketing mandada por error."""
+        from relevo import plantilla
+        h = plantilla.componer_partner("Hola")
+        self.assertIsNotNone(h)
+        for basura in ("¿Tienes dudas?", "Whatsapp", "Play Store", "App Store",
+                       "Centro de ayuda"):
+            self.assertNotIn(basura, h, basura)
+
+    def test_conserva_la_marca(self):
+        from relevo import plantilla
+        h = plantilla.componer_partner("Hola")
+        self.assertIn("d15k2d11r6t6rl", h)      # el logo oficial
+        self.assertIn("#1433b4", h)             # el azul de marca
+
+    def test_escapa_lo_que_viene_de_afuera(self):
+        """Nombres de archivo y texto del cliente entran en un HTML."""
+        from relevo import plantilla
+        h = plantilla.componer_partner("<script>alert(1)</script>")
+        self.assertNotIn("<script>alert(1)</script>", h)
+        self.assertIn("&lt;script&gt;", h)
+
+    def test_los_saltos_se_vuelven_br(self):
+        from relevo import plantilla
+        h = plantilla.componer_partner("linea uno\nlinea dos")
+        self.assertIn("linea uno<br>linea dos", h)
+
+    def test_no_deja_el_marcador_sin_reemplazar(self):
+        from relevo import plantilla
+        self.assertNotIn("CUERPO", plantilla.componer_partner("Hola"))
+
+
+class EnviarAlPartner(Base):
+    def setUp(self):
+        super().setUp()
+        from relevo import interruptores as sw
+        self.sw = sw
+        self.cfg = {"sw_envio_general": False}
+        self._real = sw._config
+        sw._config = lambda: self.cfg
+        devolucion._buscar_caso = lambda cid: (CASO if cid == CASO["id"] else None, {})
+
+    def tearDown(self):
+        self.sw._config = self._real
+        super().tearDown()
+
+    def test_respeta_el_interruptor(self):
+        """Va a un banco: no puede ser más flojo que escribirle a un cliente."""
+        r = devolucion.enviar(CASO["id"], quien="ana@global66.com")
+        self.assertFalse(r["enviado"])
+        self.assertTrue(r["bloqueado"])
+        self.assertIn("interruptor", r["error"])
+
+    def test_exige_autor(self):
+        self.cfg = {"sw_envio_general": True}
+        r = devolucion.enviar(CASO["id"], quien="")
+        self.assertFalse(r["enviado"])
+        self.assertIn("quien es requerido", r["error"])
