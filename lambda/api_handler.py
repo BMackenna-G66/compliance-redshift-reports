@@ -73,6 +73,12 @@ except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
     ficha_cliente = None
     print(f"[api] ficha_cliente no disponible, /clientes/*/ficha queda fuera: {_e}")
 
+try:
+    import ficha_pdf
+except Exception as _e:  # pragma: no cover - sólo si falta reportlab o el módulo
+    ficha_pdf = None
+    print(f"[api] ficha_pdf no disponible, la descarga en PDF queda fuera: {_e}")
+
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
 s3 = boto3.client("s3")
@@ -2530,6 +2536,9 @@ def handler(event, context):  # noqa: ARG001
         # GET /clientes/{entity_id}/ficha — todo lo del cliente en un lugar
         if method == "GET" and len(parts) == 3 and parts[0] == "clientes" and parts[2] == "ficha":
             return get_client_dossier(parts[1], event.get("queryStringParameters") or {})
+        # GET /clientes/{entity_id}/ficha.pdf — la misma ficha, para adjuntar
+        if method == "GET" and len(parts) == 3 and parts[0] == "clientes" and parts[2] == "ficha.pdf":
+            return descargar_ficha_pdf(parts[1], event.get("queryStringParameters") or {})
 
         # POST /alerts/{id}/link-case
         if method == "POST" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "link-case":
@@ -5158,6 +5167,79 @@ def get_client_dossier(entity_id: str, qs: dict):
             "documentos_recibidos": len(docs["recibidos"]),
         },
     })
+
+
+def descargar_ficha_pdf(entity_id: str, qs: dict):
+    """La misma ficha, como PDF con la identidad de Global66.
+
+    **Se apoya en `get_client_dossier`, no consulta por su cuenta.** El PDF que
+    alguien adjunta a un expediente y lo que el analista vio en pantalla tienen
+    que ser el mismo dato; la única forma de garantizarlo es que salgan de la
+    misma consulta, no de dos caminos que pueden desincronizarse.
+
+    Devuelve un enlace prefirmado y no el archivo: el API Gateway tiene un tope
+    de respuesta de ~6 MB y una ficha con muchos correos lo puede rozar.
+    """
+    if ficha_pdf is None:
+        return resp(503, {"error": "La generación de PDF no está disponible en "
+                                   "esta versión de la API."})
+
+    r = get_client_dossier(entity_id, qs)
+    if r.get("statusCode") != 200:
+        return r
+    ficha = json.loads(r["body"])
+
+    pedido_por = str(qs.get("actor_email") or "").strip()
+    ahora = _now_str()
+    try:
+        datos = ficha_pdf.construir(ficha, pedido_por=pedido_por, ahora=ahora)
+    except Exception as e:
+        return resp(500, {"error": f"No se pudo armar el PDF: {str(e)[:250]}"})
+
+    nombre = ficha_pdf.nombre_archivo(ficha)
+    clave = f"fichas/{_clave_segura(entity_id)}-{int(time.time())}.pdf"
+    try:
+        s3.put_object(Bucket=S3_BUCKET, Key=clave, Body=datos,
+                      ContentType="application/pdf")
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": clave,
+                    "ResponseContentDisposition": f'attachment; filename="{nombre}"'},
+            ExpiresIn=900)
+    except Exception as e:
+        return resp(500, {"error": f"No pude preparar la descarga: {str(e)[:200]}"})
+
+    _limpiar_fichas_viejas()
+    _safe_audit(user_email=pedido_por or "unknown", action="cliente.ficha_pdf",
+                entity_type="customer", entity_id=str(entity_id),
+                new_value={"casos": (ficha.get("totales") or {}).get("casos"),
+                           "bytes": len(datos)})
+    return resp(200, {"url": url, "nombre": nombre, "bytes": len(datos),
+                      "expira_en_segundos": 900, "generado_at": ahora})
+
+
+# Cuánto puede vivir un PDF antes de que la próxima corrida lo borre. Son
+# fichas completas de clientes —nombre, documento, correo, volumen— y dejarlas
+# acumulándose en el bucket es duplicar datos sensibles sin ningún motivo.
+VIDA_FICHA_PDF = int(os.environ.get("FICHA_PDF_VIDA_SEGUNDOS", "3600"))
+
+
+def _clave_segura(valor: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(valor or "x")).strip("-")[:60] or "x"
+
+
+def _limpiar_fichas_viejas():
+    """Borra los PDF de corridas anteriores. Best-effort: si falla se registra
+    pero no rompe la descarga — quedarse sin poder bajar la ficha es peor que
+    un PDF viejo de más, que igual tiene el enlace vencido."""
+    try:
+        corte = time.time() - VIDA_FICHA_PDF
+        r = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix="fichas/", MaxKeys=1000)
+        for o in r.get("Contents", []):
+            if o["LastModified"].timestamp() < corte:
+                s3.delete_object(Bucket=S3_BUCKET, Key=o["Key"])
+    except Exception as e:
+        print(f"[ficha] no pude limpiar PDFs viejos: {e}")
 
 
 def _segundos_entre(a: str, b: str) -> float:

@@ -21,12 +21,17 @@ cp lambda/aml_individual.py "$BUILD_DIR/"
 cp lambda/db_mysql.py "$BUILD_DIR/"
 cp lambda/db_redshift.py "$BUILD_DIR/"
 cp lambda/ficha_cliente.py "$BUILD_DIR/"
+cp lambda/ficha_pdf.py "$BUILD_DIR/"
 cp lambda/email_template.html "$BUILD_DIR/"
-mkdir -p "$BUILD_DIR/queries" "$BUILD_DIR/config" "$BUILD_DIR/templates" "$BUILD_DIR/attachments"
+mkdir -p "$BUILD_DIR/queries" "$BUILD_DIR/config" "$BUILD_DIR/templates" "$BUILD_DIR/attachments" "$BUILD_DIR/assets"
 cp lambda/queries/*.sql "$BUILD_DIR/queries/"
 cp config/*.yaml "$BUILD_DIR/config/"
 cp lambda/templates/*.html "$BUILD_DIR/templates/"
 cp lambda/attachments/*.pdf "$BUILD_DIR/attachments/"
+# El logo de Global66 para el PDF de la ficha. Va en el paquete y no se baja
+# de CloudFront al generar: un documento corporativo no puede depender de que
+# un CDN conteste en ese instante.
+cp lambda/assets/*.png "$BUILD_DIR/assets/"
 
 # Módulo Relevo (ciclo RFI de corresponsales). Va como paquete completo porque
 # se importa como `relevo.*`; los cp de arriba son archivo por archivo y no
