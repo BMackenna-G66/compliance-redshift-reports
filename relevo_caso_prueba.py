@@ -54,6 +54,23 @@ PARTNERS = {
         "asunto": "New RFI is requested - RMT0{id}",
         "caso_id": "dlocal:rmt:{id}",
     },
+    "nium": {
+        "nombre": "Nium", "llave": "nium_payout_id",
+        "remitente": "compliance@nium.com",
+        "display": "\"'Nium Compliance' via Compliance\" <compliance@global66.com>",
+        "asunto": "Additional information Required - PY{id} - {nombre} | (Request ID : {tic})",
+        "caso_id": "nium:caso:{tic}",
+    },
+    "oz": {
+        # OZ no manda RFI estructurados: manda avisos de límite y después
+        # conversa en español. Un caso suyo cae en `sin_requerimiento` y NO se
+        # puede enviar, que es la conducta real — no un defecto del fixture.
+        "nombre": "OZ Câmbio", "llave": "transfer_no",
+        "remitente": "thais.santos@ozcambio.com.br",
+        "display": "\"'OZ Câmbio' via Compliance\" <compliance@global66.com>",
+        "asunto": "OZ NOTIFICACIÓN - LÍMITE - ID {id}",
+        "caso_id": "oz-cambio:transfer-no:{id}",
+    },
     "currencycloud": {
         # `cc_transaction_id`, NO `cc_external_id`: ese último es la llave que
         # no sabemos componer y sus 16 casos quedan sin resolver. Un caso de
@@ -181,6 +198,43 @@ def _cuerpo_currencycloud(ident, nombre, pedidos, tic):
     return "\n".join(lineas)
 
 
+def _cuerpo_nium(ident, nombre, pedidos, tic):
+    """Nium manda una tabla con la operación y la lista de documentos."""
+    lineas = [
+        "Dear Compliance Team,",
+        "We are reviewing the transaction below and require additional "
+        "information before releasing the payout.",
+        f"Payout ID: PY{ident}",
+        f"Request ID : {tic}",
+        f"Beneficiary Name: {nombre}",
+        "Amount: USD 2,480.00",
+    ]
+    if pedidos:
+        lineas.append("Please provide the following supporting documentation:")
+        lineas += pedidos
+        lineas.append("Kindly revert within 10 días corridos.")
+    lineas += ["Regards,", "Compliance Operations, NIUM"]
+    return "\n".join(lineas)
+
+
+def _cuerpo_oz(ident, nombre, pedidos):
+    """OZ avisa de un límite y conversa; no manda listas de documentos. El
+    fixture lo refleja: con `--variante completo` igual se le agrega la lista,
+    pero un OZ real cae en `sin_requerimiento`."""
+    lineas = [
+        "Buenas tardes,",
+        f"Les informamos que la transferencia ID {ident} de {nombre} superó el "
+        "límite configurado y quedó retenida.",
+        "Fueron solicitados los documentos pero el cliente todavia no pasó a "
+        "nosotros. Ustedes pueden confirmarme por favor?",
+    ]
+    if pedidos:
+        lineas.append("Please provide the following:")
+        lineas += pedidos
+    lineas += ["Saludos,", "Thaís Santos", "OZ Câmbio"]
+    return "\n".join(lineas)
+
+
 def crear(a):
     v = VARIANTES[a.variante]
     P = PARTNERS[a.partner]
@@ -188,14 +242,21 @@ def crear(a):
     # El identificador tiene la forma que la regla de extracción exige. Con
     # cualquier otra el motor no la encuentra, no hay transacción y no hay
     # caso: el fixture tiene que hablar el idioma del partner.
+    # Cada llave tiene su formato Y su rango de validación. Con cualquier otro
+    # el motor no la reconoce, no hay transacción y el caso directamente no
+    # existe: el fixture tiene que hablar el idioma del partner.
     if a.partner == "currencycloud":
-        # cc_transaction_id: IF-AAAAMMDD-XXXXXX  (patrón IF-\d{8}-[A-Z0-9]{5,8})
+        # IF-AAAAMMDD-XXXXXX   (patrón IF-\d{8}-[A-Z0-9]{5,8})
         import random
         import string
         ident = (time.strftime("IF-%Y%m%d-", time.gmtime())
                  + "".join(random.choices(string.ascii_uppercase + string.digits, k=6)))
+    elif a.partner == "nium":
+        ident = str(89990000 + int(time.time()) % 9999)    # rango 50M–90M
+    elif a.partner == "oz":
+        ident = str(15490000 + int(time.time()) % 9999)    # rango 13M–15,5M
     else:
-        ident = str(P["base"] + int(time.time()) % 9999)
+        ident = str(P["base"] + int(time.time()) % 9999)   # rmt, rango 1M–40M
     tic = str(1400000 + int(time.time()) % 9999)          # nº de ticket del partner
     caso_id = P["caso_id"].format(id=ident, tic=tic)
     mid = f"PRUEBA-{a.partner}-{ident}"
@@ -203,11 +264,16 @@ def crear(a):
     if a.partner == "currencycloud":
         cuerpo = _cuerpo_currencycloud(ident, nombre, v["pedidos"], tic)
         asunto = P["asunto"].format(tic=tic, nombre=nombre)
-        llave_cache = f'{P["llave"]}|{ident}'
+    elif a.partner == "nium":
+        cuerpo = _cuerpo_nium(ident, nombre, v["pedidos"], tic)
+        asunto = P["asunto"].format(id=ident, nombre=nombre, tic=tic)
+    elif a.partner == "oz":
+        cuerpo = _cuerpo_oz(ident, nombre, v["pedidos"])
+        asunto = P["asunto"].format(id=ident)
     else:
         cuerpo = _cuerpo_dlocal(ident, nombre, v["pedidos"])
         asunto = P["asunto"].format(id=ident)
-        llave_cache = f'{P["llave"]}|{ident}'
+    llave_cache = f'{P["llave"]}|{ident}'
 
     poner("mensajes", clave_segura(mid), {
         "id": mid, "thread_id": mid, "asunto": asunto, "cuerpo": cuerpo,
