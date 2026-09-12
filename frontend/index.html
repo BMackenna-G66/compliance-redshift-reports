@@ -1448,52 +1448,79 @@
                         </span>
                       </div>
                     </div>
-                    <!-- lo que mandó el cliente: checklist tri-estado + archivos -->
-                    <div class="mb-4" x-show="relevoCk.caso_id === c.id && (relevoCk.resumen?.total || 0) > 0">
-                      <div class="flex items-center gap-2 mb-2">
-                        <p class="text-xs text-slate-500">Lo que mandó el cliente</p>
-                        <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300"
-                          x-text="(relevoCk.resumen?.pendiente||0) + ' pend · '
-                                + (relevoCk.resumen?.recibido||0) + ' recib · '
-                                + (relevoCk.resumen?.entregado||0) + ' entreg'"></span>
-                      </div>
-                      <div class="space-y-1 mb-2">
-                        <template x-for="(d, clave) in (relevoCk.checklist?.documentos || {})" :key="clave">
-                          <div class="flex items-center gap-2 bg-slate-900/50 rounded px-2 py-1.5 text-xs">
-                            <span class="px-1.5 py-0.5 rounded text-[11px]"
-                              :class="d.estado==='entregado' ? 'bg-green-900/50 text-green-300'
-                                    : d.estado==='recibido'  ? 'bg-sky-900/50 text-sky-300'
-                                                             : 'bg-slate-700 text-slate-400'"
-                              x-text="d.estado"></span>
-                            <span class="text-slate-200 flex-1" x-text="d.etiqueta || clave"></span>
-                            <span class="text-slate-600 text-[11px]" x-text="d.quien || ''"></span>
-                            <!-- §9: `entregado` SIEMPRE lo pone una persona. El
-                                 sistema sabe que llegó un archivo, no que sirva. -->
-                            <button x-show="d.estado !== 'entregado'"
-                              @click="relevoMarcarEntregado(c, clave, d.etiqueta || clave)"
-                              :disabled="relevoCkGuardando"
-                              class="px-2 py-0.5 rounded bg-green-900/40 hover:bg-green-800/60 text-green-300 border border-green-800 disabled:opacity-40">
-                              Dar por entregado
-                            </button>
-                          </div>
-                        </template>
-                      </div>
-                      <div x-show="(relevoCk.archivos||[]).length" class="space-y-1">
-                        <p class="text-xs text-slate-500">Archivos recibidos:</p>
-                        <template x-for="(a,i) in (relevoCk.archivos||[])" :key="'ck'+i">
-                          <div class="flex items-center gap-2 bg-slate-900/50 rounded px-2 py-1.5 text-xs">
-                            <span class="text-slate-200 flex-1 truncate" x-text="a.nombre"></span>
-                            <span class="text-slate-500" x-text="relevoTamano(a.tamano)"></span>
-                            <span class="text-slate-600" x-text="(a.cuando||'').slice(0,10)"></span>
-                            <a :href="a.url" target="_blank" rel="noopener" x-show="a.url"
-                               class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200">Bajar</a>
-                          </div>
-                        </template>
-                      </div>
+                    <!-- LO QUE MANDÓ EL CLIENTE.
+                         El orden es deliberado: primero lo que DIJO, después
+                         lo que MANDÓ, y al final lo que falta. Antes el texto
+                         iba último, en gris chico, y no se encontraba — que es
+                         justo lo más humano y lo primero que uno quiere leer. -->
+                    <div class="mb-4"
+                         x-show="relevoCk.caso_id === c.id
+                                 && ((relevoCk.respuestas||[]).length
+                                     || (relevoCk.archivos||[]).length
+                                     || (relevoCk.resumen?.total||0) > 0)">
+
+                      <!-- 1. lo que dijo -->
                       <template x-for="(t,i) in (relevoCk.respuestas||[])" :key="'rt'+i">
-                        <p class="text-xs text-slate-400 bg-slate-900/50 rounded px-2 py-1.5 mt-1 whitespace-pre-wrap"
-                           x-text="t.texto"></p>
+                        <div class="mb-3 rounded-xl border-l-4 border-sky-500 bg-sky-950/30 px-4 py-3">
+                          <div class="flex items-center gap-2 mb-1.5">
+                            <span class="text-sky-400">💬</span>
+                            <span class="text-xs font-medium text-sky-200">Respondió el cliente</span>
+                            <span class="text-[11px] text-slate-500" x-text="(t.cuando||'').slice(0,16)"></span>
+                          </div>
+                          <p class="text-sm text-slate-100 whitespace-pre-wrap leading-relaxed"
+                             x-text="t.texto"></p>
+                        </div>
                       </template>
+
+                      <!-- 2. lo que mandó -->
+                      <div x-show="(relevoCk.archivos||[]).length" class="mb-3">
+                        <p class="text-xs text-slate-400 mb-1.5 flex items-center gap-1.5">
+                          <span>📎</span>
+                          <span x-text="(relevoCk.archivos||[]).length + ' archivo(s) recibido(s)'"></span>
+                        </p>
+                        <div class="space-y-1">
+                          <template x-for="(a,i) in (relevoCk.archivos||[])" :key="'ck'+i">
+                            <div class="flex items-center gap-2 bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-xs">
+                              <span class="text-slate-300 flex-1 truncate" :title="a.nombre" x-text="a.nombre"></span>
+                              <span class="text-slate-500 whitespace-nowrap" x-text="relevoTamano(a.tamano)"></span>
+                              <a :href="a.url" target="_blank" rel="noopener" x-show="a.url"
+                                 class="px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 whitespace-nowrap">Bajar</a>
+                            </div>
+                          </template>
+                        </div>
+                      </div>
+
+                      <!-- 3. lo que falta -->
+                      <div x-show="(relevoCk.resumen?.total||0) > 0">
+                        <div class="flex items-center gap-2 mb-1.5">
+                          <p class="text-xs text-slate-400">Checklist de documentos</p>
+                          <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300"
+                            x-text="(relevoCk.resumen?.pendiente||0) + ' pend · '
+                                  + (relevoCk.resumen?.recibido||0) + ' recib · '
+                                  + (relevoCk.resumen?.entregado||0) + ' entreg'"></span>
+                        </div>
+                        <div class="space-y-1">
+                          <template x-for="(d, clave) in (relevoCk.checklist?.documentos || {})" :key="clave">
+                            <div class="flex items-center gap-2 bg-slate-900/50 rounded-lg px-3 py-2 text-xs">
+                              <span class="px-2 py-0.5 rounded text-[11px] whitespace-nowrap"
+                                :class="d.estado==='entregado' ? 'bg-green-900/50 text-green-300'
+                                      : d.estado==='recibido'  ? 'bg-sky-900/50 text-sky-300'
+                                                               : 'bg-slate-700 text-slate-400'"
+                                x-text="d.estado"></span>
+                              <span class="text-slate-200 flex-1 truncate" x-text="d.etiqueta || clave"></span>
+                              <span class="text-slate-600 text-[11px] hidden sm:inline" x-text="d.quien || ''"></span>
+                              <!-- §9: `entregado` SIEMPRE lo pone una persona. El
+                                   sistema sabe que llegó un archivo, no que sirva. -->
+                              <button x-show="d.estado !== 'entregado'"
+                                @click="relevoMarcarEntregado(c, clave, d.etiqueta || clave)"
+                                :disabled="relevoCkGuardando"
+                                class="px-2.5 py-1 rounded bg-green-900/40 hover:bg-green-800/60 text-green-300 border border-green-800 disabled:opacity-40 whitespace-nowrap">
+                                Dar por entregado
+                              </button>
+                            </div>
+                          </template>
+                        </div>
+                      </div>
                     </div>
 
                     <!-- ítems pedidos -->
