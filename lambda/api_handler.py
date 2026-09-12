@@ -63,6 +63,16 @@ except Exception:
     def _write_audit(**kwargs):  # noqa: ANN001
         pass
 
+# La ficha del cliente va con import defensivo a propósito. El build copia los
+# archivos uno por uno (`build_lambda.sh`), así que olvidar una línea ahí es un
+# error de empaquetado plausible; a nivel módulo eso tumbaría la API ENTERA por
+# un ImportError, no sólo la ficha. Así el radio de daño es un endpoint.
+try:
+    import ficha_cliente
+except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
+    ficha_cliente = None
+    print(f"[api] ficha_cliente no disponible, /clientes/*/ficha queda fuera: {_e}")
+
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
 s3 = boto3.client("s3")
@@ -2517,6 +2527,10 @@ def handler(event, context):  # noqa: ARG001
         # DELETE /cases/{id}/attachments/{attachment_id}
         if method == "DELETE" and len(parts) == 4 and parts[0] == "cases" and parts[2] == "attachments":
             return delete_case_attachment(parts[1], parts[3])
+        # GET /clientes/{entity_id}/ficha — todo lo del cliente en un lugar
+        if method == "GET" and len(parts) == 3 and parts[0] == "clientes" and parts[2] == "ficha":
+            return get_client_dossier(parts[1], event.get("queryStringParameters") or {})
+
         # POST /alerts/{id}/link-case
         if method == "POST" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "link-case":
             return link_alert_to_case(parts[1], body)
@@ -4875,16 +4889,22 @@ def _cuerpo_de_la_nota(contenido: str) -> str:
     return (partes[1] if len(partes) == 2 else partes[0]).strip()
 
 
-def get_case_emails(case_id: str):
-    """Historial de correos del caso, enviados y recibidos, en orden."""
-    caso = _crm_get("cases", case_id)
-    if caso is None:
-        return resp(404, {"error": f"Case '{case_id}' not found"})
+def _correos_del_caso(caso: dict, pedidos: list | None = None) -> list:
+    """Los correos de un caso, enviados y recibidos, en orden.
+
+    Separado de `get_case_emails` para que la ficha del cliente pueda armar el
+    historial de varios casos sin releer `document_requests` una vez por caso:
+    con 6 casos eso eran 6 listados completos del prefijo en S3. Quien ya tiene
+    la lista la pasa en `pedidos`.
+    """
+    case_id = caso.get("case_id", "")
+    if pedidos is None:
+        pedidos = _crm_list("document_requests")
 
     correos = []
 
     # ── enviados ──
-    for r in _crm_list("document_requests"):
+    for r in pedidos:
         if r.get("case_id") != case_id:
             continue
         correos.append({
@@ -4929,6 +4949,16 @@ def get_case_emails(case_id: str):
         })
 
     correos.sort(key=lambda c: c.get("cuando") or "")
+    return correos
+
+
+def get_case_emails(case_id: str):
+    """Historial de correos del caso, enviados y recibidos, en orden."""
+    caso = _crm_get("cases", case_id)
+    if caso is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+
+    correos = _correos_del_caso(caso)
     enviados = sum(1 for c in correos if c["direccion"] == "enviado")
     return resp(200, {
         "case_id": case_id,
@@ -4937,6 +4967,196 @@ def get_case_emails(case_id: str):
         "enviados": enviados,
         "recibidos": len(correos) - enviados,
         "fallidos": sum(1 for c in correos if not c["salio"]),
+    })
+
+
+def _documentos_del_cliente(casos: list, pedidos: list) -> dict:
+    """Qué se le pidió al cliente y qué mandó, juntando todos sus casos.
+
+    Se devuelven las dos listas por separado y no un "faltan éstos": los
+    nombres de archivo que manda el cliente no se parecen a los ítems del
+    catálogo que se le pidieron —manda `escaneo_final(2).pdf` para un
+    "comprobante de domicilio"— y cruzarlos automáticamente inventaría un
+    match. Emparejar eso es trabajo del analista; la ficha le pone las dos
+    columnas al lado.
+    """
+    ids = {c.get("case_id") for c in casos}
+    pedidos_del_cliente = [p for p in pedidos if p.get("case_id") in ids]
+
+    solicitados = []
+    for p in pedidos_del_cliente:
+        for d in (p.get("documentos_solicitados") or []):
+            solicitados.append({
+                "documento": d,
+                "case_id": p.get("case_id", ""),
+                "cuando": p.get("created_at", ""),
+                "salio": bool(p.get("sent")),
+            })
+
+    recibidos = []
+    for c in casos:
+        for a in (c.get("attachments") or []):
+            recibidos.append({
+                "filename": a.get("filename", ""),
+                "case_id": c.get("case_id", ""),
+                "cuando": a.get("uploaded_at", ""),
+                # De dónde salió: lo mandó el cliente por correo o lo subió el
+                # analista. En una auditoría no es lo mismo.
+                "origen": a.get("source", ""),
+                "attachment_id": a.get("attachment_id", ""),
+                "bytes": a.get("size_bytes") or a.get("bytes") or 0,
+            })
+
+    solicitados.sort(key=lambda x: x["cuando"], reverse=True)
+    recibidos.sort(key=lambda x: x["cuando"], reverse=True)
+    return {"solicitados": solicitados, "recibidos": recibidos}
+
+
+def get_client_dossier(entity_id: str, qs: dict):
+    """Ficha del cliente: sus casos, correos, documentos, productos y volumen.
+
+    Punto 6 de las observaciones funcionales. Es una vista de sólo lectura que
+    no toca nada: junta lo que ya existe disperso entre la pestaña de casos,
+    la de análisis individual y el detalle de cada caso.
+
+    Lo que no hace, dicho acá para que no se descubra usándola: para empresas
+    (`kind=b2b`) no hay resumen transaccional. La tabla de transacciones se
+    indexa por `customer_id` y las empresas viven en `company.company` con su
+    propio `company_id`; verificado que no hay columna que las una. El resto de
+    la ficha —casos, correos, documentos, perfil— sí funciona para empresas.
+    """
+    if ficha_cliente is None:
+        return resp(503, {"error": "La ficha del cliente no está disponible en "
+                                   "esta versión de la API."})
+    kind = "b2b" if str(qs.get("kind", "")).lower().startswith("b2b") else "b2c"
+    entity_id = str(entity_id or "").strip()
+    if not entity_id:
+        return resp(400, {"error": "Falta el ID del cliente."})
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Dos etapas, y el orden importa para el reloj: el API Gateway corta a los
+    # 30 s. Primero los dos listados de S3 en paralelo (~1,5 s), porque de los
+    # casos sale si ya hay un perfil cacheado; después todo lo de Redshift
+    # junto. Armado en serie esto medía 10-16 s, peligrosamente cerca del corte.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_casos = ex.submit(_crm_list, "cases")
+        f_pedidos = ex.submit(_crm_list, "document_requests")
+        casos_todos, pedidos = f_casos.result(), f_pedidos.result()
+
+    casos = [c for c in casos_todos
+             if str(c.get("entity_id") or "").strip() == entity_id]
+    casos.sort(key=lambda c: c.get("created_at") or "", reverse=True)
+
+    # El perfil cacheado en algún caso es el mismo dato y ahorra una consulta
+    # al cluster, que además puede estar pausado.
+    perfil, perfil_de = {}, ""
+    for c in casos:
+        if c.get("client_profile"):
+            perfil = c["client_profile"]
+            perfil_de = f"caso {c.get('case_id', '')} ({c.get('client_profile_at', '')})"
+            break
+
+    cid = ficha_cliente.entero(entity_id) if kind == "b2c" else None
+    aviso_tx = ""
+    if kind == "b2b":
+        aviso_tx = ("El resumen transaccional no está disponible para empresas: "
+                    "la tabla de transacciones se indexa por ID de cliente.")
+    elif cid is None:
+        aviso_tx = "El ID del cliente no es numérico, no se puede consultar el volumen."
+
+    def _perfil_en_vivo():
+        # `campo` explícito a propósito: sin él, un identificador de puros
+        # dígitos es ambiguo (id o documento) y `_lookup_customer_rows` resuelve
+        # la ambigüedad con una consulta previa. Acá no hay ambigüedad —el
+        # entity_id del caso ES el id— así que se ahorra ese viaje entero.
+        return _lookup_customer_rows(
+            entity_id, kind, campo=("company_id" if kind == "b2b" else "customer_id"))
+
+    resumen, por_pais, por_mes = {}, [], []
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_perfil = ex.submit(_perfil_en_vivo) if not perfil else None
+        f_tx = ex.submit(
+            _rs_exec_multi,
+            [ficha_cliente.sql_resumen(cid), ficha_cliente.sql_por_pais(cid),
+             ficha_cliente.sql_por_mes(cid)], 22) if cid else None
+
+        if f_perfil is not None:
+            try:
+                filas = f_perfil.result()
+                if filas:
+                    perfil, perfil_de = filas[0], "consulta en vivo"
+                else:
+                    perfil_de = "sin resultados en la base"
+            except Exception as e:
+                perfil_de = f"no se pudo consultar: {str(e)[:150]}"
+
+        if f_tx is not None:
+            try:
+                r = f_tx.result()
+                # `_rs_exec_multi` devuelve [] tanto si la consulta falló como
+                # si no hubo datos. El resumen siempre trae exactamente una
+                # fila (son COUNT sin GROUP BY), así que una lista vacía sólo
+                # puede ser falla — y eso hay que decirlo, no mostrar un cero
+                # que miente.
+                if r[0]:
+                    resumen, por_pais, por_mes = r[0][0], r[1], r[2]
+                else:
+                    aviso_tx = ("No se pudo consultar el volumen transaccional "
+                                "(el cluster puede estar pausado).")
+            except Exception as e:
+                aviso_tx = f"No se pudo consultar el volumen transaccional: {str(e)[:150]}"
+
+    # ── correos y documentos, juntando todos los casos ──
+    correos = []
+    for c in casos:
+        for m in _correos_del_caso(c, pedidos):
+            m["case_id"] = c.get("case_id", "")
+            m["case_title"] = c.get("title", "")
+            correos.append(m)
+    correos.sort(key=lambda m: m.get("cuando") or "", reverse=True)
+
+    docs = _documentos_del_cliente(casos, pedidos)
+
+    nombre = next((str(k.get("entity_name")).strip() for k in casos
+                   if k.get("entity_name")), "")
+    if not nombre and perfil:
+        nombre = _display_name_from_profile(perfil, kind)
+
+    return resp(200, {
+        "entity_id": entity_id,
+        "kind": kind,
+        "nombre": nombre,
+        "perfil": perfil,
+        "perfil_origen": perfil_de,
+        "casos": [{
+            "case_id": c.get("case_id", ""),
+            "title": c.get("title", ""),
+            "status": c.get("status", ""),
+            "priority": c.get("priority", ""),
+            "assigned_to": c.get("assigned_to", ""),
+            "created_at": c.get("created_at", ""),
+            "updated_at": c.get("updated_at", ""),
+            "n_notas": len(c.get("notes") or []),
+            "n_adjuntos": len(c.get("attachments") or []),
+        } for c in casos],
+        "resumen": resumen,
+        "periodo": ficha_cliente.periodo(resumen) if resumen else "",
+        "productos": ficha_cliente.productos(perfil, resumen),
+        "avisos": ficha_cliente.alertas_del_resumen(resumen) if resumen else [],
+        "por_pais": por_pais,
+        "por_mes": por_mes,
+        "aviso_transaccional": aviso_tx,
+        "correos": correos,
+        "documentos": docs,
+        "totales": {
+            "casos": len(casos),
+            "correos": len(correos),
+            "enviados": sum(1 for m in correos if m["direccion"] == "enviado"),
+            "recibidos": sum(1 for m in correos if m["direccion"] == "recibido"),
+            "solicitados": len(docs["solicitados"]),
+            "documentos_recibidos": len(docs["recibidos"]),
+        },
     })
 
 

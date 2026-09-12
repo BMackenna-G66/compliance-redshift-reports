@@ -3948,6 +3948,14 @@
             class="flex items-center gap-1.5 px-3 py-1.5 bg-teal-900/40 hover:bg-teal-800/60 border border-teal-800 text-teal-300 text-xs font-medium rounded-lg transition">
             ✋ Tomar caso
           </button>
+          <!-- La ficha es POR CLIENTE, no por caso: junta todos sus casos,
+               correos y documentos. Por eso el botón sólo aparece cuando el
+               caso tiene un cliente identificado. -->
+          <button x-show="activeCase.entity_id"
+            @click="abrirFichaCliente(activeCase.entity_id, activeCase.entity_type === 'company' ? 'b2b' : 'b2c')"
+            class="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-900/40 hover:bg-indigo-800/60 border border-indigo-800 text-indigo-300 text-xs font-medium rounded-lg transition">
+            👤 Ficha del cliente
+          </button>
           <button @click="exportCase(activeCase.case_id)"
             :disabled="caseExportLoading"
             class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 text-xs font-medium rounded-lg transition disabled:opacity-50">
@@ -4296,6 +4304,271 @@
               x-text="activeCaseAI"></div>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== MODAL: FICHA DEL CLIENTE (punto 6) =====
+       Todo lo del cliente en un lugar: productos, volumen, casos, correos y
+       documentos. Se abre ENCIMA del detalle del caso (z-[60]) y no lo cierra
+       a propósito: se consulta la ficha y se vuelve al caso donde se estaba. -->
+  <div x-show="fichaModal.open" x-transition class="fixed inset-0 z-[60] flex items-center justify-center p-4">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" @click="fichaModal.open=false"></div>
+    <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-6xl mx-auto flex flex-col max-h-[92vh]">
+
+      <div class="flex items-start justify-between p-6 border-b border-slate-700 shrink-0">
+        <div class="flex-1 pr-4">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs px-2 py-0.5 rounded-full bg-indigo-900/50 text-indigo-300 font-medium">Ficha del cliente</span>
+            <span class="text-xs font-mono text-slate-500"
+              x-text="(ficha.kind === 'b2b' ? 'company_id ' : 'customer_id ') + (ficha.entity_id||'')"></span>
+          </div>
+          <h2 class="text-lg font-bold text-white" x-text="ficha.nombre || '(sin nombre)'"></h2>
+          <p class="text-xs text-slate-500 mt-1"
+             x-text="ficha.periodo ? 'Actividad: ' + ficha.periodo : ''"></p>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <button @click="abrirFichaCliente(ficha.entity_id, ficha.kind, true)" :disabled="fichaCargando"
+            class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 text-xs rounded-lg transition disabled:opacity-50">
+            <span :class="fichaCargando ? 'animate-spin inline-block' : ''">↺</span> Actualizar
+          </button>
+          <button @click="fichaModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+        </div>
+      </div>
+
+      <div class="overflow-y-auto flex-1 p-6 space-y-6">
+        <p x-show="fichaCargando" class="text-sm text-slate-400">Armando la ficha…</p>
+        <p x-show="fichaError" class="text-sm text-red-300 whitespace-pre-wrap" x-text="fichaError"></p>
+
+        <template x-if="!fichaCargando && !fichaError">
+        <div class="space-y-6">
+
+          <!-- Avisos: lo que se pierde mirando una tabla de números. -->
+          <div x-show="(ficha.avisos||[]).length" class="space-y-1.5">
+            <template x-for="(a,i) in (ficha.avisos||[])" :key="'av'+i">
+              <div class="rounded-lg border px-3 py-2 text-xs"
+                   :class="a.tono === 'alto'
+                     ? 'border-red-800 bg-red-950/30 text-red-200'
+                     : 'border-amber-800/60 bg-amber-950/20 text-amber-200'"
+                   x-text="(a.tono === 'alto' ? '⚠ ' : '• ') + a.texto"></div>
+            </template>
+          </div>
+
+          <!-- PRODUCTOS. Cada uno dice de dónde sale el dato: una ficha de
+               auditoría que afirma sin citar la fuente no se puede discutir. -->
+          <div>
+            <span class="text-xs text-slate-500 block mb-2">Productos</span>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <template x-for="p in (ficha.productos||[])" :key="p.producto">
+                <div class="rounded-xl border px-3 py-2.5"
+                     :class="p.tiene ? 'border-teal-800 bg-teal-950/25' : 'border-slate-700 bg-slate-900/40'">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm font-medium"
+                      :class="p.tiene ? 'text-teal-300' : 'text-slate-500'"
+                      x-text="(p.tiene ? '✓ ' : '· ') + p.producto"></span>
+                    <span x-show="p.desde" class="text-[11px] text-slate-600 ml-auto"
+                      x-text="'desde ' + p.desde"></span>
+                  </div>
+                  <p class="text-xs mt-1" :class="p.tiene ? 'text-slate-300' : 'text-slate-600'"
+                     x-text="p.detalle"></p>
+                  <p class="text-[11px] text-slate-600 mt-1" x-text="'según ' + p.evidencia"></p>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- RESUMEN TRANSACCIONAL -->
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-xs text-slate-500">Resumen transaccional</span>
+              <span class="text-[11px] text-slate-600">— sólo operaciones efectivas (exitosas o enviadas)</span>
+            </div>
+            <p x-show="ficha.aviso_transaccional" class="text-xs text-amber-300/90 mb-2"
+               x-text="ficha.aviso_transaccional"></p>
+            <div x-show="ficha.resumen && ficha.resumen.n_efectivas !== undefined"
+                 class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <template x-for="m in fichaMetricas()" :key="m.l">
+                <div class="rounded-xl bg-slate-900/50 border border-slate-700 px-3 py-2.5">
+                  <span class="text-[11px] text-slate-500 block" x-text="m.l"></span>
+                  <span class="text-base font-semibold" :class="m.c || 'text-slate-200'" x-text="m.v"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Destinos y curva mensual, lado a lado -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-5"
+               x-show="(ficha.por_pais||[]).length || (ficha.por_mes||[]).length">
+            <div x-show="(ficha.por_pais||[]).length">
+              <span class="text-xs text-slate-500 block mb-2">Destinos</span>
+              <div class="rounded-xl border border-slate-700 overflow-hidden">
+                <table class="w-full text-xs">
+                  <tbody>
+                    <template x-for="(p,i) in (ficha.por_pais||[])" :key="'pa'+i">
+                      <tr class="border-b border-slate-700/50 last:border-0">
+                        <td class="px-3 py-1.5 text-slate-300" x-text="p.pais"></td>
+                        <td class="px-3 py-1.5 text-right text-slate-500" x-text="p.n"></td>
+                        <td class="px-3 py-1.5 text-right text-slate-200" x-text="fichaUsd(p.usd)"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <!-- La curva mes a mes: un total sin curva esconde justo el mes en
+                 que el comportamiento cambió. -->
+            <div x-show="(ficha.por_mes||[]).length">
+              <span class="text-xs text-slate-500 block mb-2">Mes a mes</span>
+              <div class="rounded-xl border border-slate-700 p-3 space-y-1">
+                <template x-for="(m,i) in (ficha.por_mes||[])" :key="'me'+i">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[11px] text-slate-500 w-16 shrink-0" x-text="m.mes"></span>
+                    <div class="flex-1 h-3 bg-slate-900 rounded overflow-hidden">
+                      <div class="h-full rounded"
+                           :class="Number(m.n_cripto) > 0 ? 'bg-purple-600' : 'bg-teal-600'"
+                           :style="'width:' + fichaBarra(m.usd) + '%'"></div>
+                    </div>
+                    <span class="text-[11px] text-slate-400 w-24 text-right shrink-0" x-text="fichaUsd(m.usd)"></span>
+                    <span class="text-[11px] text-slate-600 w-8 text-right shrink-0" x-text="m.n"></span>
+                  </div>
+                </template>
+                <p x-show="(ficha.por_mes||[]).some(m => Number(m.n_cripto) > 0)"
+                   class="text-[11px] text-slate-600 pt-1">
+                  <span class="text-purple-400">■</span> meses con operaciones cripto
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- CASOS del cliente -->
+          <div>
+            <span class="text-xs text-slate-500 block mb-2"
+              x-text="'Casos (' + (ficha.casos||[]).length + ')'"></span>
+            <p x-show="!(ficha.casos||[]).length" class="text-sm text-slate-600 italic">Sin casos registrados.</p>
+            <div class="space-y-1.5">
+              <template x-for="c in (ficha.casos||[])" :key="c.case_id">
+                <div class="rounded-xl border border-slate-700 bg-slate-900/40 px-3 py-2 flex items-center gap-3 hover:bg-slate-900/70 transition cursor-pointer"
+                     @click="fichaModal.open=false; openCaseDetail(c.case_id)">
+                  <span class="text-xs px-2 py-0.5 rounded-full shrink-0"
+                    :class="caseStatusColor(c.status)" x-text="caseStatusLabel(c.status)"></span>
+                  <span class="text-sm text-slate-200 flex-1 truncate" x-text="c.title || c.case_id"></span>
+                  <span class="text-[11px] text-slate-600 shrink-0"
+                    x-text="(c.n_adjuntos ? '📎' + c.n_adjuntos + ' ' : '') + (c.assigned_to || 'sin asignar')"></span>
+                  <span class="text-[11px] text-slate-600 shrink-0" x-text="(c.created_at||'').slice(0,10)"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- DOCUMENTACIÓN: pedida y recibida, en dos columnas.
+               No se cruzan automáticamente: el nombre del archivo que manda el
+               cliente no se parece al ítem del catálogo que se le pidió, y
+               emparejarlos a ojo inventaría un match. Eso lo hace el analista. -->
+          <div>
+            <span class="text-xs text-slate-500 block mb-2">Documentación</span>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <div>
+                <p class="text-[11px] text-slate-600 mb-1.5"
+                   x-text="'Pedida (' + ((ficha.documentos||{}).solicitados||[]).length + ')'"></p>
+                <p x-show="!((ficha.documentos||{}).solicitados||[]).length"
+                   class="text-sm text-slate-600 italic">Nada pedido todavía.</p>
+                <div class="space-y-1">
+                  <template x-for="(d,i) in ((ficha.documentos||{}).solicitados||[])" :key="'ds'+i">
+                    <div class="flex items-center gap-2 text-xs">
+                      <span class="text-slate-300 flex-1" x-text="'📋 ' + d.documento"></span>
+                      <span x-show="!d.salio" class="text-[11px] text-red-400">no salió</span>
+                      <span class="text-[11px] text-slate-600" x-text="(d.cuando||'').slice(0,10)"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+              <div>
+                <p class="text-[11px] text-slate-600 mb-1.5"
+                   x-text="'Recibida (' + ((ficha.documentos||{}).recibidos||[]).length + ')'"></p>
+                <p x-show="!((ficha.documentos||{}).recibidos||[]).length"
+                   class="text-sm text-slate-600 italic">Nada recibido todavía.</p>
+                <div class="space-y-1">
+                  <template x-for="(d,i) in ((ficha.documentos||{}).recibidos||[])" :key="'dr'+i">
+                    <div class="flex items-center gap-2 text-xs">
+                      <span class="text-slate-300 flex-1 truncate" x-text="'📎 ' + d.filename"></span>
+                      <span class="text-[11px] shrink-0"
+                        :class="d.origen === 'email_reply' ? 'text-sky-400' : 'text-slate-600'"
+                        x-text="d.origen === 'email_reply' ? 'del cliente' : 'subido'"></span>
+                      <span class="text-[11px] text-slate-600 shrink-0" x-text="(d.cuando||'').slice(0,10)"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- HISTORIAL DE CORREOS, de todos sus casos juntos -->
+          <div>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-xs text-slate-500">Historial de correos</span>
+              <span x-show="(ficha.totales||{}).correos" class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300"
+                x-text="(ficha.totales||{}).enviados + ' enviado(s) · ' + (ficha.totales||{}).recibidos + ' recibido(s)'"></span>
+            </div>
+            <p x-show="!(ficha.correos||[]).length" class="text-sm text-slate-600 italic">Sin correos registrados.</p>
+            <div class="space-y-2">
+              <template x-for="(m,i) in (ficha.correos||[])" :key="'fc'+i">
+                <div class="rounded-xl border px-3 py-2.5"
+                     :class="m.direccion === 'enviado'
+                       ? (m.salio ? 'border-slate-700 bg-slate-900/50' : 'border-red-800 bg-red-950/30')
+                       : 'border-sky-800 bg-sky-950/25'">
+                  <div class="flex items-center gap-2 flex-wrap mb-1">
+                    <span class="text-xs font-medium"
+                      :class="m.direccion === 'enviado' ? 'text-slate-300' : 'text-sky-300'"
+                      x-text="m.direccion === 'enviado' ? '↗ Enviado' : '↘ Recibido'"></span>
+                    <span class="text-[11px] text-slate-500"
+                      x-text="(m.direccion === 'enviado' ? 'a ' + m.para : 'de ' + m.de)"></span>
+                    <!-- De qué caso salió: en una ficha que junta varios, sin
+                         esto no se sabe a cuál pertenece cada correo. -->
+                    <span x-show="m.case_title" class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700/70 text-slate-400 truncate max-w-[220px]"
+                      x-text="m.case_title"></span>
+                    <span class="text-[11px] text-slate-600 ml-auto" x-text="(m.cuando||'').slice(0,16)"></span>
+                  </div>
+                  <p x-show="!m.salio" class="text-xs text-red-300 mb-1"
+                     x-text="'No se envió: ' + (m.error || 'sin detalle')"></p>
+                  <p x-show="m.asunto" class="text-xs text-slate-300 font-medium" x-text="m.asunto"></p>
+                  <p x-show="m.cuerpo" class="text-xs text-slate-400 whitespace-pre-wrap mt-1"
+                     x-text="m.cuerpo.length > 300 ? m.cuerpo.slice(0,300) + '…' : m.cuerpo"></p>
+                  <p x-show="m.direccion === 'enviado' && !m.cuerpo"
+                     class="text-[11px] text-slate-600 italic mt-1">
+                    (el cuerpo no se guardaba cuando se envió este correo)
+                  </p>
+                  <div x-show="(m.documentos||[]).length" class="flex flex-wrap gap-1 mt-1.5">
+                    <template x-for="(d,j) in (m.documentos||[])" :key="'fd'+i+'_'+j">
+                      <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300"
+                        x-text="(m.direccion === 'enviado' ? '📋 ' : '📎 ') + d"></span>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- PERFIL KYC -->
+          <div x-show="ficha.perfil && Object.keys(ficha.perfil||{}).length">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-xs text-slate-500">Perfil KYC / compliance</span>
+              <span class="text-[11px] text-slate-600" x-text="ficha.perfil_origen ? '— ' + ficha.perfil_origen : ''"></span>
+              <button @click="fichaPerfilAbierto = !fichaPerfilAbierto"
+                class="ml-auto text-xs text-slate-500 hover:text-slate-300"
+                x-text="fichaPerfilAbierto ? 'ocultar' : 'ver'"></button>
+            </div>
+            <div x-show="fichaPerfilAbierto" class="grid grid-cols-2 md:grid-cols-3 gap-x-5 gap-y-1.5">
+              <template x-for="(f,i) in fichaPerfilCampos()" :key="'pf'+i">
+                <div>
+                  <span class="text-[11px] text-slate-600 block" x-text="f.k"></span>
+                  <span class="text-xs text-slate-300 break-words" x-text="f.v"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+
+        </div>
+        </template>
       </div>
     </div>
   </div>
@@ -6791,6 +7064,13 @@
       emailPreviewError: '',
       emailPreviewLoading: false,
       _emailPreviewTimer: null,
+
+      // Ficha del cliente (punto 6): todo lo suyo en un lugar.
+      fichaModal: { open: false },
+      ficha: {},
+      fichaCargando: false,
+      fichaError: '',
+      fichaPerfilAbierto: false,
 
       newCaseLookupLoading: false,
       newCaseLookupError: '',
@@ -9884,6 +10164,70 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         const d = await this.api('GET', '/cases/' + id + '/correos');
         this.caseEmailsLoading = false;
         if (d) this.caseEmails = d;
+      },
+
+      // ── Ficha del cliente ────────────────────────────────────────────────
+      // Punto 6: todo lo del cliente en un lugar, por customer_id y no por
+      // caso. Se abre encima del caso sin cerrarlo, para volver donde se estaba.
+      async abrirFichaCliente(entityId, kind, refrescar = false) {
+        if (!entityId) return;
+        this.fichaModal.open = true;
+        this.fichaError = '';
+        this.fichaPerfilAbierto = false;
+        if (!refrescar) this.ficha = { entity_id: entityId, kind: kind || 'b2c' };
+        this.fichaCargando = true;
+        const d = await this.api(
+          'GET', `/clientes/${encodeURIComponent(entityId)}/ficha?kind=${kind || 'b2c'}`);
+        this.fichaCargando = false;
+        if (d && !d.error) this.ficha = d;
+        else this.fichaError = d?.error || 'No se pudo armar la ficha del cliente.';
+      },
+
+      fichaUsd(v) {
+        const n = Number(v);
+        if (!isFinite(n)) return '—';
+        return 'USD ' + n.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      },
+
+      // Las barras se escalan al mes más grande, no a un máximo fijo: lo que
+      // hay que ver es la forma de la curva, no el valor absoluto.
+      fichaBarra(usd) {
+        const meses = this.ficha?.por_mes || [];
+        const max = Math.max(...meses.map(m => Number(m.usd) || 0), 0);
+        if (!max) return 0;
+        return Math.max(2, Math.round((Number(usd) || 0) * 100 / max));
+      },
+
+      fichaMetricas() {
+        const r = this.ficha?.resumen || {};
+        const n = (x) => Number(x) || 0;
+        const m = [
+          { l: 'Operaciones efectivas', v: n(r.n_efectivas).toLocaleString('es-CL') },
+          { l: 'Volumen movido', v: this.fichaUsd(r.total_usd) },
+          { l: 'Ticket promedio', v: this.fichaUsd(r.ticket_promedio_usd) },
+          { l: 'Ticket mayor', v: this.fichaUsd(r.ticket_mayor_usd) },
+          { l: 'Países destino', v: n(r.paises_destino).toLocaleString('es-CL') },
+          { l: 'Beneficiarios', v: n(r.beneficiarios).toLocaleString('es-CL') },
+        ];
+        // Devueltas y retenidas sólo aparecen si las hay, y en rojo: un cero
+        // gris ocupando lugar entrena a no mirar la casilla.
+        if (n(r.n_devueltas)) m.push({
+          l: 'Devueltas', c: 'text-red-300',
+          v: n(r.n_devueltas).toLocaleString('es-CL') + ' · ' + this.fichaUsd(r.devuelto_usd),
+        });
+        if (n(r.n_retenidas)) m.push({
+          l: 'Retenidas por compliance', c: 'text-red-300',
+          v: n(r.n_retenidas).toLocaleString('es-CL'),
+        });
+        return m;
+      },
+
+      fichaPerfilCampos() {
+        const d = this.ficha?.perfil;
+        if (!d || typeof d !== 'object') return [];
+        return Object.entries(d)
+          .filter(([, v]) => v !== null && v !== '' && String(v).toLowerCase() !== 'none')
+          .map(([k, v]) => ({ k: k.replace(/_/g, ' '), v: String(v) }));
       },
 
       async uploadCaseAttachment(event) {
