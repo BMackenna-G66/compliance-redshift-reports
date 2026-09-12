@@ -1380,9 +1380,12 @@
               Enviar a los seleccionados
             </button>
           </div>
-          <div class="flex items-center gap-2 mb-2 px-1" x-show="relevoCasosFiltrados().length">
+          <div class="flex items-center gap-3 mb-2 px-1" x-show="relevoCasosFiltrados().length">
             <button @click="relevoSelTodos()" class="text-xs text-slate-500 hover:text-slate-300"
               x-text="relevoTodosSeleccionados() ? 'Deseleccionar todo' : 'Seleccionar los que se pueden enviar'"></button>
+            <button x-show="relevoAbiertos.length > 1" @click="relevoCerrarTodos()"
+              class="text-xs text-slate-500 hover:text-slate-300"
+              x-text="'Cerrar los ' + relevoAbiertos.length + ' abiertos'"></button>
           </div>
           <div class="space-y-2">
             <template x-for="c in relevoCasosFiltrados()" :key="c.id">
@@ -1393,7 +1396,7 @@
                     @change="relevoToggleSel(c.id)" :disabled="!relevoPuedePedir(c)"
                     class="w-3.5 h-3.5 accent-orange-500 disabled:opacity-25"
                     :title="relevoPuedePedir(c) ? 'Seleccionar' : 'Este caso no está para pedir'">
-                  <span class="text-slate-400 text-sm" :class="relevoDetalle?.id===c.id ? 'rotate-90' : ''"
+                  <span class="text-slate-400 text-sm" :class="relevoAbiertos.includes(c.id) ? 'rotate-90' : ''"
                     style="display:inline-block;transition:transform .15s">▶</span>
                   <div class="flex-1 min-w-0">
                     <div class="text-sm text-slate-200 font-medium truncate">
@@ -1415,9 +1418,9 @@
                   <span class="px-2 py-0.5 rounded-full text-xs" :class="relevoColorEstado(c.estado)"
                     x-text="relevoEtiquetaEstado(c.estado)"></span>
                 </div>
-                <div x-show="relevoDetalle?.id===c.id" class="border-t border-slate-700 px-4 py-4">
-                  <div x-show="relevoDetalleCargando" class="text-slate-400 text-sm">Cargando…</div>
-                  <div x-show="!relevoDetalleCargando && relevoDetalle">
+                <div x-show="relevoAbiertos.includes(c.id)" class="border-t border-slate-700 px-4 py-4">
+                  <div x-show="relevoCargandoIds.includes(c.id)" class="text-slate-400 text-sm">Cargando…</div>
+                  <div x-show="!relevoCargandoIds.includes(c.id)">
                     <!-- acciones disponibles según el estado -->
                     <div class="mb-4">
                       <p class="text-xs text-slate-500 mb-2">Acciones disponibles en este estado:</p>
@@ -1454,13 +1457,13 @@
                          iba último, en gris chico, y no se encontraba — que es
                          justo lo más humano y lo primero que uno quiere leer. -->
                     <div class="mb-4"
-                         x-show="relevoCk.caso_id === c.id
-                                 && ((relevoCk.respuestas||[]).length
-                                     || (relevoCk.archivos||[]).length
-                                     || (relevoCk.resumen?.total||0) > 0)">
+                         x-show="relevoCkDe(c.id).caso_id === c.id
+                                 && ((relevoCkDe(c.id).respuestas||[]).length
+                                     || (relevoCkDe(c.id).archivos||[]).length
+                                     || (relevoCkDe(c.id).resumen?.total||0) > 0)">
 
                       <!-- 1. lo que dijo -->
-                      <template x-for="(t,i) in (relevoCk.respuestas||[])" :key="'rt'+i">
+                      <template x-for="(t,i) in (relevoCkDe(c.id).respuestas||[])" :key="'rt'+i">
                         <div class="mb-3 rounded-xl border-l-4 border-sky-500 bg-sky-950/30 px-4 py-3">
                           <div class="flex items-center gap-2 mb-1.5">
                             <span class="text-sky-400">💬</span>
@@ -1473,13 +1476,21 @@
                       </template>
 
                       <!-- 2. lo que mandó -->
-                      <div x-show="(relevoCk.archivos||[]).length" class="mb-3">
-                        <p class="text-xs text-slate-400 mb-1.5 flex items-center gap-1.5">
-                          <span>📎</span>
-                          <span x-text="(relevoCk.archivos||[]).length + ' archivo(s) recibido(s)'"></span>
-                        </p>
+                      <div x-show="(relevoCkDe(c.id).archivos||[]).length" class="mb-3">
+                        <div class="flex items-center gap-2 mb-1.5">
+                          <p class="text-xs text-slate-400 flex items-center gap-1.5">
+                            <span>📎</span>
+                            <span x-text="(relevoCkDe(c.id).archivos||[]).length + ' archivo(s) recibido(s)'"></span>
+                          </p>
+                          <button @click.stop="relevoDescargarTodo(c)"
+                            :disabled="relevoDescargando === c.id"
+                            class="ml-auto text-xs px-3 py-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 border border-slate-600 disabled:opacity-50 whitespace-nowrap">
+                            <span :class="relevoDescargando === c.id ? 'spin inline-block' : ''">⬇</span>
+                            <span x-text="relevoDescargando === c.id ? 'Armando el zip…' : 'Bajar todo (.zip)'"></span>
+                          </button>
+                        </div>
                         <div class="space-y-1">
-                          <template x-for="(a,i) in (relevoCk.archivos||[])" :key="'ck'+i">
+                          <template x-for="(a,i) in (relevoCkDe(c.id).archivos||[])" :key="'ck'+i">
                             <div class="flex items-center gap-2 bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-xs">
                               <span class="text-slate-300 flex-1 truncate" :title="a.nombre" x-text="a.nombre"></span>
                               <span class="text-slate-500 whitespace-nowrap" x-text="relevoTamano(a.tamano)"></span>
@@ -1491,16 +1502,16 @@
                       </div>
 
                       <!-- 3. lo que falta -->
-                      <div x-show="(relevoCk.resumen?.total||0) > 0">
+                      <div x-show="(relevoCkDe(c.id).resumen?.total||0) > 0">
                         <div class="flex items-center gap-2 mb-1.5">
                           <p class="text-xs text-slate-400">Checklist de documentos</p>
                           <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300"
-                            x-text="(relevoCk.resumen?.pendiente||0) + ' pend · '
-                                  + (relevoCk.resumen?.recibido||0) + ' recib · '
-                                  + (relevoCk.resumen?.entregado||0) + ' entreg'"></span>
+                            x-text="(relevoCkDe(c.id).resumen?.pendiente||0) + ' pend · '
+                                  + (relevoCkDe(c.id).resumen?.recibido||0) + ' recib · '
+                                  + (relevoCkDe(c.id).resumen?.entregado||0) + ' entreg'"></span>
                         </div>
                         <div class="space-y-1">
-                          <template x-for="(d, clave) in (relevoCk.checklist?.documentos || {})" :key="clave">
+                          <template x-for="(d, clave) in (relevoCkDe(c.id).checklist?.documentos || {})" :key="clave">
                             <div class="flex items-center gap-2 bg-slate-900/50 rounded-lg px-3 py-2 text-xs">
                               <span class="px-2 py-0.5 rounded text-[11px] whitespace-nowrap"
                                 :class="d.estado==='entregado' ? 'bg-green-900/50 text-green-300'
@@ -1537,7 +1548,7 @@
                       <div>
                         <p class="text-slate-500 mb-1">Transacciones que abarca:</p>
                         <div class="space-y-1">
-                          <template x-for="(t,i) in (relevoDetalle?.transacciones||[])" :key="i">
+                          <template x-for="(t,i) in (relevoDetalleDe(c.id).transacciones||[])" :key="i">
                             <div class="bg-slate-900/50 rounded px-2 py-1 text-slate-300">
                               <span x-text="t.llave"></span> <span class="text-slate-500" x-text="t.valor"></span>
                             </div>
@@ -1547,13 +1558,13 @@
                       <div>
                         <p class="text-slate-500 mb-1">Historial de acciones:</p>
                         <div class="space-y-1">
-                          <template x-for="(a,i) in (relevoDetalle?.acciones||[])" :key="i">
+                          <template x-for="(a,i) in (relevoDetalleDe(c.id).acciones||[])" :key="i">
                             <div class="bg-slate-900/50 rounded px-2 py-1">
                               <span class="text-slate-200" x-text="relevoEtiquetaAccion(a.accion)"></span>
                               <span class="text-slate-500" x-text="' · ' + (a.quien||'') + ' · ' + (a.cuando||'').slice(0,16)"></span>
                             </div>
                           </template>
-                          <p x-show="!(relevoDetalle?.acciones||[]).length" class="text-slate-600">Sin acciones registradas.</p>
+                          <p x-show="!(relevoDetalleDe(c.id).acciones||[]).length" class="text-slate-600">Sin acciones registradas.</p>
                         </div>
                       </div>
                     </div>
@@ -6956,7 +6967,10 @@
       relevoCargando: false, relevoResolviendo: false, relevoProbando: false,
       relevoAccionando: false, relevoDetalleCargando: false,
       relevoMeta: {}, relevoCasos: [], relevoClientes: [], relevoBandeja: [],
-      relevoBandejaTotal: 0, relevoConfig: {}, relevoDetalle: null, relevoVencidos: 0,
+      // Varios casos abiertos a la vez: para revisar en tanda hace falta
+      // comparar, y con uno solo abrir el siguiente cerraba el anterior.
+      relevoAbiertos: [], relevoDetalles: {}, relevoCks: {}, relevoCargandoIds: [],
+      relevoBandejaTotal: 0, relevoConfig: {}, relevoVencidos: 0, relevoDescargando: '',
       relevoFiltroPartner: '', relevoFiltroEstado: '', relevoFiltroCliente: '',
       relevoSoloVencidos: false, relevoSoloPendientes: false, relevoSoloAccionables: false,
       relevoBuscar: '', relevoBuscarCaso: '', relevoBuscarCliente: '',
@@ -6970,7 +6984,7 @@
                    caso: null, idioma: '', nota: '', datos: {} },
       relevoEspejoCorriendo: false, relevoEspejoResultado: '',
       relevoSw: { interruptores: [] },
-      relevoCk: {}, relevoCkGuardando: false,
+      relevoCkGuardando: false,
       // Los estados los define el motor (§7). Se listan acá sólo para el filtro.
       relevoEstados: ['informativo','sin_cliente','sin_correo','sin_requerimiento','listo_para_pedir',
                       'pedido_enviado','recontactado','respuesta_parcial',
@@ -7207,25 +7221,64 @@
         if (d) { this.relevoBandeja = d.mensajes || []; this.relevoBandejaTotal = d.total || 0; }
       },
 
+      // ── varios casos abiertos a la vez ────────────────────────────
+      // Antes `relevoDetalle` era uno solo: abrir el siguiente cerraba el
+      // anterior, y para revisar en tanda hay que comparar. Ahora es una
+      // lista de ids con su detalle y su checklist indexados por caso.
+      relevoDetalleDe(id) { return this.relevoDetalles[id] || {}; },
+      relevoCkDe(id) { return this.relevoCks[id] || {}; },
+
       async relevoAbrir(c) {
-        if (this.relevoDetalle?.id === c.id) { this.relevoDetalle = null; this.relevoCk = {}; return; }
-        this.relevoDetalle = { id: c.id };
-        this.relevoCk = {};
-        this.relevoDetalleCargando = true;
-        // El checklist va en paralelo: es lo que el cliente mandó, y sin esto
-        // la respuesta que llegó no se veía en ninguna parte de la pantalla.
+        const i = this.relevoAbiertos.indexOf(c.id);
+        if (i >= 0) {            // cerrar
+          this.relevoAbiertos.splice(i, 1);
+          return;                // el detalle se conserva: reabrirlo es instantáneo
+        }
+        this.relevoAbiertos.push(c.id);
+        if (this.relevoDetalles[c.id] && this.relevoCks[c.id]) return;  // ya cargado
+        this.relevoCargandoIds.push(c.id);
         const [d, ck] = await Promise.all([
           this.api('GET', '/relevo/casos/' + encodeURIComponent(c.id)),
           this.api('GET', '/relevo/casos/' + encodeURIComponent(c.id) + '/checklist'),
         ]);
-        this.relevoDetalleCargando = false;
-        if (d?.caso) this.relevoDetalle = { id: c.id, ...d.caso };
-        if (ck) this.relevoCk = ck;
+        this.relevoCargandoIds = this.relevoCargandoIds.filter(x => x !== c.id);
+        if (d?.caso) this.relevoDetalles[c.id] = { id: c.id, ...d.caso };
+        if (ck) this.relevoCks[c.id] = ck;
+      },
+
+      // Tras una acción el detalle cacheado queda viejo: se olvida para que
+      // la próxima apertura traiga el estado real.
+      relevoOlvidar(id) {
+        if (id) {
+          delete this.relevoDetalles[id]; delete this.relevoCks[id];
+          this.relevoAbiertos = this.relevoAbiertos.filter(x => x !== id);
+        } else {
+          this.relevoDetalles = {}; this.relevoCks = {}; this.relevoAbiertos = [];
+        }
+      },
+
+      relevoCerrarTodos() {
+        this.relevoAbiertos = [];
+      },
+
+      // Una descarga con todo adentro: cinco clics y cinco archivos sueltos
+      // en la carpeta de descargas es justo la parte tediosa de revisar.
+      async relevoDescargarTodo(c) {
+        this.relevoDescargando = c.id;
+        const d = await this.api('GET', '/relevo/casos/' + encodeURIComponent(c.id) + '/descarga');
+        this.relevoDescargando = '';
+        if (!d || d.error) { this.globalError = d?.error || 'No se pudo preparar la descarga.'; return; }
+        if ((d.fallidos || []).length) {
+          this.globalError = 'No se pudieron incluir: '
+            + d.fallidos.map(f => f.nombre).join(', ');
+        }
+        // El navegador baja directo de S3; el enlace expira en 15 minutos.
+        window.open(d.url, '_blank');
       },
 
       async relevoRecargarCk(casoId) {
         const ck = await this.api('GET', '/relevo/casos/' + encodeURIComponent(casoId) + '/checklist');
-        if (ck) this.relevoCk = ck;
+        if (ck) this.relevoCks[casoId] = ck;
       },
 
       // §9: `entregado` lo pone SIEMPRE una persona, nunca el sistema. El
@@ -7253,7 +7306,7 @@
           quien: this.currentUserEmail || this.userEmail || '',
         });
         this.relevoAccionando = false;
-        if (d?.accion) { this.relevoDetalle = null; await this.relevoCargar(true); }
+        if (d?.accion) { this.relevoOlvidar(c.id); await this.relevoCargar(true); }
       },
 
       async relevoResolver() {
@@ -7289,7 +7342,7 @@
         if (d?.enviado) {
           alert(`Enviado a ${d.para}\nref: ${d.ref}`);
           p.abierto = false;
-          this.relevoDetalle = null;
+          this.relevoOlvidar();
           await this.relevoCargar(true);
         } else if (d) {
           alert('No se envió: ' + (d.error || 'error desconocido'));
@@ -7389,7 +7442,7 @@
         this.relevoPedido.enviando = false;
         if (d?.registrado) {
           this.relevoPedido.abierto = false;
-          this.relevoDetalle = null;
+          this.relevoOlvidar();
           await this.relevoCargar(true);
         } else if (d?.error) {
           this.globalError = 'No se registró: ' + d.error;
@@ -7446,7 +7499,7 @@
         this.relevoDev.registrando = false;
         if (d?.registrado) {
           this.relevoDev.abierto = false;
-          this.relevoDetalle = null;
+          this.relevoOlvidar();
           await this.relevoCargar(true);
         } else if (d?.error) {
           this.globalError = 'No se registró la devolución: ' + d.error;
