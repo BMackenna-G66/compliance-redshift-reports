@@ -3996,6 +3996,50 @@
                 x-text="st.l"></button>
             </template>
           </div>
+          <!-- Whitelist sin salir del caso. Antes había que cerrar, ir a la
+               tabla y volver a tipear el ID: tres pasos para algo que se
+               decide justo acá, al cerrar. -->
+          <div x-show="activeCase.status === 'closed' && activeCase.entity_id"
+               x-transition class="mt-3 rounded-lg border border-slate-700 bg-slate-900/50 p-3">
+            <div x-show="!caseWL.abierto">
+              <button @click="abrirWhitelistDelCaso()"
+                class="text-xs px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600">
+                ⚑ Pasar este cliente a whitelist
+              </button>
+              <p class="text-[11px] text-slate-500 mt-1.5">
+                Silencia sus alertas por el período que elijas. Queda registrado con tu nombre.
+              </p>
+            </div>
+            <div x-show="caseWL.abierto" class="space-y-2">
+              <p class="text-xs text-slate-300"
+                 x-text="'Whitelist para ' + (activeCase.entity_name || activeCase.entity_id)"></p>
+              <div class="flex gap-2">
+                <select x-model="caseWL.duration_days"
+                  class="text-xs px-2 py-1.5 rounded bg-slate-800 border border-slate-600 text-slate-200">
+                  <option value="30">30 días</option><option value="60">60 días</option>
+                  <option value="90">90 días</option>
+                </select>
+                <select x-model="caseWL.scope"
+                  class="text-xs px-2 py-1.5 rounded bg-slate-800 border border-slate-600 text-slate-200">
+                  <option value="global">Todas las alertas</option>
+                  <option value="report">Sólo este reporte</option>
+                </select>
+              </div>
+              <input type="text" x-model="caseWL.reason" placeholder="Motivo (queda en la auditoría)"
+                class="w-full text-xs px-2 py-1.5 rounded bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500">
+              <div class="flex gap-2">
+                <button @click="caseWL.abierto = false"
+                  class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">Cancelar</button>
+                <button @click="guardarWhitelistDelCaso()"
+                  :disabled="!caseWL.reason.trim() || caseWL.guardando"
+                  class="text-xs px-3 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-500 text-white disabled:opacity-40">
+                  <span :class="caseWL.guardando ? 'spin inline-block' : ''">⚑</span> Confirmar
+                </button>
+              </div>
+              <p x-show="caseWL.error" class="text-xs text-red-400" x-text="caseWL.error"></p>
+              <p x-show="caseWL.ok" class="text-xs text-green-400">✓ Agregado a la whitelist.</p>
+            </div>
+          </div>
         </div>
         <!-- Linked alerts -->
         <div x-show="activeCaseAlerts.length > 0">
@@ -4087,9 +4131,8 @@
           <div class="flex items-center justify-between mb-3">
             <span class="text-xs text-slate-500">Documentos solicitados</span>
             <button @click="openResendEmailFromCase()"
-              class="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-900/40 hover:bg-indigo-800/60 border border-indigo-800 text-indigo-300 text-xs font-medium rounded-lg transition">
-              ✉️ Reenviar correo
-            </button>
+              class="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-900/40 hover:bg-indigo-800/60 border border-indigo-800 text-indigo-300 text-xs font-medium rounded-lg transition"
+              x-text="activeCaseLastDocRequest ? '✉️ Reenviar correo' : '✉️ Enviar correo'"></button>
           </div>
           <div class="space-y-1.5" x-show="(activeCase.documentos_checklist || []).length > 0">
             <template x-for="item in (activeCase.documentos_checklist || [])" :key="item.categoria">
@@ -4125,12 +4168,32 @@
               </div>
             </template>
           </div>
-          <label class="inline-flex items-center gap-2 px-3 py-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-200 text-xs font-medium rounded-lg cursor-pointer transition"
-            :class="caseAttachmentUploading ? 'opacity-50 cursor-not-allowed' : ''">
-            <span x-text="caseAttachmentUploading ? '⏳ Subiendo...' : '+ Adjuntar archivo'"></span>
-            <input type="file" class="hidden" @change="uploadCaseAttachment($event)" :disabled="caseAttachmentUploading">
+          <label @dragover.prevent="caseDropActivo = true"
+                 @dragleave.prevent="caseDropActivo = false"
+                 @drop.prevent="soltarAdjuntos($event)"
+                 class="flex flex-col items-center justify-center gap-1 px-4 py-5 border-2 border-dashed rounded-xl cursor-pointer transition text-center"
+                 :class="caseAttachmentUploading ? 'opacity-60 cursor-not-allowed border-slate-600'
+                       : caseDropActivo ? 'border-teal-500 bg-teal-950/30' : 'border-slate-600 hover:border-slate-500 bg-slate-900/40'">
+            <template x-if="!caseAttachmentUploading">
+              <div>
+                <p class="text-sm text-slate-300">Arrastrá los documentos acá</p>
+                <p class="text-xs text-slate-500 mt-0.5">o hacé clic para elegirlos — podés seleccionar varios</p>
+              </div>
+            </template>
+            <template x-if="caseAttachmentUploading">
+              <div class="w-full max-w-xs">
+                <p class="text-sm text-slate-300 mb-2"
+                   x-text="'Subiendo ' + caseUploadHecho + ' de ' + caseUploadTotal + '…'"></p>
+                <div class="h-1.5 w-full bg-slate-700 rounded-full overflow-hidden">
+                  <div class="h-full bg-teal-500 transition-all"
+                       :style="'width:' + (caseUploadTotal ? Math.round(caseUploadHecho*100/caseUploadTotal) : 0) + '%'"></div>
+                </div>
+              </div>
+            </template>
+            <input type="file" multiple class="hidden" @change="uploadCaseAttachment($event)"
+                   :disabled="caseAttachmentUploading">
           </label>
-          <p x-show="caseAttachmentError" class="text-xs text-red-400 mt-2" x-text="caseAttachmentError"></p>
+          <p x-show="caseAttachmentError" class="text-xs text-red-400 mt-2 whitespace-pre-wrap" x-text="caseAttachmentError"></p>
         </div>
         <!-- Notes timeline -->
         <div>
@@ -6651,6 +6714,9 @@
       activeCaseAttachments: [],
       activeCaseLastDocRequest: null,
       caseAttachmentUploading: false,
+      caseWL: { abierto: false, duration_days: '90', scope: 'global', reason: '',
+                guardando: false, error: '', ok: false },
+      caseUploadTotal: 0, caseUploadHecho: 0, caseDropActivo: false,
       caseAttachmentError: '',
       newCaseNote: '',
       activeCaseAI: '',
@@ -8651,7 +8717,11 @@
           this.docRequestModal.error = 'El correo es requerido.';
           return;
         }
-        if (this.docRequestModal.documentos.length === 0) {
+        // La plantilla de texto libre no pide documentos: sirve para aclarar
+        // algo de lo ya enviado. Exigir un adjunto ahí obligaba a marcar uno
+        // que después aparecía pedido en el correo y en el checklist.
+        const tplSel = this.emailTemplates.find(t => t.key === this.docRequestModal.template_key);
+        if (this.docRequestModal.documentos.length === 0 && !tplSel?.requires_custom_text) {
           this.docRequestModal.error = 'Elegí al menos un documento.';
           return;
         }
@@ -9658,12 +9728,20 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         const c = this.activeCase;
         const last = this.activeCaseLastDocRequest;
         const isCompany = c.entity_type === 'company';
+        // Nombre y correo venían SÓLO del último pedido de documentos, así que
+        // la primera vez que se redacta un correo —justo cuando hacen falta—
+        // salían vacíos. Ahora el pedido anterior manda si existe, y si no se
+        // cae a lo que ya sabemos del caso y del perfil del cliente.
+        // La ficha KYC, si el analista ya la trajo. `client_profile` la
+        // cuelga el backend del propio caso.
+        const perfil = (c.client_profile) || {};
         this.docRequestModal = {
           open: true,
           entity_type: c.entity_type || 'customer',
           entity_id: c.entity_id ? String(c.entity_id) : '',
-          nombre: (last && last.nombre_completo) || '',
-          correo: (last && last.correo) || '',
+          nombre: (last && last.nombre_completo) || c.entity_name
+                  || perfil.nombre_completo || perfil.razon_social || '',
+          correo: (last && last.correo) || perfil.email || perfil.correo || '',
           prioridad: (c.priority === 'high' ? 'P1' : c.priority === 'medium' ? 'P2' : 'P3'),
           alerta: c.report_name || '',
           documentos: (c.documentos_checklist || []).map(item => item.categoria).filter(Boolean),
@@ -9677,37 +9755,131 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         this.emailPreviewHtml = ''; this.emailPreviewAttachment = ''; this.emailPreviewError = '';
         this.refreshEmailPreview();
         if (this.docRequestModal.documentos.length === 0) this.docRequestModal.documentos = [...this.docCategoriesAll];
+        // Último recurso: resolverlos del ID contra la base. No bloquea la
+        // apertura del modal — llega y se completa solo.
+        this.completarDatosDelCliente();
+      },
+
+      // Rellena nombre y correo desde el ID si quedaron vacíos. Se puede editar
+      // igual: sólo escribe sobre lo que está en blanco.
+      async completarDatosDelCliente() {
+        const m = this.docRequestModal;
+        if (!m.entity_id || (m.nombre && m.correo)) return;
+        const d = await this.api('POST', '/analyze/entity-name', {
+          entity_id: m.entity_id, entity_type: m.entity_type,
+        });
+        if (!d?.found) return;
+        const p = d.profile || {};
+        if (!this.docRequestModal.nombre) {
+            this.docRequestModal.nombre = d.entity_name || '';
+        }
+        if (!this.docRequestModal.correo) {
+            this.docRequestModal.correo = p.email || p.correo || p.customer_email || '';
+        }
+        if (this.docRequestModal.nombre) this.refreshEmailPreview();
+      },
+
+      // ── adjuntos: de a uno era el cuello de botella ──────────────────
+      // Un caso traído de SLF puede tener 15+ documentos y se subían de a uno.
+      // Ahora acepta varios y también arrastrar y soltar.
+      // ── whitelist desde el caso ───────────────────────────────────
+      abrirWhitelistDelCaso() {
+        this.caseWL = { abierto: true, duration_days: '90', scope: 'global',
+                        reason: '', guardando: false, error: '', ok: false };
+      },
+
+      async guardarWhitelistDelCaso() {
+        const c = this.activeCase;
+        if (!c.entity_id || !this.caseWL.reason.trim()) return;
+        this.caseWL.guardando = true; this.caseWL.error = '';
+        const payload = {
+          entity_field: c.entity_type === 'company' ? 'company_id' : 'customer_id',
+          entity_value: String(c.entity_id),
+          duration_days: Number(this.caseWL.duration_days),
+          reason: this.caseWL.reason.trim(),
+          scope: this.caseWL.scope,
+          created_by: this.currentUserEmail || this.userEmail || '',
+        };
+        // "Sólo este reporte" necesita saber cuál: es el que originó el caso.
+        if (payload.scope === 'report') payload.report_name = c.report_name || '';
+        const d = await this.api('POST', '/whitelist', payload);
+        this.caseWL.guardando = false;
+        if (!d) { this.caseWL.error = 'No se pudo agregar.'; return; }
+        this.caseWL.ok = true;
+        // Queda en la bitácora del caso: una whitelist sin rastro de por qué
+        // es justo lo que una auditoría pregunta.
+        try {
+          await this.api('POST', `/cases/${c.case_id}/notes`, {
+            content: `Cliente pasado a whitelist (${payload.duration_days} días, `
+                   + `${payload.scope === 'report' ? 'sólo ' + payload.report_name : 'todas las alertas'}). `
+                   + `Motivo: ${payload.reason}`,
+            author_email: payload.created_by,
+          });
+          await this.openCaseDetail(c.case_id);
+        } catch (e) { /* la nota es secundaria al alta */ }
+        setTimeout(() => { this.caseWL.abierto = false; }, 1500);
       },
 
       async uploadCaseAttachment(event) {
-        const file = event.target.files && event.target.files[0];
+        const files = Array.from(event.target.files || []);
         event.target.value = '';
-        if (!file || !this.activeCase.case_id) return;
+        await this.subirAdjuntos(files);
+      },
+
+      async soltarAdjuntos(event) {
+        this.caseDropActivo = false;
+        const files = Array.from(event.dataTransfer?.files || []);
+        await this.subirAdjuntos(files);
+      },
+
+      async subirAdjuntos(files) {
+        const caseId = this.activeCase.case_id;
+        if (!files.length || !caseId) return;
         this.caseAttachmentError = '';
         this.caseAttachmentUploading = true;
+        this.caseUploadTotal = files.length;
+        this.caseUploadHecho = 0;
+        // Uno por uno y no en paralelo: cada archivo son dos llamadas a la API
+        // más un PUT a S3, y quince en simultáneo desde el navegador es la
+        // forma más rápida de que la Lambda empiece a devolver errores.
+        const fallidos = [];
+        for (const file of files) {
+          try {
+            await this._subirUno(caseId, file);
+          } catch (e) {
+            // Un archivo que falla no puede cortar los catorce siguientes.
+            fallidos.push(`${file.name}: ${e?.message || 'error'}`);
+          }
+          this.caseUploadHecho += 1;
+        }
         try {
-          const caseId = this.activeCase.case_id;
-          const step1 = await this.api('POST', `/cases/${caseId}/attachments/upload-url`, {
-            filename: file.name, content_type: file.type || 'application/octet-stream',
-          });
-          if (!step1?.upload_url) throw new Error('No se pudo generar la URL de subida.');
-          const putRes = await fetch(step1.upload_url, {
-            method: 'PUT', body: file,
-            headers: { 'Content-Type': step1.content_type },
-          });
-          if (!putRes.ok) throw new Error('La subida a S3 falló (' + putRes.status + ').');
-          await this.api('POST', `/cases/${caseId}/attachments`, {
-            filename: file.name, s3_key: step1.s3_key, size: file.size,
-            content_type: step1.content_type,
-            uploaded_by: this.currentUserEmail || this.userEmail || '',
-          });
           const d = await this.api('GET', '/cases/' + caseId);
           if (d?.case) this.activeCaseAttachments = d.case.attachments || [];
-        } catch (e) {
-          this.caseAttachmentError = e?.message || 'Error al subir el archivo.';
-        } finally {
-          this.caseAttachmentUploading = false;
+        } catch (e) { /* la lista se refresca al reabrir */ }
+        this.caseAttachmentUploading = false;
+        this.caseUploadTotal = 0;
+        if (fallidos.length) {
+          // Se nombran: "3 fallaron" obliga a adivinar cuáles hay que reintentar.
+          this.caseAttachmentError = `No se subieron ${fallidos.length} de `
+            + `${files.length}:\n` + fallidos.join('\n');
         }
+      },
+
+      async _subirUno(caseId, file) {
+        const step1 = await this.api('POST', `/cases/${caseId}/attachments/upload-url`, {
+          filename: file.name, content_type: file.type || 'application/octet-stream',
+        });
+        if (!step1?.upload_url) throw new Error('no se pudo generar la URL de subida');
+        const putRes = await fetch(step1.upload_url, {
+          method: 'PUT', body: file,
+          headers: { 'Content-Type': step1.content_type },
+        });
+        if (!putRes.ok) throw new Error('la subida a S3 falló (' + putRes.status + ')');
+        await this.api('POST', `/cases/${caseId}/attachments`, {
+          filename: file.name, s3_key: step1.s3_key, size: file.size,
+          content_type: step1.content_type,
+          uploaded_by: this.currentUserEmail || this.userEmail || '',
+        });
       },
 
       async downloadCaseAttachment(attachmentId) {
@@ -9793,7 +9965,10 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
             : '',
           description: (fromAlert && fromAlert.descripcion) || '',
           priority: 'medium',
-          assigned_to: '',
+          // La asignación baja de la alerta al caso: si una alerta ya tiene
+          // dueño, el caso que nace de ella es de la misma persona. Queda
+          // editable — si alguien la cambia a mano, esa decisión manda.
+          assigned_to: (fromAlert && (fromAlert.assigned_to || fromAlert.asignado_a)) || '',
           entity_type: ef.includes('company') ? 'company' : 'customer',
           entity_id: fromAlert ? (fromAlert.entity_value || '') : '',
           entity_name: '',

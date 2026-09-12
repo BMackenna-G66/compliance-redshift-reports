@@ -4861,6 +4861,18 @@ def link_alert_to_case(alert_id: str, body: dict):
         if isinstance(row, dict) and row:
             cambios["alert_data"] = row
             cambios["alert_priority"] = alerta.get("priority", "")
+
+    # La asignación baja de la alerta al caso. Alerta y caso tienen cada uno su
+    # propio `assigned_to` —son cosas distintas y eso está bien— pero si la
+    # alerta ya tiene dueño, el caso que nace de ella es de la misma persona:
+    # tenerlos separados hacía que un caso autoasignado apareciera sin asignar
+    # en la tabla, y nadie sabía de quién era.
+    #
+    # Sólo se copia si el caso NO tiene asignación propia: una hecha a mano es
+    # una decisión de alguien y no se pisa.
+    if alerta.get("assigned_to") and not caso.get("assigned_to"):
+        cambios["assigned_to"] = alerta["assigned_to"]
+
     _crm_update("cases", case_id, cambios)
     return resp(200, {"message": f"Alert '{alert_id}' linked to case '{case_id}'"})
 
