@@ -157,6 +157,38 @@ def _guardar_adjuntos(caso_id, message_id, adjuntos):
     return fuera
 
 
+# ── el texto que escribió el cliente ─────────────────────────────────────
+# Separadores con los que los clientes de correo abren la cita del mensaje
+# anterior. Lo que va después es NUESTRO propio correo devuelto, y mostrarlo
+# convierte el panel en una pared: medido sobre una respuesta real, 2.212
+# caracteres de los cuales el cliente escribió 21.
+_CITA = re.compile(
+    r"(?im)^\s*(?:"
+    r"El\s+.{0,40}\d{4}.{0,140}escribi[óo]:"         # gmail es
+    r"|On\s+.{0,140}wrote:"                           # gmail en
+    r"|-{2,}\s*(?:Mensaje original|Original Message)"
+    r"|De:\s|From:\s"
+    r"|_{5,}"
+    r")")
+
+
+def solo_lo_nuevo(texto, maximo=4000):
+    """El texto del cliente sin la cita de nuestro propio correo.
+
+    Si el recorte dejara todo vacío —alguien que responde sólo arriba de la
+    cita sin escribir nada, o un formato que no reconocemos— se devuelve el
+    original: perder la respuesta entera por un separador raro es peor que
+    mostrar de más.
+    """
+    t = str(texto or "")
+    m = _CITA.search(t)
+    recortado = t[:m.start()] if m else t
+    # También las líneas citadas con ">" que hayan quedado sueltas.
+    lineas = [l for l in recortado.splitlines() if not l.lstrip().startswith(">")]
+    limpio = "\n".join(lineas).strip()
+    return (limpio or t.strip())[:maximo]
+
+
 # ── procesar una respuesta ───────────────────────────────────────────────
 def procesar(mensaje, caso_id, via, g=None, quien="sistema"):
     """Una respuesta ya correlacionada. Devuelve el resumen de lo que hizo."""
@@ -165,15 +197,23 @@ def procesar(mensaje, caso_id, via, g=None, quien="sistema"):
          "adjuntos": 0, "nota": False, "accion": None}
 
     metadata = []
+    cuerpo_bajado = ""
     try:
         g = g or ingesta.cliente()
-        crudos = g.adjuntos(mid)
+        # Adjuntos Y cuerpo en una sola bajada: la ingesta no le baja el cuerpo
+        # a un correo que no es de un partner, y la respuesta del cliente llega
+        # de su Gmail. Sin esto, una respuesta sin adjuntos quedaba registrada
+        # como "respondió" y sin nada que mostrar.
+        crudos, cuerpo_bajado = g.adjuntos_y_cuerpo(mid)
         if crudos:
             metadata = _guardar_adjuntos(caso_id, mid, crudos)
     except Exception as e:
         r["error_adjuntos"] = str(e)[:200]
 
-    texto = str(mensaje.get("cuerpo") or "").strip()
+    # Lo guardado gana sólo si existe; si no, lo que acabamos de bajar.
+    texto = solo_lo_nuevo(str(mensaje.get("cuerpo") or "").strip()
+                          or str(cuerpo_bajado or "").strip())
+    r["texto"] = len(texto)
 
     if metadata:
         r["adjuntos"] = len(metadata)
@@ -185,7 +225,7 @@ def procesar(mensaje, caso_id, via, g=None, quien="sistema"):
         try:
             deposito.poner("respuestas", deposito.clave_segura(mid), {
                 "message_id": mid, "caso_id": caso_id, "via": via,
-                "adjuntos": metadata, "texto": texto[:4000], "cuando": _ahora()})
+                "adjuntos": metadata, "texto": texto, "cuando": _ahora()})
         except Exception as e:
             print(f"[relevo] no pude registrar la respuesta {mid}: {e}")
         # respuesta_parcial y no respuesta_recibida: el sistema sabe que llegó
@@ -197,7 +237,7 @@ def procesar(mensaje, caso_id, via, g=None, quien="sistema"):
         try:
             deposito.poner("respuestas", deposito.clave_segura(mid), {
                 "message_id": mid, "caso_id": caso_id, "via": via,
-                "adjuntos": [], "texto": texto[:4000], "cuando": _ahora()})
+                "adjuntos": [], "texto": texto, "cuando": _ahora()})
         except Exception as e:
             print(f"[relevo] no pude registrar la respuesta {mid}: {e}")
         accion = "respuesta_parcial"

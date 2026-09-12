@@ -152,6 +152,22 @@ class Gmail:
             return self._get(f"messages/{mid}", format="full")
         return self._get(f"messages/{mid}", format="metadata", metadataHeaders=HEADERS)
 
+    def adjuntos_y_cuerpo(self, mid):
+        """(adjuntos, cuerpo) en UNA sola bajada.
+
+        La respuesta de un cliente llega de su Gmail, no de un partner, así que
+        la ingesta no le baja el cuerpo: `_necesita_cuerpo` se decide por las
+        reglas del partner y un gmail.com no tiene ninguna. El resultado es que
+        una respuesta SIN adjuntos quedaba registrada como "respondió" y sin
+        nada que mostrar — ni archivo ni texto—, y el analista tenía que ir a
+        Gmail a averiguar qué dijo el cliente.
+
+        El cuerpo ya viene en el mismo `format=full` que se pide para los
+        adjuntos, así que traerlo no cuesta una llamada más.
+        """
+        j = self._get(f"messages/{mid}", format="full")
+        return self._extraer_adjuntos(j, mid), _cuerpo(j.get("payload"))
+
     def adjuntos(self, mid):
         """Los adjuntos de un mensaje, ya decodificados.
 
@@ -162,7 +178,11 @@ class Gmail:
         Sólo necesita gmail.readonly, así que esto funciona con el token
         actual — a diferencia del envío.
         """
-        j = self._get(f"messages/{mid}", format="full")
+        return self._extraer_adjuntos(self._get(f"messages/{mid}", format="full"), mid)
+
+    def _extraer_adjuntos(self, j, mid):
+        """Recorre el payload ya bajado. Separado para que `adjuntos_y_cuerpo`
+        no tenga que pedir el mensaje una segunda vez."""
         fuera = []
 
         def _recorrer(parte):

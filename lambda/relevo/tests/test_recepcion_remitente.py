@@ -79,5 +79,46 @@ class SinHeaders(unittest.TestCase):
         self.assertTrue(recepcion._es_del_cliente({"id": "x"}))
 
 
+
+class ElTextoDelCliente(unittest.TestCase):
+    """Lo que escribió el cliente, sin nuestro propio correo devuelto.
+
+    Medido sobre una respuesta real: 2.212 caracteres, de los cuales el
+    cliente escribió 21. Mostrar la cita entera convierte el panel del caso
+    en una pared de texto propio.
+    """
+
+    def test_recorta_la_cita_de_gmail_en_espanol(self):
+        t = ("De que se trata esto?\n\nEl vie, 11 sept 2026 a las 22:23, "
+             "<compliance@global66.com> escribió:\n> hola")
+        self.assertEqual(recepcion.solo_lo_nuevo(t), "De que se trata esto?")
+
+    def test_recorta_la_cita_de_gmail_en_ingles(self):
+        t = ("Here are the docs.\n\nOn Fri, 11 Sep 2026 at 22:23, "
+             "compliance@global66.com wrote:\n> hi")
+        self.assertEqual(recepcion.solo_lo_nuevo(t), "Here are the docs.")
+
+    def test_recorta_la_cita_de_outlook(self):
+        t = "Adjunto lo pedido.\n\n________________________________\nDe: compliance@global66.com"
+        self.assertEqual(recepcion.solo_lo_nuevo(t), "Adjunto lo pedido.")
+
+    def test_un_texto_sin_cita_queda_igual(self):
+        self.assertEqual(recepcion.solo_lo_nuevo("Adjunto todo, saludos."),
+                         "Adjunto todo, saludos.")
+
+    def test_si_el_recorte_deja_vacio_se_devuelve_el_original(self):
+        """Alguien que responde sólo arriba de la cita sin escribir nada, o un
+        formato que no reconocemos: perder la respuesta entera por un
+        separador raro es peor que mostrar de más."""
+        t = "> hola\n> mundo"
+        self.assertEqual(recepcion.solo_lo_nuevo(t), t)
+
+    def test_vacio_no_rompe(self):
+        self.assertEqual(recepcion.solo_lo_nuevo(""), "")
+        self.assertEqual(recepcion.solo_lo_nuevo(None), "")
+
+    def test_respeta_el_tope(self):
+        self.assertEqual(len(recepcion.solo_lo_nuevo("x" * 9000, maximo=4000)), 4000)
+
 if __name__ == "__main__":
     unittest.main()
