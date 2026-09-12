@@ -4195,6 +4195,59 @@
           </label>
           <p x-show="caseAttachmentError" class="text-xs text-red-400 mt-2 whitespace-pre-wrap" x-text="caseAttachmentError"></p>
         </div>
+        <!-- HISTORIAL DE CORREOS.
+             Pedido para auditorías: "reconstruir el análisis realizado". El
+             dato existía repartido entre la colección de envíos, las notas del
+             caso y los adjuntos; acá se ve como una conversación. -->
+        <div class="mb-6">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs text-slate-500">Historial de correos</span>
+            <span x-show="caseEmails.total" class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300"
+              x-text="caseEmails.enviados + ' enviado(s) · ' + caseEmails.recibidos + ' recibido(s)'"></span>
+            <span x-show="caseEmails.fallidos" class="text-[11px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-300"
+              x-text="caseEmails.fallidos + ' no salió(eron)'"></span>
+            <button @click="cargarCorreosDelCaso()" :disabled="caseEmailsLoading"
+              class="ml-auto text-xs text-slate-500 hover:text-slate-300">
+              <span :class="caseEmailsLoading ? 'spin inline-block' : ''">↺</span>
+            </button>
+          </div>
+          <p x-show="!caseEmailsLoading && !(caseEmails.correos||[]).length"
+             class="text-sm text-slate-600 italic">Sin correos registrados en este caso.</p>
+          <div class="space-y-2">
+            <template x-for="(m,i) in (caseEmails.correos||[])" :key="'em'+i">
+              <div class="rounded-xl border px-3 py-2.5"
+                   :class="m.direccion === 'enviado'
+                     ? (m.salio ? 'border-slate-700 bg-slate-900/50' : 'border-red-800 bg-red-950/30')
+                     : 'border-sky-800 bg-sky-950/25'">
+                <div class="flex items-center gap-2 flex-wrap mb-1">
+                  <span class="text-xs font-medium"
+                    :class="m.direccion === 'enviado' ? 'text-slate-300' : 'text-sky-300'"
+                    x-text="m.direccion === 'enviado' ? '↗ Enviado' : '↘ Recibido'"></span>
+                  <span class="text-[11px] text-slate-500"
+                    x-text="(m.direccion === 'enviado' ? 'a ' + m.para : 'de ' + m.de)"></span>
+                  <span class="text-[11px] text-slate-600 ml-auto" x-text="(m.cuando||'').slice(0,16)"></span>
+                </div>
+                <!-- Un envío que falló también es historia: explica un silencio. -->
+                <p x-show="!m.salio" class="text-xs text-red-300 mb-1"
+                   x-text="'No se envió: ' + (m.error || 'sin detalle')"></p>
+                <p x-show="m.asunto" class="text-xs text-slate-300 font-medium" x-text="m.asunto"></p>
+                <p x-show="m.cuerpo" class="text-xs text-slate-400 whitespace-pre-wrap mt-1"
+                   x-text="m.cuerpo.length > 400 ? m.cuerpo.slice(0,400) + '…' : m.cuerpo"></p>
+                <p x-show="m.direccion === 'enviado' && !m.cuerpo"
+                   class="text-[11px] text-slate-600 italic mt-1">
+                  (el cuerpo no se guardaba cuando se envió este correo)
+                </p>
+                <div x-show="(m.documentos||[]).length" class="flex flex-wrap gap-1 mt-1.5">
+                  <template x-for="(d,j) in (m.documentos||[])" :key="'d'+i+'_'+j">
+                    <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300"
+                      x-text="(m.direccion === 'enviado' ? '📋 ' : '📎 ') + d"></span>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
         <!-- Notes timeline -->
         <div>
           <span class="text-xs text-slate-500 block mb-3">Notas de investigación (<span x-text="activeCaseNotes.length"></span>)</span>
@@ -6713,6 +6766,8 @@
       activeCaseAlerts: [],
       activeCaseAttachments: [],
       activeCaseLastDocRequest: null,
+      caseEmails: { correos: [], total: 0, enviados: 0, recibidos: 0, fallidos: 0 },
+      caseEmailsLoading: false,
       caseAttachmentUploading: false,
       caseWL: { abierto: false, duration_days: '90', scope: 'global', reason: '',
                 guardando: false, error: '', ok: false },
@@ -9655,6 +9710,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         this.activeCaseAlerts = [];
         this.activeCaseAttachments = [];
         this.activeCaseLastDocRequest = null;
+        this.caseEmails = { correos: [], total: 0, enviados: 0, recibidos: 0, fallidos: 0 };
         this.caseProfileError = '';
         this.caseProfileOpen = false;
         this.caseAttachmentError = '';
@@ -9668,6 +9724,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           this.activeCaseNotes = d.notes || [];
           this.activeCaseAlerts = d.alerts || [];
           this.activeCaseAttachments = d.case.attachments || [];
+          this.cargarCorreosDelCaso();
           this.activeCaseLastDocRequest = d.last_document_request || null;
         }
       },
@@ -9818,6 +9875,15 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           await this.openCaseDetail(c.case_id);
         } catch (e) { /* la nota es secundaria al alta */ }
         setTimeout(() => { this.caseWL.abierto = false; }, 1500);
+      },
+
+      async cargarCorreosDelCaso() {
+        const id = this.activeCase.case_id;
+        if (!id) return;
+        this.caseEmailsLoading = true;
+        const d = await this.api('GET', '/cases/' + id + '/correos');
+        this.caseEmailsLoading = false;
+        if (d) this.caseEmails = d;
       },
 
       async uploadCaseAttachment(event) {

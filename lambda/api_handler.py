@@ -2499,6 +2499,9 @@ def handler(event, context):  # noqa: ARG001
         # PUT /cases/{id}/assign
         if method in ("PUT", "POST") and len(parts) == 3 and parts[0] == "cases" and parts[2] == "assign":
             return update_case_assign(parts[1], body)
+        # GET /cases/{id}/correos — historial de correos del caso
+        if method == "GET" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "correos":
+            return get_case_emails(parts[1])
         # POST /cases/{id}/notes
         if method == "POST" and len(parts) == 3 and parts[0] == "cases" and parts[2] == "notes":
             return add_case_note(parts[1], body)
@@ -3153,6 +3156,18 @@ def get_whitelist():
         return resp(200, {"whitelist": [], "warning": str(e)})
 
 
+def _html_a_texto(html_body: str, maximo: int = 8000) -> str:
+    """El texto visible de un correo HTML. Sin dependencias: la plantilla es
+    una tabla de correo, no HTML arbitrario, y basta con sacar las etiquetas."""
+    t = re.sub(r"(?is)<(script|style).*?</\1>", " ", str(html_body or ""))
+    t = re.sub(r"(?i)<br\s*/?>|</p>|</tr>|</div>", "\n", t)
+    t = re.sub(r"<[^>]+>", " ", t)
+    t = html.unescape(t)
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n\s*\n\s*\n+", "\n\n", t)
+    return t.strip()[:maximo]
+
+
 def add_to_whitelist(body: dict):
     entity_field = body.get("entity_field", "").strip()
     entity_value = body.get("entity_value", "").strip()
@@ -3494,6 +3509,12 @@ def run_alert_prioritization_test(body: dict):
             "subject": subject,
             "sent": envio["sent"],
             "send_error": envio["error"],
+            # El cuerpo, en texto. Antes sólo quedaba el asunto y los
+            # documentos pedidos: para reconstruir un análisis ante una
+            # auditoría hay que poder leer QUÉ se le dijo al cliente, no sólo
+            # que se le escribió. Va como texto y no como HTML porque lo que
+            # se audita es el contenido, no el diseño.
+            "cuerpo_texto": _html_a_texto(html_body),
             "created_at": _now_str(),
             "test_mode": True,
         })
@@ -3662,6 +3683,12 @@ def run_alert_prioritization_real(body: dict):
             "subject": subject,
             "sent": envio["sent"],
             "send_error": envio["error"],
+            # El cuerpo, en texto. Antes sólo quedaba el asunto y los
+            # documentos pedidos: para reconstruir un análisis ante una
+            # auditoría hay que poder leer QUÉ se le dijo al cliente, no sólo
+            # que se le escribió. Va como texto y no como HTML porque lo que
+            # se audita es el contenido, no el diseño.
+            "cuerpo_texto": _html_a_texto(html_body),
             "created_at": _now_str(),
             "test_mode": False,
         })
@@ -4813,6 +4840,116 @@ def take_case(case_id: str, body: dict):
     _post_slack("\n".join(lineas))
 
     return resp(200, {"message": f"Caso tomado por {actor}", "assigned_to": actor})
+
+
+# ---------------------------------------------------------------------------
+# HISTORIAL DE CORREOS DE UN CASO
+#
+# Lo pidió Compliance para auditorías: "reconstruir el análisis realizado".
+# Hoy el dato existe pero en tres formas distintas y en tres pantallas:
+#
+#   enviados  → colección `document_requests` (asunto, documentos pedidos)
+#   recibidos → una NOTA dentro del caso, con el correo del cliente como autor
+#   adjuntos  → `case.attachments` con source="email_reply"
+#
+# Se arma la vista leyendo esas tres y ordenando por fecha. **No se migra
+# nada**: el historial funciona igual para los casos que ya existen, que son
+# justamente los que una auditoría va a pedir.
+# ---------------------------------------------------------------------------
+
+# Firma de las notas que en realidad son una respuesta del cliente. Los
+# registros nuevos llevan `tipo: "correo_recibido"` y no dependen de esto; el
+# prefijo reconoce a los viejos, que son la mayoría y no se pueden reescribir.
+_PREFIJO_RESPUESTA = "respuesta del cliente por correo"
+
+
+def _es_correo_recibido(nota: dict) -> bool:
+    if nota.get("tipo") == "correo_recibido":
+        return True
+    return str(nota.get("content", "")).strip().lower().startswith(_PREFIJO_RESPUESTA)
+
+
+def _cuerpo_de_la_nota(contenido: str) -> str:
+    """El texto del cliente, sin el encabezado que le puso el poller."""
+    partes = str(contenido or "").split("\n\n", 1)
+    return (partes[1] if len(partes) == 2 else partes[0]).strip()
+
+
+def get_case_emails(case_id: str):
+    """Historial de correos del caso, enviados y recibidos, en orden."""
+    caso = _crm_get("cases", case_id)
+    if caso is None:
+        return resp(404, {"error": f"Case '{case_id}' not found"})
+
+    correos = []
+
+    # ── enviados ──
+    for r in _crm_list("document_requests"):
+        if r.get("case_id") != case_id:
+            continue
+        correos.append({
+            "direccion": "enviado",
+            "cuando": r.get("created_at", ""),
+            "de": ALERT_DOCS_FROM_ADDR,
+            "para": r.get("correo", ""),
+            "asunto": r.get("subject", ""),
+            "documentos": r.get("documentos_solicitados") or [],
+            "plantilla": r.get("template_key", ""),
+            # Un intento fallido también es historia: que no saliera no
+            # significa que no pasó, y en una auditoría explica un silencio.
+            "salio": bool(r.get("sent")),
+            "error": r.get("send_error") or "",
+            "cuerpo": r.get("cuerpo_texto") or "",
+            "request_id": r.get("request_id", ""),
+        })
+
+    # ── recibidos ──
+    adjuntos = caso.get("attachments") or []
+    for n in (caso.get("notes") or []):
+        if not _es_correo_recibido(n):
+            continue
+        cuando = n.get("created_at", "")
+        # Los adjuntos que llegaron por correo se atribuyen al recibido más
+        # cercano en el tiempo. No hay un id que los ate —el poller no lo
+        # guarda— así que se aproxima por fecha y se dice que es aproximado.
+        cercanos = [a.get("filename") for a in adjuntos
+                    if a.get("source") == "email_reply"
+                    and abs(_segundos_entre(a.get("uploaded_at", ""), cuando)) <= 120]
+        correos.append({
+            "direccion": "recibido",
+            "cuando": cuando,
+            "de": n.get("author_email", ""),
+            "para": ALERT_DOCS_FROM_ADDR,
+            "asunto": "",
+            "cuerpo": _cuerpo_de_la_nota(n.get("content", "")),
+            "documentos": [x for x in cercanos if x],
+            "salio": True,
+            "error": "",
+            "note_id": n.get("note_id", ""),
+        })
+
+    correos.sort(key=lambda c: c.get("cuando") or "")
+    enviados = sum(1 for c in correos if c["direccion"] == "enviado")
+    return resp(200, {
+        "case_id": case_id,
+        "correos": correos,
+        "total": len(correos),
+        "enviados": enviados,
+        "recibidos": len(correos) - enviados,
+        "fallidos": sum(1 for c in correos if not c["salio"]),
+    })
+
+
+def _segundos_entre(a: str, b: str) -> float:
+    """Diferencia en segundos entre dos marcas '%Y-%m-%d %H:%M:%S'. Si alguna
+    no se puede leer devuelve un número grande: así no se atribuye un adjunto
+    por error cuando no se sabe cuándo llegó."""
+    try:
+        fa = dt.datetime.strptime(str(a)[:19], "%Y-%m-%d %H:%M:%S")
+        fb = dt.datetime.strptime(str(b)[:19], "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return 1e9
+    return (fa - fb).total_seconds()
 
 
 def add_case_note(case_id: str, body: dict):
