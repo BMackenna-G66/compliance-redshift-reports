@@ -1363,10 +1363,36 @@
                 ? relevoCasosFiltrados().length + ' de ' + relevoCasos.length + ' casos'
                 : relevoCasos.length + ' casos'"></span>
           </div>
+          <!-- selección múltiple: sólo aparece cuando hay algo seleccionado,
+               para no meter ruido en el uso normal -->
+          <div x-show="relevoSel.length" x-transition
+               class="flex items-center gap-3 mb-3 px-4 py-2.5 rounded-xl bg-orange-950/40 border border-orange-800">
+            <span class="text-xs text-orange-200" x-text="relevoSel.length + ' seleccionado(s)'"></span>
+            <span class="text-xs text-orange-300/70"
+                  x-text="'· ' + relevoSelEnviables().length + ' se pueden enviar'"></span>
+            <button @click="relevoSel=[]" class="text-xs text-slate-400 hover:text-white">limpiar</button>
+            <button @click="relevoEnviarLote()"
+              :disabled="!relevoSelEnviables().length || relevoLoteEnviando"
+              class="ml-auto text-xs px-4 py-1.5 rounded-lg text-white transition"
+              :class="relevoSelEnviables().length ? 'bg-orange-600 hover:bg-orange-500'
+                                                  : 'bg-slate-700 cursor-not-allowed opacity-50'">
+              <span :class="relevoLoteEnviando ? 'spin inline-block' : ''">✉️</span>
+              Enviar a los seleccionados
+            </button>
+          </div>
+          <div class="flex items-center gap-2 mb-2 px-1" x-show="relevoCasosFiltrados().length">
+            <button @click="relevoSelTodos()" class="text-xs text-slate-500 hover:text-slate-300"
+              x-text="relevoTodosSeleccionados() ? 'Deseleccionar todo' : 'Seleccionar los que se pueden enviar'"></button>
+          </div>
           <div class="space-y-2">
             <template x-for="c in relevoCasosFiltrados()" :key="c.id">
-              <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+              <div class="bg-slate-800 rounded-xl border overflow-hidden"
+                   :class="relevoSel.includes(c.id) ? 'border-orange-700' : 'border-slate-700'">
                 <div class="flex items-center gap-3 px-4 py-3 cursor-pointer" @click="relevoAbrir(c)">
+                  <input type="checkbox" @click.stop :checked="relevoSel.includes(c.id)"
+                    @change="relevoToggleSel(c.id)" :disabled="!relevoPuedePedir(c)"
+                    class="w-3.5 h-3.5 accent-orange-500 disabled:opacity-25"
+                    :title="relevoPuedePedir(c) ? 'Seleccionar' : 'Este caso no está para pedir'">
                   <span class="text-slate-400 text-sm" :class="relevoDetalle?.id===c.id ? 'rotate-90' : ''"
                     style="display:inline-block;transition:transform .15s">▶</span>
                   <div class="flex-1 min-w-0">
@@ -1381,6 +1407,9 @@
                       · <span x-text="(c.items||[]).length"></span> ítems pedidos
                     </div>
                   </div>
+                  <button x-show="relevoPuedePedir(c)" @click.stop="relevoAbrirPedido(c)"
+                    class="text-xs px-2.5 py-1 rounded-lg bg-orange-600 hover:bg-orange-500 text-white border border-orange-500 whitespace-nowrap"
+                    title="Ver el correo y enviarlo">✉️ Pedir</button>
                   <span x-show="c.vencido" class="text-xs px-2 py-0.5 rounded-full bg-red-900/50 text-red-300 border border-red-800">vencido</span>
                   <span x-show="c.intentos" class="text-xs text-slate-500" x-text="'intento ' + c.intentos"></span>
                   <span class="px-2 py-0.5 rounded-full text-xs" :class="relevoColorEstado(c.estado)"
@@ -6904,6 +6933,7 @@
       relevoFiltroPartner: '', relevoFiltroEstado: '', relevoFiltroCliente: '',
       relevoSoloVencidos: false, relevoSoloPendientes: false, relevoSoloAccionables: false,
       relevoBuscar: '', relevoBuscarCaso: '', relevoBuscarCliente: '',
+      relevoSel: [], relevoLoteEnviando: false,
       relevoPrueba: { remitente: '', asunto: '', cuerpo: '' },
       relevoPedido: { abierto: false, cargando: false, enviando: false, caso: null, para: '', datos: {}, copiado: '' },
       relevoCola: [], relevoSoloColaVencidos: true, relevoGuardandoSw: false,
@@ -7033,6 +7063,69 @@
           ...(c.partners || []),
           ...(c.transacciones_ids || []),
         ], t));
+      },
+
+      // ── envío individual y por lote ───────────────────────────────
+      // Un caso se puede pedir si está en el estado que corresponde y tiene
+      // correo. `sin_requerimiento` queda afuera a propósito: no hay nada que
+      // pedirle, y el backend lo bloquea igual — que la casilla ni siquiera
+      // se pueda marcar evita el intento.
+      relevoPuedePedir(c) {
+        return ['listo_para_pedir', 'respuesta_parcial'].includes(c.estado)
+            && !!c.cliente_correo;
+      },
+      relevoToggleSel(id) {
+        const i = this.relevoSel.indexOf(id);
+        if (i >= 0) this.relevoSel.splice(i, 1); else this.relevoSel.push(id);
+      },
+      relevoSelEnviables() {
+        return this.relevoCasos.filter(c => this.relevoSel.includes(c.id)
+                                         && this.relevoPuedePedir(c));
+      },
+      relevoTodosSeleccionados() {
+        const e = this.relevoCasosFiltrados().filter(c => this.relevoPuedePedir(c));
+        return e.length > 0 && e.every(c => this.relevoSel.includes(c.id));
+      },
+      // Selecciona sobre lo FILTRADO, no sobre todo: si alguien buscó
+      // "currencycloud" espera marcar esos, no los 217.
+      relevoSelTodos() {
+        const e = this.relevoCasosFiltrados().filter(c => this.relevoPuedePedir(c));
+        this.relevoSel = this.relevoTodosSeleccionados() ? [] : e.map(c => c.id);
+      },
+
+      async relevoEnviarLote() {
+        const cs = this.relevoSelEnviables();
+        if (!cs.length) return;
+        // Se nombran los destinatarios, no se cuentan: "20 correos" no dice
+        // nada, "estos 20 clientes" sí. El backend tope es 20 por lote.
+        const MAX = 20;
+        if (cs.length > MAX) {
+          this.globalError = `El lote admite hasta ${MAX} casos y seleccionaste ${cs.length}. `
+                           + 'Achicá la selección.';
+          return;
+        }
+        const lista = cs.slice(0, 8).map(c => `  · ${c.cliente_nombre} <${c.cliente_correo}>`).join('\n')
+                    + (cs.length > 8 ? `\n  · …y ${cs.length - 8} más` : '');
+        if (!confirm(`Se va a enviar el pedido a ${cs.length} cliente(s) REALES:\n\n${lista}`
+                     + '\n\nCada uno recibe su correo por separado. ¿Confirmás?')) return;
+        this.relevoLoteEnviando = true;
+        const d = await this.api('POST', '/relevo/pedidos/lote', {
+          caso_ids: cs.map(c => c.id), confirmado: true,
+          quien: this.currentUserEmail || this.userEmail || '',
+        });
+        this.relevoLoteEnviando = false;
+        if (!d) return;
+        if (d.error) { this.globalError = d.error; return; }
+        const fallidos = (d.resultados || []).filter(r => !r.enviado);
+        // Los fallos se muestran uno por uno: "3 fallidos" obliga a ir a
+        // buscar cuáles, y el motivo de cada uno suele ser distinto.
+        alert(`Enviados: ${d.enviados} · Fallidos: ${d.fallidos}`
+              + (fallidos.length
+                 ? '\n\nNo salieron:\n' + fallidos.map(r =>
+                     `  · ${r.caso_id}: ${r.error || 'sin detalle'}`).join('\n')
+                 : ''));
+        this.relevoSel = [];
+        await this.relevoCargar(true);
       },
 
       relevoPartners() {
