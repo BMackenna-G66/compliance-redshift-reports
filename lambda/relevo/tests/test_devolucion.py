@@ -232,3 +232,44 @@ class Registro(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DescargaEnLote(Base):
+    """El zip con todos los adjuntos del caso."""
+
+    def setUp(self):
+        super().setUp()
+        from relevo import descarga
+        self.descarga = descarga
+        self.real = descarga.deposito
+        descarga.deposito = self.dep
+
+    def tearDown(self):
+        self.descarga.deposito = self.real
+        super().tearDown()
+
+    def test_sin_archivos_avisa_y_no_arma_nada(self):
+        r = self.descarga.zip_de_caso(CASO["id"])
+        self.assertIn("error", r)
+        self.assertIn("no tiene archivos", r["error"])
+
+    def test_dos_archivos_con_el_MISMO_nombre_no_se_pisan(self):
+        """El cliente manda el mismo formulario dos veces y en un zip el
+        segundo sobreescribe al primero sin avisar."""
+        usados = set()
+        n1 = self.descarga._unico("cedula.pdf", usados)
+        n2 = self.descarga._unico("cedula.pdf", usados)
+        n3 = self.descarga._unico("cedula.pdf", usados)
+        self.assertEqual([n1, n2, n3], ["cedula.pdf", "cedula (2).pdf", "cedula (3).pdf"])
+
+    def test_un_nombre_sin_extension_tambien_se_desambigua(self):
+        usados = set()
+        self.assertEqual(self.descarga._unico("adjunto", usados), "adjunto")
+        self.assertEqual(self.descarga._unico("adjunto", usados), "adjunto (2)")
+
+    def test_el_zip_se_llama_como_el_caso(self):
+        """Cinco archivos sueltos en Descargas no dicen de qué caso son."""
+        n = self.descarga._nombre_zip("currencycloud:caso:1409820")
+        self.assertTrue(n.endswith("-documentos.zip"))
+        self.assertIn("1409820", n)
+        self.assertNotIn(":", n)

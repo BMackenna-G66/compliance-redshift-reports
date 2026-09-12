@@ -2715,6 +2715,14 @@ def handler(event, context):  # noqa: ARG001
                     bool(body.get("valor")),
                     quien=body.get("quien") or body.get("actor_email", ""))
                 return resp(400 if r.get("error") else 200, r)
+            # GET /relevo/casos/{id}/descarga — un zip con todos los
+            # adjuntos. Devuelve una URL prefirmada, no el archivo: el API
+            # Gateway corta en ~6 MB y no hay forma de saber de antemano
+            # cuánto pesan los documentos de un caso.
+            if method == "GET" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "descarga":
+                from relevo import descarga
+                r = descarga.zip_de_caso(parts[2])
+                return resp(400 if r.get("error") else 200, r)
             # POST /relevo/casos/{id}/devolucion — el paso 9. Sin
             # "registrar": true sólo compone la respuesta al partner y no
             # escribe nada. No manda correo en ningún caso: el token de Gmail
