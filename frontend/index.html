@@ -3956,6 +3956,15 @@
             class="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-900/40 hover:bg-indigo-800/60 border border-indigo-800 text-indigo-300 text-xs font-medium rounded-lg transition">
             👤 Ficha del cliente
           </button>
+          <!-- La misma ficha, en PDF con el formato de Global66, para adjuntar
+               a un expediente o mandarla afuera sin tener que copiar a mano. -->
+          <button x-show="activeCase.entity_id"
+            @click="descargarFichaPdf(activeCase.entity_id, activeCase.entity_type === 'company' ? 'b2b' : 'b2c')"
+            :disabled="fichaPdfCargando"
+            class="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-900/40 hover:bg-indigo-800/60 border border-indigo-800 text-indigo-300 text-xs font-medium rounded-lg transition disabled:opacity-50">
+            <span :class="fichaPdfCargando ? 'animate-spin inline-block' : ''">📄</span>
+            <span x-text="fichaPdfCargando ? 'Generando…' : 'Ficha PDF'"></span>
+          </button>
           <button @click="exportCase(activeCase.case_id)"
             :disabled="caseExportLoading"
             class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 text-xs font-medium rounded-lg transition disabled:opacity-50">
@@ -4328,6 +4337,12 @@
              x-text="ficha.periodo ? 'Actividad: ' + ficha.periodo : ''"></p>
         </div>
         <div class="flex items-center gap-2 shrink-0">
+          <button @click="descargarFichaPdf(ficha.entity_id, ficha.kind)"
+            :disabled="fichaPdfCargando || fichaCargando"
+            class="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-900/40 hover:bg-indigo-800/60 border border-indigo-800 text-indigo-300 text-xs font-medium rounded-lg transition disabled:opacity-50">
+            <span :class="fichaPdfCargando ? 'animate-spin inline-block' : ''">📄</span>
+            <span x-text="fichaPdfCargando ? 'Generando…' : 'Descargar PDF'"></span>
+          </button>
           <button @click="abrirFichaCliente(ficha.entity_id, ficha.kind, true)" :disabled="fichaCargando"
             class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 text-xs rounded-lg transition disabled:opacity-50">
             <span :class="fichaCargando ? 'animate-spin inline-block' : ''">↺</span> Actualizar
@@ -7071,6 +7086,7 @@
       fichaCargando: false,
       fichaError: '',
       fichaPerfilAbierto: false,
+      fichaPdfCargando: false,
 
       newCaseLookupLoading: false,
       newCaseLookupError: '',
@@ -10181,6 +10197,23 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         this.fichaCargando = false;
         if (d && !d.error) this.ficha = d;
         else this.fichaError = d?.error || 'No se pudo armar la ficha del cliente.';
+      },
+
+      // Descarga la ficha en PDF con el formato de Global66. El endpoint no
+      // devuelve el archivo sino un enlace prefirmado: una ficha con muchos
+      // correos se acerca al tope de ~6 MB de respuesta del API Gateway.
+      async descargarFichaPdf(entityId, kind) {
+        if (!entityId || this.fichaPdfCargando) return;
+        this.fichaPdfCargando = true;
+        const d = await this.api('GET',
+          `/clientes/${encodeURIComponent(entityId)}/ficha.pdf`
+          + `?kind=${kind || 'b2c'}&actor_email=${encodeURIComponent(this.currentUserEmail || '')}`);
+        this.fichaPdfCargando = false;
+        if (!d?.url) { this.globalError = d?.error || 'No se pudo generar el PDF.'; return; }
+        // Un <a download> con href a otro origen lo ignora el navegador y abre
+        // la pestaña igual; el nombre ya viene fijado en el Content-Disposition
+        // del enlace prefirmado, así que basta con navegar a él.
+        window.open(d.url, '_blank');
       },
 
       fichaUsd(v) {
