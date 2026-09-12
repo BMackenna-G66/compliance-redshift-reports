@@ -1295,6 +1295,8 @@
           <p class="text-xs text-slate-500 mb-3">
             Un cliente, todos sus casos, <strong class="text-slate-400">un solo pedido</strong>.
             Es lo que evita pedirle dos veces lo mismo cuando tiene requerimientos de varios partners.
+            <br><span class="text-slate-600">Acá se mira; se trabaja en Casos —
+            apretá un cliente y te lleva a los suyos, ya filtrados.</span>
           </p>
           <div class="overflow-x-auto bg-slate-800 rounded-xl border border-slate-700">
             <table class="w-full text-xs">
@@ -1302,6 +1304,7 @@
                 <th class="text-left p-3">Cliente</th><th class="text-left p-3">Partners</th>
                 <th class="text-right p-3">Casos</th><th class="text-right p-3">Trx</th>
                 <th class="text-left p-3">Etapa</th><th class="text-right p-3">Vencidos</th>
+                <th class="p-3"></th>
               </tr></thead>
               <tbody>
                 <template x-for="c in relevoClientesFiltrados()" :key="c.cliente_id || c.id || JSON.stringify(c).slice(0,40)">
@@ -1320,10 +1323,16 @@
                       x-text="relevoEtiquetaEstado(relevoEtapaCliente(c))"></span></td>
                     <td class="p-3 text-right" :class="(c.vencidos||0) > 0 ? 'text-red-400 font-semibold' : 'text-slate-500'"
                       x-text="c.vencidos ?? 0"></td>
+                    <!-- El clic en la fila filtra y salta a Casos. Sin esto la
+                         pantalla cambiaba sola y no se entendía por qué. -->
+                    <td class="p-3 text-right whitespace-nowrap">
+                      <span class="text-xs text-orange-400/80"
+                        x-text="'ver sus ' + (c.casos || []).length + ' caso(s) →'"></span>
+                    </td>
                   </tr>
                 </template>
                 <tr x-show="relevoClientesFiltrados().length===0 && !relevoCargando">
-                  <td colspan="6" class="p-6 text-center text-slate-500">Sin clientes que mostrar.</td>
+                  <td colspan="7" class="p-6 text-center text-slate-500">Sin clientes que mostrar.</td>
                 </tr>
               </tbody>
             </table>
@@ -1354,9 +1363,12 @@
               <input type="checkbox" x-model="relevoSoloVencidos" @change="relevoCargar(true)"
                 class="w-3.5 h-3.5 accent-red-500"> Solo vencidos
             </label>
-            <span x-show="relevoFiltroCliente" class="text-xs text-orange-400 flex items-center gap-1">
-              cliente <span x-text="relevoFiltroCliente"></span>
-              <button @click="relevoFiltroCliente=''; relevoCargar(true)" class="hover:text-white">✕</button>
+            <span x-show="relevoFiltroCliente"
+              class="text-xs text-orange-300 flex items-center gap-1.5 px-2 py-1 rounded-lg bg-orange-950/40 border border-orange-800">
+              <span>👤</span>
+              <span x-text="'Casos de ' + relevoNombreDeCliente(relevoFiltroCliente)"></span>
+              <button @click="relevoFiltroCliente=''; relevoCargar(true)"
+                class="hover:text-white" title="Ver todos los casos">✕</button>
             </span>
             <span class="text-xs text-slate-500 ml-auto"
               x-text="relevoBuscarCaso
@@ -7167,6 +7179,14 @@
                  : ''));
         this.relevoSel = [];
         await this.relevoCargar(true);
+      },
+
+      // El filtro por cliente llega desde el 360 con el customer_id. Mostrar
+      // el número no le dice nada a nadie: se busca el nombre.
+      relevoNombreDeCliente(id) {
+        const c = this.relevoCasos.find(x => String(x.cliente_id) === String(id))
+               || this.relevoClientes.find(x => String(x.cliente_id) === String(id));
+        return (c && c.cliente_nombre) || ('customer_id ' + id);
       },
 
       relevoPartners() {
