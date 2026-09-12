@@ -1359,6 +1359,12 @@
               <option value="">Todos los estados</option>
               <template x-for="e in relevoEstados" :key="e"><option :value="e" x-text="relevoEtiquetaEstado(e)"></option></template>
             </select>
+            <select x-model="relevoOrden"
+              class="text-xs px-2 py-1.5 rounded bg-slate-700 border border-slate-600 text-slate-300"
+              title="Qué va primero en la lista">
+              <option value="prioridad">Primero lo que necesita acción</option>
+              <option value="reciente">Más reciente primero</option>
+            </select>
             <label class="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
               <input type="checkbox" x-model="relevoSoloVencidos" @change="relevoCargar(true)"
                 class="w-3.5 h-3.5 accent-red-500"> Solo vencidos
@@ -1882,24 +1888,46 @@
                     <span x-text="relevoDev.copiado ? '✓ Copiado' : '⧉ Copiar el texto'"></span>
                   </button>
                 </div>
-                <pre class="bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 overflow-auto whitespace-pre-wrap"
-                     style="max-height:340px" x-text="relevoDev.datos.texto || ''"></pre>
+                <div x-show="relevoDev.datos.html">
+                  <p class="text-xs text-slate-500 mb-1">Así lo va a ver el partner:</p>
+                  <iframe :srcdoc="relevoDev.datos.html || ''" sandbox=""
+                          class="w-full rounded-lg border border-slate-700 bg-white mb-3"
+                          style="height:360px"></iframe>
+                </div>
+                <details class="mb-1">
+                  <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">
+                    Ver el texto plano (para copiar)
+                  </summary>
+                  <pre class="mt-1 bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 overflow-auto whitespace-pre-wrap"
+                       style="max-height:300px" x-text="relevoDev.datos.texto || ''"></pre>
+                </details>
               </div>
             </div>
             <div class="flex items-center justify-between gap-3 px-5 py-4 border-t border-slate-700 sticky bottom-0 bg-slate-900">
               <p class="text-xs text-slate-500">
-                Esto no manda nada: el correo lo mandás vos. «Marcar devuelto» sólo registra el
-                cierre del caso, con tu nombre y qué se devolvió.
+                <strong class="text-slate-400">Enviar al partner</strong> lo manda desde
+                compliance@global66.com y cierra el caso. Si preferís mandarlo vos, copiá el
+                texto plano y después usá «Ya lo mandé».
               </p>
               <div class="flex gap-2">
                 <button @click="relevoDev.abierto=false"
                   class="text-xs px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg">Cerrar</button>
                 <button @click="relevoMarcarDevuelto()"
                   :disabled="relevoDev.datos.ya_devuelto || relevoDev.registrando || !!relevoDev.datos.error"
-                  class="text-xs px-4 py-2 rounded-lg text-white transition"
+                  class="text-xs px-4 py-2 rounded-lg text-slate-200 border border-slate-600 transition"
                   :class="(relevoDev.datos.ya_devuelto || relevoDev.datos.error)
+                    ? 'bg-slate-800 cursor-not-allowed opacity-50' : 'bg-slate-700 hover:bg-slate-600'"
+                  title="Si ya lo mandaste vos, esto sólo registra el cierre">
+                  <span :class="relevoDev.registrando ? 'spin inline-block' : ''">✓</span> Ya lo mandé
+                </button>
+                <button @click="relevoEnviarDevolucion()"
+                  :disabled="relevoDev.datos.ya_devuelto || relevoDev.enviando
+                             || !!relevoDev.datos.error || !relevoDev.datos.para"
+                  class="text-xs px-4 py-2 rounded-lg text-white transition"
+                  :class="(relevoDev.datos.ya_devuelto || relevoDev.datos.error || !relevoDev.datos.para)
                     ? 'bg-slate-700 cursor-not-allowed opacity-50' : 'bg-sky-700 hover:bg-sky-600'">
-                  <span :class="relevoDev.registrando ? 'spin inline-block' : ''">📤</span> Marcar devuelto
+                  <span :class="relevoDev.enviando ? 'spin inline-block' : ''">📤</span>
+                  Enviar al partner
                 </button>
               </div>
             </div>
@@ -6986,14 +7014,14 @@
       relevoFiltroPartner: '', relevoFiltroEstado: '', relevoFiltroCliente: '',
       relevoSoloVencidos: false, relevoSoloPendientes: false, relevoSoloAccionables: false,
       relevoBuscar: '', relevoBuscarCaso: '', relevoBuscarCliente: '',
-      relevoSel: [], relevoLoteEnviando: false,
+      relevoSel: [], relevoLoteEnviando: false, relevoOrden: 'prioridad',
       relevoPrueba: { remitente: '', asunto: '', cuerpo: '' },
       relevoPedido: { abierto: false, cargando: false, enviando: false, caso: null, para: '', datos: {}, copiado: '' },
       relevoCola: [], relevoSoloColaVencidos: true, relevoGuardandoSw: false,
       relevoPruebaResultado: '',
       // Paso 9. `idioma` vacío = el que decida el backend por partner.
-      relevoDev: { abierto: false, cargando: false, registrando: false, copiado: false,
-                   caso: null, idioma: '', nota: '', datos: {} },
+      relevoDev: { abierto: false, cargando: false, registrando: false, enviando: false,
+                   copiado: false, caso: null, idioma: '', nota: '', datos: {} },
       relevoEspejoCorriendo: false, relevoEspejoResultado: '',
       relevoSw: { interruptores: [] },
       relevoCkGuardando: false,
@@ -7099,14 +7127,48 @@
           return !p || campos.some(c => this.relevoNormalizar(c).includes(p));
         });
       },
+      // ── el orden de la lista ──────────────────────────────────────
+      // Venía ordenado por fecha del último correo del partner, sin mirar si
+      // había algo que hacer. Medido sobre los 230 casos reales: un caso con
+      // respuesta del cliente —lo más urgente que hay— caía en la posición 67,
+      // debajo de 60 casos que no requerían nada, y los `informativo` estaban
+      // desparramados entre la 47 y la 220. Así no se le puede seguir el rastro
+      // a nada.
+      //
+      // Ahora primero va lo que espera una decisión de una persona, y la fecha
+      // desempata dentro de cada grupo.
+      relevoPrioridad(c) {
+        if (c.vencido) return 0;                                  // se pasó el plazo
+        switch (c.estado) {
+          case 'respuesta_recibida':                              // respondió: hay que mirar
+          case 'respuesta_parcial':   return 1;
+          case 'listo_para_pedir':    return 2;                   // falta pedirle
+          case 'pedido_enviado':
+          case 'recontactado':        return 3;                   // esperando al cliente
+          case 'devuelto':            return 4;                   // esperando al partner
+          case 'sin_requerimiento':                               // trabados: alguien tiene
+          case 'sin_correo':                                      // que destrabarlos
+          case 'sin_cliente':         return 5;
+          case 'informativo':         return 7;                   // nada que hacer
+          default:                    return 6;                   // terminales
+        }
+      },
+      relevoOrdenar(cs) {
+        if (this.relevoOrden === 'reciente') return cs;           // ya viene así del backend
+        return [...cs].sort((a, b) => {
+          const d = this.relevoPrioridad(a) - this.relevoPrioridad(b);
+          return d !== 0 ? d : String(b.ultima || '').localeCompare(String(a.ultima || ''));
+        });
+      },
+
       relevoCasosFiltrados() {
         const t = this.relevoBuscarCaso;
-        if (!t || !t.trim()) return this.relevoCasos;
-        return this.relevoCasos.filter(c => this.relevoCoincide([
+        if (!t || !t.trim()) return this.relevoOrdenar(this.relevoCasos);
+        return this.relevoOrdenar(this.relevoCasos.filter(c => this.relevoCoincide([
           c.cliente_nombre, c.cliente_correo, c.cliente_id,
           c.caso_partner, c.id, c.partner,
           ...(c.transacciones || []),
-        ], t));
+        ], t)));
       },
       relevoClientesFiltrados() {
         const t = this.relevoBuscarCliente;
@@ -7500,6 +7562,30 @@
           // Sin permiso de portapapeles el texto sigue seleccionable a mano:
           // avisar es mejor que dejar un botón que no hace nada visible.
           this.globalError = 'El navegador no dejó copiar; seleccioná el texto a mano.';
+        }
+      },
+
+      // El sistema manda la devolución y cierra el caso en un paso. El HTML
+      // con la marca sólo sirve si lo manda la máquina: pegado a mano en
+      // Gmail se pierde.
+      async relevoEnviarDevolucion() {
+        const d0 = this.relevoDev;
+        const pend = (d0.datos.pendientes || []).length;
+        if (!confirm(`Se va a enviar la devolución a ${d0.datos.para} (${d0.datos.partner}).`
+                     + (pend ? `\n\nOJO: quedan ${pend} ítem(s) sin entregar, sale como PARCIAL.` : '')
+                     + '\n\nEsto cierra el caso. ¿Confirmás?')) return;
+        d0.enviando = true;
+        const d = await this.api('POST', '/relevo/casos/' + encodeURIComponent(d0.caso.id) + '/devolucion', {
+          enviar: true, idioma: d0.datos.idioma || d0.idioma, nota: d0.nota,
+          quien: this.currentUserEmail || this.userEmail || '',
+        });
+        this.relevoDev.enviando = false;
+        if (d?.enviado) {
+          this.relevoDev.abierto = false;
+          this.relevoOlvidar(d0.caso.id);
+          await this.relevoCargar(true);
+        } else if (d?.error) {
+          this.globalError = 'No se envió: ' + d.error;
         }
       },
 

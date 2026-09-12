@@ -32,6 +32,12 @@ import re
 from pathlib import Path
 
 RUTA = Path(__file__).resolve().parent / "plantillas" / "base.html"
+# La del partner es OTRA a propósito. La de cliente trae pie de consumo —
+# "¿Tienes dudas?", el centro de ayuda, WhatsApp, Play Store, App Store—, que a
+# un analista de un banco corresponsal no le corresponde y se lee como si le
+# hubiéramos mandado una campaña de marketing por error.
+RUTA_PARTNER = Path(__file__).resolve().parent / "plantillas" / "partner.html"
+MARCA_CUERPO = "CUERPO"
 
 MARCA_NOMBRE = "{!Account.first_name__c}"
 MARCA_TEXTO = "TEXTO LIBRE<br>TEXTO LIBRE<br>TEXTO LIBRE"
@@ -157,3 +163,38 @@ def quedan_marcadores(html):
     if not html:
         return False
     return bool(re.search(r"\{!\w+[.\w]*\}|TEXTO LIBRE", html))
+
+
+# ── la del partner ───────────────────────────────────────────────────────
+_cache_partner = None
+
+
+def cargar_partner():
+    global _cache_partner
+    if _cache_partner is None:
+        _cache_partner = RUTA_PARTNER.read_text(encoding="utf-8")
+    return _cache_partner
+
+
+def componer_partner(texto_plano):
+    """El texto de la devolución, dentro de la plantilla B2B.
+
+    Entra texto plano y sale HTML: lo que compone `devolucion.componer()` son
+    líneas, no marcado. Se escapa todo —el nombre del cliente, los nombres de
+    archivo y lo que escribió el cliente vienen de afuera— y se convierten los
+    saltos en <br>, que es el mismo contrato que respeta la plantilla de
+    cliente: contenido en línea, nada de bloques.
+
+    Devuelve None si la plantilla no está: el texto plano sigue sirviendo y
+    quedarse sin poder devolver es peor que devolver sin marca.
+    """
+    try:
+        base = cargar_partner()
+    except Exception as e:
+        print(f"[relevo/plantilla] no pude leer {RUTA_PARTNER}: {e}")
+        return None
+    if MARCA_CUERPO not in base:
+        print("[relevo/plantilla] el marcador CUERPO no está en partner.html")
+        return None
+    cuerpo = _html.escape(str(texto_plano or "")).replace("\n", "<br>")
+    return base.replace(MARCA_CUERPO, cuerpo)

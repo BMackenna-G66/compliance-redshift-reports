@@ -345,11 +345,22 @@ def componer(caso, idioma="en", nota="", caso_id=None):
         lineas += [str(nota).strip(), ""]
     lineas += [T["cierre"], "", T["firma"]]
 
+    texto = "\n".join(lineas)
+    # El mismo texto, dentro de la plantilla B2B. Si no está disponible se
+    # devuelve None y la pantalla usa el plano.
+    try:
+        from . import plantilla
+        html = plantilla.componer_partner(texto)
+    except Exception as e:
+        print(f"[relevo/devolucion] sin plantilla de partner: {e}")
+        html = None
+
     return {
         "para": para,
+        "html": html,
         "asunto": T["asunto"].format(asunto=asunto_orig) if asunto_orig else
                   (f"RE: {referencia}" if referencia else "RE: Compliance query"),
-        "texto": "\n".join(lineas),
+        "texto": texto,
         "idioma": idioma,
         "referencia": referencia,
         "transacciones": txs,
@@ -404,6 +415,58 @@ def previsualizar(caso_id, idioma="", nota=""):
                          "archivos y adjuntalos vos. No los pegues en el correo."),
         **c,
     }
+
+
+def enviar(caso_id, quien="", nota="", idioma=""):
+    """Manda la devolución al partner y registra el cierre, en un solo paso.
+
+    Antes esto era copiar y pegar: §16 decisión 10 lo resolvió así porque el
+    token de Gmail no podía enviar. Desde que el envío sale por SMTP —el mismo
+    camino que ya usa WatchTower— no hay razón para que una persona copie un
+    correo que el sistema puede mandar, y el HTML con la marca sólo sirve si
+    lo manda la máquina: pegado a mano en Gmail se pierde.
+
+    Mismas salvaguardas que el envío al cliente: interruptor, autor
+    obligatorio y bloqueo de doble devolución. Es hacia afuera y va a un
+    banco, así que no puede ser más flojo que escribirle a un cliente.
+    """
+    quien = str(quien or "").strip()
+    if not quien:
+        return {"enviado": False, "error": "quien es requerido: la devolución la firma una persona"}
+
+    caso, meta = _buscar_caso(caso_id)
+    if caso is None:
+        return {"enviado": False, "error": f"caso '{caso_id}' no encontrado"}
+
+    from . import envio, interruptores as sw
+    permitido, motivo = sw.puede_salir(caso.get("partner"))
+    if not permitido:
+        return {"enviado": False, "bloqueado": True, "error": motivo}
+
+    devuelto, motivo_d = ya_devuelto(caso_id)
+    if devuelto:
+        return {"enviado": False, "bloqueado": True,
+                "error": f"doble devolución bloqueada: {motivo_d}"}
+
+    idioma = (idioma or "").strip().lower() or idioma_de(caso.get("partner"))
+    c = componer(caso, idioma=idioma, nota=nota, caso_id=caso_id)
+    if not c["para"]:
+        return {"enviado": False,
+                "error": "no se pudo resolver el correo del partner desde los headers"}
+
+    try:
+        envio._enviar_smtp({"para": c["para"], "asunto": c["asunto"],
+                            "texto": c["texto"],
+                            "html": c["html"] or c["texto"]})
+    except Exception as e:
+        # Que no salga no significa que no pasó: queda el intento anotado.
+        print(f"[relevo] falló la devolución de {caso_id}: {e}")
+        return {"enviado": False, "error": str(e)[:400]}
+
+    r = marcar_devuelto(caso_id, quien=quien, nota=nota,
+                        medio="correo_automatico", idioma=idioma)
+    return {"enviado": True, "para": c["para"], "asunto": c["asunto"],
+            "archivos": c["archivos"], **{k: v for k, v in r.items() if k != "enviado"}}
 
 
 def marcar_devuelto(caso_id, quien="", nota="", medio="correo_manual", idioma=""):
