@@ -53,8 +53,8 @@ TEXTOS = {
         "entregado": "Provided by the customer:",
         "pendiente": "Still outstanding:",
         "archivos": "Attached files:",
-        "sin_archivos": "The customer replied without attaching files; their answer is "
-                        "transcribed above.",
+        "sin_archivos": "The customer replied without attaching files. Their answer is "
+                        "transcribed below.",
         "cierre": "Please let us know if anything else is required.",
         "firma": "Kind regards,\nCompliance Team · Global66",
         "recibido_el": "received {fecha}",
@@ -68,8 +68,8 @@ TEXTOS = {
         "entregado": "Entregado por el cliente:",
         "pendiente": "Todavía pendiente:",
         "archivos": "Archivos adjuntos:",
-        "sin_archivos": "El cliente respondió sin adjuntar archivos; su respuesta queda "
-                        "transcrita más arriba.",
+        "sin_archivos": "El cliente respondió sin adjuntar archivos. Su respuesta queda "
+                        "transcrita a continuación.",
         "cierre": "Quedamos atentos si hace falta algo más.",
         "firma": "Saludos,\nEquipo de Compliance · Global66",
         "recibido_el": "recibido el {fecha}",
@@ -83,8 +83,8 @@ TEXTOS = {
         "entregado": "Entregue pelo cliente:",
         "pendiente": "Ainda pendente:",
         "archivos": "Arquivos anexos:",
-        "sin_archivos": "O cliente respondeu sem anexar arquivos; a resposta está "
-                        "transcrita acima.",
+        "sin_archivos": "O cliente respondeu sem anexar arquivos. A resposta está "
+                        "transcrita abaixo.",
         "cierre": "Ficamos à disposição caso precise de algo mais.",
         "firma": "Atenciosamente,\nEquipe de Compliance · Global66",
         "recibido_el": "recebido em {fecha}",
