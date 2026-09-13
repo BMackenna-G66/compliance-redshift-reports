@@ -5005,11 +5005,11 @@
 
   <!-- ===== MODAL: SOLICITAR DOCUMENTOS (manual) ===== -->
   <div x-show="docRequestModal.open" x-transition class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="docRequestModal.open=false"></div>
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="cerrarDocRequest()"></div>
     <div class="relative bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-5xl mx-auto p-6 max-h-[92vh] flex flex-col">
       <div class="flex items-center justify-between mb-5 shrink-0">
         <h3 class="font-bold text-white text-lg">Solicitar documentos</h3>
-        <button @click="docRequestModal.open=false" class="text-slate-400 hover:text-white text-2xl leading-none transition">×</button>
+        <button @click="cerrarDocRequest()" class="text-slate-400 hover:text-white text-2xl leading-none transition">×</button>
       </div>
 
       <div class="grid grid-cols-2 gap-6 overflow-y-auto flex-1 pr-1">
@@ -5110,7 +5110,7 @@
       </div>
 
       <div class="flex gap-2 mt-6 shrink-0">
-        <button @click="docRequestModal.open=false"
+        <button @click="cerrarDocRequest()"
           class="py-2 px-4 text-sm text-slate-300 bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-lg transition">
           Cancelar
         </button>
@@ -7079,6 +7079,9 @@
       emailPreviewError: '',
       emailPreviewLoading: false,
       _emailPreviewTimer: null,
+      // Número de orden del pedido de previsualización en vuelo. Sólo el
+      // último puede escribir en pantalla (ver refreshEmailPreview).
+      _emailPreviewSeq: 0,
 
       // Ficha del cliente (punto 6): todo lo suyo en un lugar.
       fichaModal: { open: false },
@@ -9098,7 +9101,7 @@
         });
         this.docRequestModal.sending = false;
         if (d?.case_id) {
-          this.docRequestModal.open = false;
+          this.cerrarDocRequest();
           if (this.activeCase.case_id === d.case_id) await this.openCaseDetail(d.case_id);
         } else if (d?.error) {
           this.docRequestModal.error = d.error;
@@ -9906,28 +9909,117 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
 
       // Trae el HTML del correo tal como se va a enviar. Se llama con debounce
       // mientras el analista escribe, para no pegarle a la API en cada tecla.
-      async refreshEmailPreview() {
+      //
+      // OBSERVACIÓN 1.2 — "la plantilla no carga tras crear varios casos
+      // seguidos; hay que salir del caso y volver a entrar".
+      //
+      // Lo que se descartó con datos antes de tocar nada: el backend no está
+      // fallando (cero tracebacks en la Lambda), y todos los `template_key`
+      // guardados en los casos son válidos o vacíos —y el vacío ya caía al
+      // valor por defecto—. O sea que el problema es de este lado.
+      //
+      // Y acá había cuatro formas de terminar con el panel en blanco, una de
+      // ellas explica exactamente por qué el workaround era salir del caso:
+      //
+      //   1. `emailPreviewLoading` se apagaba sólo al final del cuerpo. Si la
+      //      promesa nunca resolvía —y al crear varios casos seguidos se
+      //      disparan a la vez /cases, /alerts, la ficha del cliente y los
+      //      correos, varias lentas, contra el límite de 6 conexiones por
+      //      origen del navegador— quedaba encendido PARA SIEMPRE. Y como el
+      //      botón "↺ Actualizar" está atado a `:disabled="emailPreviewLoading"`,
+      //      la analista se quedaba sin siquiera poder reintentar: la única
+      //      salida era cerrar el modal. Ahora hay `finally` y un corte por
+      //      tiempo, así que el botón siempre vuelve.
+      //   2. Sin orden de llegada: la respuesta de un caso anterior podía
+      //      pisar la del caso actual y mostrar el correo de OTRO cliente.
+      //   3. `if (!m.template_key) return` dejaba el panel vacío sin decir
+      //      nada, indistinguible de "está cargando".
+      //   4. `api()` aplasta cualquier error en null, así que el mensaje era
+      //      siempre el mismo genérico y no se podía diagnosticar.
+      async refreshEmailPreview({ reintento = false } = {}) {
         const m = this.docRequestModal;
-        if (!m.open || !m.template_key) return;
+        if (!m.open) return;
+
+        // Una plantilla desconocida no puede dejar el panel mudo: se avisa y
+        // se cae a la que corresponde por tipo de entidad, que siempre existe.
+        if (!m.template_key || !this.emailTemplates.some(t => t.key === m.template_key)) {
+          const porDefecto = m.entity_type === 'company' ? 'b2b_generico' : 'general_b2c';
+          this.emailPreviewError = `La plantilla "${m.template_key || '(vacía)'}" no está en el `
+            + `catálogo; se usa "${porDefecto}".`;
+          m.template_key = porDefecto;
+        }
+
+        // Cada pedido lleva número. Sólo el último que se disparó puede
+        // escribir en pantalla — así una respuesta atrasada no pisa la actual.
+        const miTurno = ++this._emailPreviewSeq;
+        const vigente = () => miTurno === this._emailPreviewSeq && this.docRequestModal.open;
+
         this.emailPreviewLoading = true;
-        this.emailPreviewError = '';
-        const d = await this.api('POST', '/email-templates/preview', {
-          template_key: m.template_key,
-          nombre: m.nombre,
-          texto_libre: m.texto_libre,
-          documentos: m.documentos,
-        });
-        this.emailPreviewLoading = false;
-        if (d?.html) {
-          this.emailPreviewHtml = d.html;
-          this.emailPreviewAttachment = d.adjunto || '';
-        } else {
-          this.emailPreviewError = d?.error || 'No se pudo cargar la previsualización.';
+        if (!reintento) this.emailPreviewError = '';
+
+        // Corte por tiempo: sin esto un fetch encolado detrás de otros pedidos
+        // lentos se queda colgado sin límite y el panel nunca se resuelve ni a
+        // contenido ni a error.
+        const corte = new AbortController();
+        const reloj = setTimeout(() => corte.abort(), 12000);
+        try {
+          const r = await fetch(this.apiBase + '/email-templates/preview', {
+            method: 'POST', credentials: 'omit', signal: corte.signal,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              template_key: m.template_key,
+              nombre: m.nombre,
+              texto_libre: m.texto_libre,
+              documentos: m.documentos,
+            }),
+          });
+          const d = await r.json().catch(() => null);
+          if (!vigente()) return;              // llegó tarde: no manda
+          if (r.ok && d?.html) {
+            this.emailPreviewHtml = d.html;
+            this.emailPreviewAttachment = d.adjunto || '';
+            this.emailPreviewError = '';
+          } else {
+            // El detalle real, no un mensaje genérico: si esto vuelve a pasar,
+            // que una captura de pantalla alcance para saber por qué.
+            this.emailPreviewError = d?.error || `La API respondió ${r.status}.`;
+          }
+        } catch (e) {
+          if (!vigente()) return;
+          const corto = e?.name === 'AbortError';
+          this.emailPreviewError = corto
+            ? 'La previsualización tardó demasiado.'
+            : 'No se pudo conectar con la API.';
+          // Un reintento solo, y sólo para fallas transitorias: la mayoría de
+          // las veces es una conexión encolada y se resuelve al segundo tiro,
+          // sin que la analista tenga que darse cuenta de nada.
+          if (!reintento) {
+            setTimeout(() => {
+              if (vigente()) this.refreshEmailPreview({ reintento: true });
+            }, 700);
+          }
+        } finally {
+          clearTimeout(reloj);
+          // Sólo el pedido vigente apaga el spinner: si lo apagara uno viejo,
+          // el botón se habilitaría mientras el actual sigue en vuelo.
+          if (miTurno === this._emailPreviewSeq) this.emailPreviewLoading = false;
         }
       },
       queueEmailPreview() {
         clearTimeout(this._emailPreviewTimer);
         this._emailPreviewTimer = setTimeout(() => this.refreshEmailPreview(), 450);
+      },
+      // Al cerrar el modal se invalida lo que esté en vuelo y se limpia el
+      // panel. Sin esto el iframe conserva el correo del cliente anterior —el
+      // modal usa x-show, así que el elemento no se destruye— y al abrir el
+      // siguiente caso se ve, por un instante, documentación de otra persona.
+      cerrarDocRequest() {
+        this._emailPreviewSeq++;
+        this.emailPreviewLoading = false;
+        this.emailPreviewHtml = '';
+        this.emailPreviewAttachment = '';
+        this.emailPreviewError = '';
+        this.docRequestModal.open = false;
       },
 
       async loadSlackUsers() {
@@ -10106,8 +10198,12 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           alert_data: c.alert_data || {},
         };
         this.emailPreviewHtml = ''; this.emailPreviewAttachment = ''; this.emailPreviewError = '';
-        this.refreshEmailPreview();
+        // El default de documentos va ANTES de pedir la previsualización: la
+        // plantilla arma un punto numerado por categoría pedida, así que
+        // pedirla con la lista todavía vacía mostraba un correo que no era el
+        // que se iba a mandar.
         if (this.docRequestModal.documentos.length === 0) this.docRequestModal.documentos = [...this.docCategoriesAll];
+        this.refreshEmailPreview();
         // Último recurso: resolverlos del ID contra la base. No bloquea la
         // apertura del modal — llega y se completa solo.
         this.completarDatosDelCliente();
