@@ -252,6 +252,14 @@
               class="text-xs bg-red-600 text-white rounded-full px-1.5 py-0.5 leading-none"
               x-text="relevoVencidos"></span>
           </button>
+          <button @click="switchTab('embargos'); embCargarHistorial()"
+            :class="activeTab==='embargos' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
+            class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
+            <span>⚖️</span> Embargos
+            <span x-show="embCorriendo > 0"
+              class="text-xs bg-blue-600 text-white rounded-full px-1.5 py-0.5 leading-none"
+              x-text="embCorriendo"></span>
+          </button>
           <button @click="switchTab('queries')"
             :class="activeTab==='queries' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
@@ -1214,6 +1222,254 @@
 
       <!-- ===== TAB: ALERTADOS ===== -->
       <!-- ═══════════════ MÓDULO RELEVO — ciclo RFI de corresponsales ═══════════════ -->
+      <!-- ═══════════ EMBARGOS · oficios judiciales ═══════════
+           Dos pasos con una confirmación en el medio, a propósito: primero se
+           lee el archivo y se muestra qué entendió, después se confirma. Es lo
+           que evita generar 15.000 oficios sobre un mapeo de columnas errado,
+           y cuesta 6 segundos. -->
+      <div x-show="activeTab==='embargos'" x-cloak>
+
+        <div class="flex items-center justify-between mb-5 flex-wrap gap-3">
+          <div>
+            <h2 class="text-lg font-semibold text-white flex items-center gap-2">
+              <span class="text-orange-400">⚖️</span> Embargos · Oficios judiciales
+            </h2>
+            <p class="text-xs text-slate-500 mt-1">
+              Se lee el oficio, se cruza contra la base para saber quién es cliente,
+              y se generan las respuestas en Word.
+            </p>
+          </div>
+          <button @click="embCargarHistorial()" :disabled="embHistorialCargando"
+            class="text-xs text-slate-400 hover:text-white transition disabled:opacity-50">
+            <span :class="embHistorialCargando ? 'spin inline-block' : ''">↺</span> Actualizar
+          </button>
+        </div>
+
+        <!-- Aviso de datos personales. Va arriba y siempre visible: son datos
+             de miles de personas y la Ley 1581 no es un detalle de pie de página. -->
+        <div class="mb-5 rounded-xl border border-amber-800/60 bg-amber-950/20 px-4 py-2.5">
+          <p class="text-xs text-amber-200/90">
+            Los archivos de oficios contienen datos personales de terceros (Ley 1581 de 2012).
+            Cada corrida queda registrada con quién la ejecutó y sobre qué archivo.
+          </p>
+        </div>
+
+        <!-- ── PASO 1: cargar ── -->
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-5">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="w-5 h-5 rounded-full bg-orange-600 text-white text-xs flex items-center justify-center font-bold">1</span>
+            <span class="text-sm font-medium text-slate-200">Cargar el oficio</span>
+          </div>
+
+          <label class="block border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition"
+                 :class="embArchivo ? 'border-teal-700 bg-teal-950/20' : 'border-slate-600 hover:border-slate-500'"
+                 @dragover.prevent="embDrop=true" @dragleave.prevent="embDrop=false"
+                 @drop.prevent="embDrop=false; embElegir($event.dataTransfer.files[0])">
+            <template x-if="!embArchivo && !embSubiendo">
+              <div>
+                <div class="text-2xl mb-1">📄</div>
+                <p class="text-sm text-slate-300">Arrastrá el oficio acá, o hacé clic</p>
+                <p class="text-xs text-slate-500 mt-1">.xlsx · .xls · .csv · .pdf con capa de texto</p>
+              </div>
+            </template>
+            <template x-if="embSubiendo">
+              <p class="text-sm text-slate-300">Subiendo…</p>
+            </template>
+            <template x-if="embArchivo && !embSubiendo">
+              <div>
+                <p class="text-sm text-teal-300 font-medium" x-text="'✓ ' + embArchivo"></p>
+                <p class="text-xs text-slate-500 mt-1">Hacé clic para elegir otro</p>
+              </div>
+            </template>
+            <input type="file" class="hidden" accept=".xlsx,.xls,.csv,.pdf"
+                   @change="embElegir($event.target.files[0]); $event.target.value=''">
+          </label>
+          <p x-show="embError" class="text-xs text-red-400 mt-2 whitespace-pre-wrap" x-text="embError"></p>
+        </div>
+
+        <!-- ── PASO 2: lo que entendió ── -->
+        <div x-show="embVista" class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-5">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="w-5 h-5 rounded-full bg-orange-600 text-white text-xs flex items-center justify-center font-bold">2</span>
+            <span class="text-sm font-medium text-slate-200">Revisá antes de generar</span>
+          </div>
+
+          <p x-show="(embVista||{}).error" class="text-sm text-red-300" x-text="(embVista||{}).error"></p>
+
+          <template x-if="embVista && !embVista.error">
+            <div class="space-y-4">
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <template x-for="m in embMetricas()" :key="m.l">
+                  <div class="rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2">
+                    <span class="text-[11px] text-slate-500 block" x-text="m.l"></span>
+                    <span class="text-base font-semibold" :class="m.c || 'text-slate-200'" x-text="m.v"></span>
+                  </div>
+                </template>
+              </div>
+
+              <div class="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-400">
+                <span x-show="embVista.formato">Formato: <b class="text-slate-200" x-text="embVista.formato"></b></span>
+                <span x-show="(embVista.hojas||[]).length"
+                      x-text="'Hojas: ' + (embVista.hojas||[]).join(', ')"></span>
+                <span x-show="(embVista.hojas_omitidas||[]).length" class="text-amber-400"
+                      x-text="'Omitidas: ' + (embVista.hojas_omitidas||[]).join(', ')"></span>
+              </div>
+
+              <!-- Alertas de calidad: acá y no sólo en el Excel, porque son
+                   los registros que necesitan una decisión humana. -->
+              <div x-show="Object.keys(embVista.alertas||{}).length">
+                <span class="text-xs text-slate-500 block mb-1.5">Alertas de calidad</span>
+                <div class="flex flex-wrap gap-1.5">
+                  <template x-for="[k,v] in Object.entries(embVista.alertas||{})" :key="k">
+                    <span class="text-[11px] px-2 py-0.5 rounded bg-amber-950/40 border border-amber-800/60 text-amber-200"
+                          x-text="k.replace(/_/g,' ') + ': ' + v"></span>
+                  </template>
+                </div>
+              </div>
+              <div x-show="Object.keys(embVista.motivos_descarte||{}).length">
+                <span class="text-xs text-slate-500 block mb-1.5">Motivos de descarte</span>
+                <div class="flex flex-wrap gap-1.5">
+                  <template x-for="[k,v] in Object.entries(embVista.motivos_descarte||{})" :key="k">
+                    <span class="text-[11px] px-2 py-0.5 rounded bg-red-950/40 border border-red-800/60 text-red-200"
+                          x-text="k.replace(/_/g,' ') + ': ' + v"></span>
+                  </template>
+                </div>
+              </div>
+
+              <!-- Las primeras filas ya normalizadas: es lo que deja ver si el
+                   mapeo de columnas quedó bien ANTES de generar nada. -->
+              <div>
+                <span class="text-xs text-slate-500 block mb-1.5">Primeras filas, ya normalizadas</span>
+                <div class="overflow-x-auto rounded-lg border border-slate-700">
+                  <table class="w-full text-xs">
+                    <thead><tr class="bg-slate-900/70 text-slate-400">
+                      <th class="text-left px-3 py-1.5">Documento</th>
+                      <th class="text-left px-3 py-1.5">Tipo</th>
+                      <th class="text-left px-3 py-1.5">Nombre</th>
+                      <th class="text-left px-3 py-1.5">Oficio</th>
+                      <th class="text-right px-3 py-1.5">Monto</th>
+                      <th class="text-left px-3 py-1.5">Origen</th>
+                    </tr></thead>
+                    <tbody>
+                      <template x-for="(f,i) in (embVista.muestra||[])" :key="'ev'+i">
+                        <tr class="border-t border-slate-700/50">
+                          <td class="px-3 py-1.5 text-slate-200 font-mono" x-text="f.documento"></td>
+                          <td class="px-3 py-1.5 text-slate-400" x-text="f.tipo || '—'"></td>
+                          <td class="px-3 py-1.5 text-slate-300" x-text="f.nombre"></td>
+                          <td class="px-3 py-1.5 text-slate-400" x-text="f.oficio || '—'"></td>
+                          <td class="px-3 py-1.5 text-right text-slate-300" x-text="embMonto(f.monto)"></td>
+                          <td class="px-3 py-1.5 text-slate-600"
+                              x-text="(f.hoja ? f.hoja + ' ' : '') + 'fila ' + f.fila"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- ── confirmación ── -->
+              <div class="border-t border-slate-700 pt-4">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+                  <div>
+                    <label class="block text-xs text-slate-400 mb-1">Un oficio por…</label>
+                    <select x-model="embModo"
+                      class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+                      <option value="persona">Persona (consolida sus procesos)</option>
+                      <option value="proceso">Proceso (uno por fila del archivo)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="block text-xs text-slate-400 mb-1">Fecha del oficio</label>
+                    <input type="date" x-model="embFecha"
+                      class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+                  </div>
+                  <div>
+                    <label class="block text-xs text-slate-400 mb-1">Ciudad</label>
+                    <input type="text" x-model="embCiudad" placeholder="Bogotá D.C."
+                      class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+                  </div>
+                </div>
+                <!-- El número que importa antes de confirmar: cuántos oficios
+                     se van a generar, y que en modo proceso puede ser muchos más. -->
+                <p class="text-xs text-slate-400 mb-3">
+                  Se van a generar
+                  <b class="text-orange-300"
+                     x-text="(embModo==='persona' ? (embVista.conteos||{}).personas : (embVista.conteos||{}).validos) + ' oficio(s)'"></b>
+                  <span x-show="embModo==='proceso' && (embVista.conteos||{}).validos > (embVista.conteos||{}).personas"
+                        class="text-amber-400"
+                        x-text="' — ' + ((embVista.conteos||{}).validos - (embVista.conteos||{}).personas) + ' más que en modo persona, porque hay repetidos'"></span>
+                </p>
+                <button @click="embEjecutar()" :disabled="embEjecutando"
+                  class="px-4 py-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition">
+                  <span x-text="embEjecutando ? 'Lanzando…' : 'Confirmar y generar'"></span>
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- ── PASO 3: corridas ── -->
+        <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+          <div class="px-5 py-3 border-b border-slate-700 flex items-center gap-2">
+            <span class="w-5 h-5 rounded-full bg-orange-600 text-white text-xs flex items-center justify-center font-bold">3</span>
+            <span class="text-sm font-medium text-slate-200">Corridas</span>
+            <span class="text-xs text-slate-500" x-text="'(' + embHistorial.length + ')'"></span>
+          </div>
+          <p x-show="!embHistorial.length && !embHistorialCargando"
+             class="px-5 py-6 text-sm text-slate-600 italic">Todavía no se procesó ningún oficio.</p>
+          <div class="divide-y divide-slate-700/60">
+            <template x-for="c in embHistorial" :key="c.run_id">
+              <div class="px-5 py-3">
+                <div class="flex items-center gap-3 flex-wrap">
+                  <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                        :class="embColor(c.estado)" x-text="embEtiqueta(c)"></span>
+                  <span class="text-sm text-slate-200 flex-1 truncate" x-text="c.archivo"></span>
+                  <span class="text-[11px] text-slate-500" x-text="c.solicitado_por"></span>
+                  <span class="text-[11px] text-slate-600" x-text="(c.creado_at||'').slice(0,16)"></span>
+                  <button @click="embVerCorrida(c.run_id)"
+                    class="text-xs text-orange-400 hover:text-orange-300">ver →</button>
+                </div>
+                <div x-show="c.personas" class="text-[11px] text-slate-500 mt-1"
+                     x-text="c.personas + ' persona(s) · ' + c.clientes + ' cliente(s) · '
+                             + c.no_clientes + ' no cliente(s)'
+                             + (c.descartados ? ' · ' + c.descartados + ' descartado(s)' : '')"></div>
+                <p x-show="c.error" class="text-[11px] text-red-400 mt-1" x-text="c.error"></p>
+
+                <!-- detalle abierto: progreso y descargas -->
+                <div x-show="embDetalle && embDetalle.run_id === c.run_id" class="mt-3 space-y-2">
+                  <template x-if="embDetalle && embDetalle.estado !== 'listo' && embDetalle.estado !== 'error'">
+                    <div>
+                      <div class="flex items-center gap-2 text-xs text-slate-400 mb-1">
+                        <span x-text="embEtapa(embDetalle.etapa)"></span>
+                        <span class="ml-auto" x-text="embDetalle.progreso + '%'"></span>
+                      </div>
+                      <div class="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden">
+                        <div class="h-full bg-teal-500 transition-all"
+                             :style="'width:' + (embDetalle.progreso||0) + '%'"></div>
+                      </div>
+                    </div>
+                  </template>
+                  <div x-show="(embDetalle.descargas||[]).length" class="flex flex-wrap gap-2">
+                    <template x-for="(d,i) in (embDetalle.descargas||[])" :key="'d'+i">
+                      <a :href="d.url" target="_blank"
+                         class="text-xs px-2.5 py-1 rounded-lg border transition"
+                         :class="d.tipo==='excel'
+                           ? 'border-emerald-800 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40'
+                           : 'border-slate-600 bg-slate-900/60 text-slate-300 hover:bg-slate-700'"
+                         x-text="(d.tipo==='excel' ? '📊 ' : '📦 ') + d.nombre
+                                 + (d.bytes ? ' (' + Math.round(d.bytes/1024) + ' KB)' : '')"></a>
+                    </template>
+                  </div>
+                  <p x-show="embDetalle.version_plantillas" class="text-[11px] text-slate-600"
+                     x-text="'Plantillas v' + embDetalle.version_plantillas
+                             + (embDetalle.consultas_redshift ? ' · ' + embDetalle.consultas_redshift + ' consulta(s) a Redshift' : '')"></p>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
       <div x-show="activeTab==='relevo'" x-cloak>
 
         <!-- cabecera: estado del módulo -->
@@ -7117,6 +7373,13 @@
       dupAviso: [],
       _dupSeq: 0,
 
+      // ── Embargos · oficios judiciales ──────────────────────────────
+      embArchivo: '', embRunId: '', embSubiendo: false, embDrop: false,
+      embError: '', embVista: null, embEjecutando: false,
+      embModo: 'persona', embFecha: '', embCiudad: 'Bogotá D.C.',
+      embHistorial: [], embHistorialCargando: false, embDetalle: null,
+      embCorriendo: 0, _embReloj: null,
+
       // Ficha del cliente (punto 6): todo lo suyo en un lugar.
       fichaModal: { open: false },
       ficha: {},
@@ -10366,6 +10629,126 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         // la pestaña igual; el nombre ya viene fijado en el Content-Disposition
         // del enlace prefirmado, así que basta con navegar a él.
         window.open(d.url, '_blank');
+      },
+
+      // ── Embargos ────────────────────────────────────────────────────
+      // Dos pasos con confirmación en el medio: subir+leer, y recién después
+      // generar. Leer 35.000 filas toma 6 s; generar 15.000 oficios sobre un
+      // mapeo errado es un problema con un juzgado.
+      async embElegir(archivo) {
+        if (!archivo) return;
+        this.embError = ''; this.embVista = null; this.embDetalle = null;
+        const ext = '.' + (archivo.name.split('.').pop() || '').toLowerCase();
+        if (!['.xlsx', '.xls', '.csv', '.pdf'].includes(ext)) {
+          this.embError = `Formato no soportado: ${ext}. Se aceptan .xlsx, .xls, .csv y .pdf.`;
+          return;
+        }
+        this.embSubiendo = true;
+        try {
+          const d = await this.api('POST', '/embargos/subir-url',
+                                   { archivo_nombre: archivo.name });
+          if (!d?.url) { this.embError = d?.error || 'No se pudo preparar la subida.'; return; }
+          // Sube el navegador directo a S3: un oficio puede pesar varios MB y
+          // el API Gateway corta el cuerpo de un request mucho antes.
+          const r = await fetch(d.url, { method: 'PUT', body: archivo });
+          if (!r.ok) { this.embError = `La subida falló (${r.status}).`; return; }
+          this.embRunId = d.run_id;
+          this.embArchivo = d.archivo_nombre;
+          await this.embPrevisualizar();
+        } catch (e) {
+          this.embError = 'No se pudo subir el archivo: ' + (e?.message || e);
+        } finally {
+          this.embSubiendo = false;
+        }
+      },
+
+      async embPrevisualizar() {
+        this.embVista = { cargando: true };
+        const d = await this.api('POST', '/embargos/previsualizar',
+          { run_id: this.embRunId, archivo_nombre: this.embArchivo });
+        this.embVista = d || { error: 'No se pudo leer el archivo.' };
+      },
+
+      async embEjecutar() {
+        if (!this.embRunId || this.embEjecutando) return;
+        this.embEjecutando = true;
+        const d = await this.api('POST', '/embargos/ejecutar', {
+          run_id: this.embRunId, archivo_nombre: this.embArchivo,
+          modo: this.embModo, fecha: this.embFecha, ciudad: this.embCiudad,
+          actor_email: this.currentUserEmail,
+        });
+        this.embEjecutando = false;
+        if (!d || d.error) { this.embError = d?.error || 'No se pudo lanzar la corrida.'; return; }
+        this.embVista = null; this.embArchivo = '';
+        await this.embCargarHistorial();
+        this.embVerCorrida(d.run_id);
+      },
+
+      async embCargarHistorial() {
+        this.embHistorialCargando = true;
+        const d = await this.api('GET', '/embargos');
+        this.embHistorialCargando = false;
+        this.embHistorial = d?.corridas || [];
+        this.embCorriendo = this.embHistorial.filter(
+          c => c.estado && c.estado !== 'listo' && c.estado !== 'error').length;
+      },
+
+      async embVerCorrida(runId) {
+        if (this.embDetalle?.run_id === runId && !this._embReloj) { this.embDetalle = null; return; }
+        const d = await this.api('GET', '/embargos/' + encodeURIComponent(runId));
+        if (!d || d.error) return;
+        this.embDetalle = d;
+        clearInterval(this._embReloj); this._embReloj = null;
+        // Mientras corre se refresca solo. El progreso sale del estado en S3,
+        // que la Lambda actualiza al cerrar cada tanda: es real, no estimado.
+        if (d.estado !== 'listo' && d.estado !== 'error') {
+          this._embReloj = setInterval(async () => {
+            const n = await this.api('GET', '/embargos/' + encodeURIComponent(runId));
+            if (!n || n.error) return;
+            this.embDetalle = n;
+            if (n.estado === 'listo' || n.estado === 'error') {
+              clearInterval(this._embReloj); this._embReloj = null;
+              this.embCargarHistorial();
+            }
+          }, 5000);
+        }
+      },
+
+      embMetricas() {
+        const c = (this.embVista || {}).conteos || {};
+        return [
+          { l: 'Filas leídas', v: (c.filas || 0).toLocaleString('es-CO') },
+          { l: 'Registros válidos', v: (c.validos || 0).toLocaleString('es-CO') },
+          { l: 'Personas únicas', v: (c.personas || 0).toLocaleString('es-CO') },
+          // El descarte sólo se pinta en rojo si lo hay: un cero en rojo
+          // entrena a no mirar la casilla.
+          { l: 'Descartados', v: (c.descartados || 0).toLocaleString('es-CO'),
+            c: c.descartados ? 'text-red-300' : 'text-slate-200' },
+        ];
+      },
+
+      embMonto(v) {
+        const n = Number(v);
+        if (!v || !isFinite(n)) return '—';
+        return '$ ' + n.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+      },
+
+      embColor(e) {
+        return e === 'listo' ? 'bg-emerald-900/50 text-emerald-300'
+             : e === 'error' ? 'bg-red-900/50 text-red-300'
+             : 'bg-blue-900/50 text-blue-300';
+      },
+
+      embEtiqueta(c) {
+        if (c.estado === 'listo') return 'Listo';
+        if (c.estado === 'error') return 'Error';
+        return this.embEtapa(c.etapa);
+      },
+
+      embEtapa(e) {
+        return ({ pendiente: 'En cola', extrayendo: 'Leyendo el archivo',
+                  validando: 'Cruzando contra la base', generando: 'Generando oficios',
+                  cerrando: 'Armando el Excel', listo: 'Listo' })[e] || 'Procesando';
       },
 
       fichaUsd(v) {

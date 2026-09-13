@@ -2565,6 +2565,19 @@ def handler(event, context):  # noqa: ARG001
         if method == "GET" and len(parts) == 3 and parts[0] == "clientes" and parts[2] == "solicitudes-recientes":
             return solicitudes_recientes(parts[1], event.get("queryStringParameters") or {})
 
+        # ── EMBARGOS: oficios judiciales ──────────────────────────────────
+        if method == "POST" and parts == ["embargos", "subir-url"]:
+            return embargos_subir_url(body)
+        if method == "POST" and parts == ["embargos", "previsualizar"]:
+            return embargos_previsualizar(body)
+        if method == "POST" and parts == ["embargos", "ejecutar"]:
+            return embargos_ejecutar(body)
+        if method == "GET" and parts == ["embargos"]:
+            return embargos_historial()
+        # Va último: cualquier otro /embargos/{algo} de 2 segmentos ya matcheó arriba.
+        if method == "GET" and len(parts) == 2 and parts[0] == "embargos":
+            return embargos_estado(parts[1])
+
         # POST /alerts/{id}/link-case
         if method == "POST" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "link-case":
             return link_alert_to_case(parts[1], body)
@@ -5192,6 +5205,196 @@ def get_client_dossier(entity_id: str, qs: dict):
             "documentos_recibidos": len(docs["recibidos"]),
         },
     })
+
+
+# ---------------------------------------------------------------------------
+# EMBARGOS — respuesta masiva a oficios judiciales.
+#
+# El portal sólo orquesta: subir, previsualizar, confirmar, consultar. Todo el
+# trabajo pesado (leer PDF/XLSX, cruzar Redshift, generar Word) vive en la
+# Lambda `compliance-embargos`, que tiene sus propias dependencias y 900 s.
+# Ver build_embargos.sh para por qué está separada.
+# ---------------------------------------------------------------------------
+EMBARGOS_LAMBDA = os.environ.get("EMBARGOS_LAMBDA", "compliance-embargos")
+EMBARGOS_PREFIJO = os.environ.get("EMBARGOS_PREFIJO", "embargos")
+# Extensiones que el extractor sabe leer. Un .zip o un .exe acá no tiene nada
+# que hacer, y el nombre del archivo lo elige quien sube.
+EMBARGOS_EXT = (".xlsx", ".xls", ".csv", ".pdf")
+
+
+def _embargos_clave(run_id: str, *partes) -> str:
+    return "/".join([EMBARGOS_PREFIJO, _clave_segura(run_id), *partes])
+
+
+def embargos_subir_url(body: dict):
+    """URL prefirmada para subir el archivo del juzgado directo a S3.
+
+    Sube el navegador, no el portal: un oficio puede pesar varios MB y el API
+    Gateway tiene un tope de ~6 MB por request con el cuerpo en base64.
+    """
+    nombre = str(body.get("archivo_nombre") or "").strip()
+    if not nombre:
+        return resp(400, {"error": "Falta el nombre del archivo."})
+    ext = os.path.splitext(nombre)[1].lower()
+    if ext not in EMBARGOS_EXT:
+        return resp(400, {"error": f"Formato no soportado: {ext or '(sin extensión)'}. "
+                                   f"Se aceptan {', '.join(EMBARGOS_EXT)}."})
+
+    run_id = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+    limpio = re.sub(r"[^A-Za-z0-9._-]+", "_", nombre)[:120]
+    clave = _embargos_clave(run_id, limpio)
+    try:
+        url = s3.generate_presigned_url(
+            "put_object", Params={"Bucket": S3_BUCKET, "Key": clave}, ExpiresIn=900)
+    except Exception as e:
+        return resp(500, {"error": f"No pude preparar la subida: {str(e)[:200]}"})
+    return resp(200, {"run_id": run_id, "url": url, "clave": limpio,
+                      "archivo_nombre": limpio})
+
+
+def embargos_previsualizar(body: dict):
+    """Qué entendió del archivo, sin generar nada. Invocación SÍNCRONA."""
+    run_id = str(body.get("run_id") or "").strip()
+    if not run_id:
+        return resp(400, {"error": "Falta run_id."})
+    try:
+        r = lambda_client.invoke(
+            FunctionName=EMBARGOS_LAMBDA, InvocationType="RequestResponse",
+            Payload=json.dumps({
+                "accion": "previsualizar", "run_id": run_id,
+                "archivo_clave": body.get("archivo_nombre") or "",
+                "archivo_nombre": body.get("archivo_nombre") or "archivo",
+            }).encode())
+        datos = json.loads(r["Payload"].read() or b"{}")
+    except Exception as e:
+        return resp(502, {"error": f"No se pudo leer el archivo: {str(e)[:250]}"})
+    if isinstance(datos, dict) and datos.get("errorMessage"):
+        return resp(200, {"error": f"El archivo no se pudo procesar: "
+                                   f"{str(datos['errorMessage'])[:250]}"})
+    return resp(200, datos)
+
+
+def embargos_ejecutar(body: dict):
+    """Confirma la corrida y dispara el trabajo de fondo."""
+    run_id = str(body.get("run_id") or "").strip()
+    nombre = str(body.get("archivo_nombre") or "").strip()
+    if not run_id or not nombre:
+        return resp(400, {"error": "Faltan run_id o archivo_nombre."})
+
+    modo = "proceso" if str(body.get("modo")) == "proceso" else "persona"
+    actor = str(body.get("actor_email") or "").strip()
+    clave = _embargos_clave(run_id, nombre)
+
+    # Huella del insumo: ante el juzgado hay que poder demostrar sobre qué
+    # archivo exacto se respondió, no sólo cómo se llamaba.
+    huella = ""
+    try:
+        cab = s3.head_object(Bucket=S3_BUCKET, Key=clave)
+        huella = str(cab.get("ETag", "")).strip('"')
+        tam = cab.get("ContentLength", 0)
+    except Exception:
+        return resp(404, {"error": "No encuentro el archivo subido. Volvé a cargarlo."})
+
+    estado = {
+        "run_id": run_id,
+        "estado": "pendiente",
+        "etapa": "pendiente",
+        "archivo_clave": nombre,
+        "archivo_nombre": nombre,
+        "archivo_hash": huella,
+        "archivo_bytes": tam,
+        "modo": modo,
+        "fecha": str(body.get("fecha") or "")[:10],
+        "ciudad": str(body.get("ciudad") or "Bogotá D.C.")[:80],
+        "solicitado_por": actor or "desconocido",
+        "creado_at": _now_str(),
+    }
+    s3.put_object(Bucket=S3_BUCKET, Key=_embargos_clave(run_id, "estado.json"),
+                  Body=json.dumps(estado, ensure_ascii=False).encode(),
+                  ContentType="application/json")
+    lambda_client.invoke(FunctionName=EMBARGOS_LAMBDA, InvocationType="Event",
+                         Payload=json.dumps({"run_id": run_id}).encode())
+    _safe_audit(user_email=actor or "unknown", action="embargos.ejecutar",
+                entity_type="embargo", entity_id=run_id,
+                new_value={"archivo": nombre, "modo": modo, "bytes": tam})
+    return resp(202, estado)
+
+
+def embargos_estado(run_id: str):
+    """Estado, progreso y enlaces de descarga."""
+    try:
+        o = s3.get_object(Bucket=S3_BUCKET,
+                          Key=_embargos_clave(run_id, "estado.json"))
+        estado = json.loads(o["Body"].read())
+    except Exception:
+        return resp(404, {"error": f"No existe la corrida {run_id}."})
+
+    def _url(clave, nombre):
+        try:
+            return s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": S3_BUCKET, "Key": clave,
+                        "ResponseContentDisposition": f'attachment; filename="{nombre}"'},
+                ExpiresIn=900)
+        except Exception:
+            return ""
+
+    descargas = []
+    if estado.get("excel_clave"):
+        descargas.append({"tipo": "excel", "nombre": "resultado_validacion.xlsx",
+                          "url": _url(estado["excel_clave"], "resultado_validacion.xlsx")})
+    for t in (estado.get("tandas") or []):
+        nom = f"oficios_{t['desde']}_{t['hasta']}.zip"
+        descargas.append({"tipo": "oficios", "nombre": nom, "bytes": t.get("bytes", 0),
+                          "desde": t["desde"], "hasta": t["hasta"],
+                          "url": _url(t["clave"], nom)})
+
+    total = (estado.get("conteos") or {}).get("personas") or 0
+    hechos = estado.get("generados") or 0
+    estado["descargas"] = descargas
+    estado["progreso"] = round(hechos * 100 / total) if total else 0
+    return resp(200, estado)
+
+
+def embargos_historial():
+    """Las corridas, de la más nueva a la más vieja.
+
+    Sin datos personales: quién, cuándo, qué archivo y cuántos de cada lado.
+    El detalle está en el Excel, que tiene control de acceso.
+    """
+    corridas = []
+    try:
+        pag = s3.get_paginator("list_objects_v2")
+        for pagina in pag.paginate(Bucket=S3_BUCKET, Prefix=f"{EMBARGOS_PREFIJO}/",
+                                   Delimiter="/"):
+            for p in pagina.get("CommonPrefixes", []):
+                rid = p["Prefix"].rstrip("/").split("/")[-1]
+                try:
+                    o = s3.get_object(Bucket=S3_BUCKET,
+                                      Key=f"{p['Prefix']}estado.json")
+                    e = json.loads(o["Body"].read())
+                except Exception:
+                    continue
+                c = e.get("conteos") or {}
+                corridas.append({
+                    "run_id": rid,
+                    "estado": e.get("estado", ""),
+                    "etapa": e.get("etapa", ""),
+                    "archivo": e.get("archivo_nombre", ""),
+                    "modo": e.get("modo", ""),
+                    "solicitado_por": e.get("solicitado_por", ""),
+                    "creado_at": e.get("creado_at", ""),
+                    "terminado_at": e.get("terminado_at", ""),
+                    "personas": c.get("personas", 0),
+                    "clientes": c.get("clientes", 0),
+                    "no_clientes": c.get("no_clientes", 0),
+                    "descartados": c.get("descartados", 0),
+                    "error": e.get("error", ""),
+                })
+    except Exception as e:
+        return resp(200, {"corridas": [], "warning": str(e)[:200]})
+    corridas.sort(key=lambda x: x["creado_at"], reverse=True)
+    return resp(200, {"corridas": corridas, "total": len(corridas)})
 
 
 def solicitudes_recientes(entity_id: str, qs: dict):
