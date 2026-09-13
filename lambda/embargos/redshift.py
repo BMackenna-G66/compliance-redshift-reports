@@ -37,8 +37,16 @@ LOTE = 500
 
 _SOLO_ALFANUM = re.compile(r"[^A-Z0-9]")
 
-# La consulta de Benjamín, con `=` cambiado por `IN`. No se le agrega ningún
-# filtro: aparecer acá ES la definición de cliente.
+# La consulta de Benjamín, con `=` cambiado por `IN`. **El WHERE no se toca**:
+# aparecer acá ES la definición de cliente.
+#
+# Al SELECT sí se le sumaron `document_type` y `country_code`. No cambian a
+# quién se considera cliente —eso lo decide el WHERE— pero son lo único que
+# permite ver un cruce sospechoso. Medido sobre un oficio real: de 7 personas
+# marcadas como clientes, 2 lo eran por número de documento repetido entre
+# países (una CC colombiana que en la base es un DNI argentino, y otra que es
+# un RUT chileno), o sea personas distintas. Sin estas dos columnas ese 29%
+# de falsos positivos es invisible.
 SQL = """
 SELECT DISTINCT
     kd.document_number AS dni,
@@ -48,6 +56,7 @@ SELECT DISTINCT
     ) AS nombre_completo,
     kd.document_type AS tipo_dni,
     c.customer_id,
+    c.country_code AS pais_cliente,
     REGEXP_REPLACE(UPPER(TRIM(kd.document_number)), '[^A-Z0-9]', '') AS dni_normalizado
 FROM "db_prod"."customer"."kyc_document" kd
 INNER JOIN "db_prod"."customer"."customer_v2" c
@@ -129,6 +138,7 @@ class ValidadorRedshift:
                             "user_id": fila.get("customer_id"),
                             "nombre_en_sistema": (fila.get("nombre_completo") or "").strip(),
                             "tipo_documento_sistema": fila.get("tipo_dni") or "",
+                            "pais_cliente": fila.get("pais_cliente") or "",
                             "documento_sistema": fila.get("dni") or "",
                             "match": "redshift",
                         }
@@ -156,4 +166,20 @@ def marcar_clientes(personas: List[Dict], validador) -> List[Dict]:
         p["customer_id"] = datos.get("customer_id", "")
         p["nombre_en_sistema"] = datos.get("nombre_en_sistema", "")
         p["tipo_documento_sistema"] = datos.get("tipo_documento_sistema", "")
+        p["pais_cliente"] = datos.get("pais_cliente", "")
+
+        # Mismo número, distinto tipo de documento = casi seguro otra persona.
+        # El cruce es sólo por número, así que una CC colombiana puede pegarle
+        # a un DNI argentino con el mismo número. Se marca, no se descarta:
+        # cambiar quién cuenta como cliente es una decisión del área, y
+        # descartarlo en silencio sería tan malo como aceptarlo en silencio.
+        tipo_oficio = str(p.get("tipo_documento") or "").strip().upper()
+        tipo_base = str(p.get("tipo_documento_sistema") or "").strip().upper()
+        p["tipo_documento_coincide"] = (not tipo_oficio or not tipo_base
+                                        or tipo_oficio == tipo_base)
+        if p["es_cliente"] and not p["tipo_documento_coincide"]:
+            marca = (f"REVISAR:tipo_documento_no_coincide "
+                     f"(oficio {tipo_oficio} / base {tipo_base}"
+                     + (f", {p['pais_cliente']}" if p.get("pais_cliente") else "") + ")")
+            p["flags"] = "; ".join(x for x in (p.get("flags"), marca) if x)
     return personas
