@@ -1436,8 +1436,30 @@ def ai_generate(body: dict):
     try:
         with _ur.urlopen(req, timeout=60) as r:
             data = json.loads(r.read())
-        text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-        return resp(200, {"text": text})
+        cand = (data.get("candidates") or [{}])[0]
+        # TODOS los `parts`, no sólo el primero.
+        #
+        # Esto era el bug detrás de la observación 3.1 ("el análisis de IA
+        # únicamente devuelve el nivel de riesgo"). Gemini parte una respuesta
+        # larga en varios `parts`, y leer `parts[0]` tiraba el resto en
+        # silencio: el texto quedaba cortado a mitad de palabra, casi siempre
+        # justo después de la primera sección — que es, precisamente, el nivel
+        # de riesgo. Medido: un análisis de 4 secciones llegaba cortado a los
+        # 7.154 caracteres con maxOutputTokens en 4096, o sea sin haber tocado
+        # el límite de tokens.
+        partes = [p.get("text", "") for p in (cand.get("content", {}).get("parts") or [])]
+        text = "".join(t for t in partes if t)
+
+        salida = {"text": text}
+        # Si de verdad se acabó el presupuesto de tokens, que se vea. Un
+        # análisis truncado que parece completo es peor que uno que avisa:
+        # alguien podría cerrar un caso sin los puntos que faltaron.
+        razon = str(cand.get("finishReason") or "").upper()
+        if razon and razon not in ("STOP", "FINISH_REASON_STOP"):
+            salida["truncado"] = razon
+            salida["text"] = (text + f"\n\n⚠ La respuesta se cortó ({razon}). "
+                                     f"Volvé a pedirla o acotá el caso.")
+        return resp(200, salida)
     except _ur.HTTPError as e:
         err_body = e.read().decode(errors="ignore")
         try:
