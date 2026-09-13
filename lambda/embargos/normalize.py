@@ -34,16 +34,31 @@ DOC_TYPE_MAP = {
     "C.C.": "CC",
     "CC": "CC",
     "TARJETA DE IDENTIDAD": "TI",
+    "TARJETA IDENTIDAD": "TI",
     "TI": "TI",
     "CEDULA DE EXTRANJERIA": "CE",
+    "CEDULA EXTRANJERIA": "CE",
+    "CEDULA DE EXTRANJERO": "CE",
     "CE": "CE",
     "PASAPORTE": "PA",
     "PA": "PA",
     "NIT": "NIT",
     "PPT": "PPT",
     "PERMISO POR PROTECCION TEMPORAL": "PPT",
+    "PERMISO PROTECCION TEMPORAL": "PPT",
+    "PERMISO ESPECIAL DE PERMANENCIA": "PEP",
+    "PEP": "PEP",
+    "CEDULA VENEZOLANA": "CV",
     "REGISTRO CIVIL": "RC",
 }
+
+# Sinónimos agregados a partir de los tipos que aparecen en los cuatro oficios
+# reales y que el mapa no reconocía. Se descubrieron al exigir que el tipo de
+# documento coincida en el cruce: sin mapear, `Cédula Extranjeria` salía como
+# el literal "CEDULA EXT" y nunca iba a coincidir con el "CE" de la base, así
+# que 47 personas habrían pasado a "no es cliente" por un problema de formato.
+# Conteos medidos: CEDULA VEN 1.043 · TARJETA ID 253 · CEDULA EXT 47 ·
+# PERMISO PR 21.
 
 # Rango valido de longitud por tipo de documento en Colombia.
 DOC_LENGTH_RULES = {
