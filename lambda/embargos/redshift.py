@@ -148,38 +148,57 @@ class ValidadorRedshift:
 def marcar_clientes(personas: List[Dict], validador) -> List[Dict]:
     """Marca `es_cliente` sobre las personas consolidadas.
 
-    Reemplaza al `marcar_clientes` del paquete original, que escribía campos
-    (`status`, `country`) que la consulta de Benjamín no devuelve. Inventar esos
-    campos vacíos habría hecho creer que el dato existe.
+    **Ser cliente son dos condiciones, no una: el número Y el tipo.** El cruce
+    contra Redshift es sólo por número, y eso produce falsos positivos entre
+    países: medido sobre un oficio real, de 7 personas marcadas como clientes
+    2 lo eran porque una cédula colombiana coincide con un DNI argentino y con
+    un RUT chileno, de gente distinta. Responderle a un juzgado que embargue a
+    la persona equivocada es el error más caro de este módulo, así que el tipo
+    de documento también tiene que coincidir.
 
-    El nombre del sistema se guarda aparte y NO pisa el del oficio: el Word se
-    le responde a un juzgado, y cuál de los dos nombres corresponde usar es una
-    decisión del área, no de este código. Lo que sí hace falta es tenerlos
-    juntos para poder contrastarlos — sobre todo en los registros marcados con
-    `AVISO:nombre_con_caracteres_perdidos`, donde el nombre del oficio viene
-    corrupto de origen y el de Redshift es el bueno.
+    **La regla se aplica acá y no en el WHERE a propósito.** Filtrándola en el
+    SQL, la coincidencia por número desaparecería sin dejar rastro. Acá se ve:
+    la persona queda como NO cliente —que es la respuesta al juzgado— pero con
+    `REVISAR:coincide_numero_pero_no_tipo` y los dos tipos, para que un
+    analista pueda mirarlo si hace falta. En un expediente judicial, "hubo una
+    coincidencia y se descartó por esto" es información, no ruido.
+
+    **Un tipo que falta no es una discrepancia.** Si el oficio no dice el tipo,
+    no hay nada que comparar: la persona sigue siendo cliente por número y se
+    marca para revisión. Rechazarla sería perder un cliente real por un dato
+    que el juzgado no mandó, y ése es el error en la dirección contraria.
+
+    El nombre del sistema se guarda aparte y NO pisa el del oficio: cuál va en
+    el Word es una decisión del área. Lo que hace falta es tenerlos juntos para
+    poder contrastarlos, sobre todo donde el nombre del oficio viene corrupto
+    de origen.
     """
     hallazgos = validador.validar([p["numero_documento"] for p in personas])
     for p in personas:
         datos = hallazgos.get(p["numero_documento"]) or {}
-        p["es_cliente"] = bool(datos)
-        p["customer_id"] = datos.get("customer_id", "")
+        coincide_numero = bool(datos)
+
+        tipo_oficio = str(p.get("tipo_documento") or "").strip().upper()
+        tipo_base = str(datos.get("tipo_documento_sistema") or "").strip().upper()
+        sin_tipo = not tipo_oficio or not tipo_base
+        coincide_tipo = sin_tipo or tipo_oficio == tipo_base
+
+        p["es_cliente"] = coincide_numero and coincide_tipo
+        p["coincide_numero"] = coincide_numero
+        p["tipo_documento_coincide"] = coincide_tipo
+        p["customer_id"] = datos.get("customer_id", "") if p["es_cliente"] else ""
         p["nombre_en_sistema"] = datos.get("nombre_en_sistema", "")
-        p["tipo_documento_sistema"] = datos.get("tipo_documento_sistema", "")
+        p["tipo_documento_sistema"] = tipo_base
         p["pais_cliente"] = datos.get("pais_cliente", "")
 
-        # Mismo número, distinto tipo de documento = casi seguro otra persona.
-        # El cruce es sólo por número, así que una CC colombiana puede pegarle
-        # a un DNI argentino con el mismo número. Se marca, no se descarta:
-        # cambiar quién cuenta como cliente es una decisión del área, y
-        # descartarlo en silencio sería tan malo como aceptarlo en silencio.
-        tipo_oficio = str(p.get("tipo_documento") or "").strip().upper()
-        tipo_base = str(p.get("tipo_documento_sistema") or "").strip().upper()
-        p["tipo_documento_coincide"] = (not tipo_oficio or not tipo_base
-                                        or tipo_oficio == tipo_base)
-        if p["es_cliente"] and not p["tipo_documento_coincide"]:
-            marca = (f"REVISAR:tipo_documento_no_coincide "
+        marca = ""
+        if coincide_numero and not coincide_tipo:
+            marca = (f"REVISAR:coincide_numero_pero_no_tipo "
                      f"(oficio {tipo_oficio} / base {tipo_base}"
                      + (f", {p['pais_cliente']}" if p.get("pais_cliente") else "") + ")")
+        elif coincide_numero and sin_tipo:
+            marca = ("REVISAR:no_se_pudo_comparar_el_tipo "
+                     f"(oficio {tipo_oficio or 'sin dato'} / base {tipo_base or 'sin dato'})")
+        if marca:
             p["flags"] = "; ".join(x for x in (p.get("flags"), marca) if x)
     return personas

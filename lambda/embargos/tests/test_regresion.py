@@ -33,10 +33,24 @@ from embargos.redshift import ValidadorRedshift, clave_sql, marcar_clientes  # n
 MUESTRAS = RAIZ / "embargos" / "muestras"
 
 # archivo -> (filas, válidos, descartados, personas únicas)
+#
+# ACTUALIZADO el 2026-09-13, con motivo. Dos archivos bajaron en un registro
+# válido cada uno (35.028→35.027 y 1.652→1.651) al mapear los tipos de
+# documento que los oficios traen y el mapa no reconocía. No es una regresión:
+# el tipo determina la regla de longitud, y sin mapear caían en la regla laxa
+# por defecto (3-15 dígitos). Los dos registros son:
+#
+#   EMBARGO DE CUENTAS, fila 2150: "Cédula Extranjeria" de 3 dígitos.
+#       Ahora es CE, regla (5,10) → descartado.
+#   EMBARGO DE CTA, fila 907: "Permiso Protección Temporal" de 6 dígitos.
+#       Ahora es PPT, regla (7,10) → descartado.
+#
+# Son documentos inválidos de verdad; antes pasaban por un tipo no reconocido.
+# No se pierden: van a la hoja "Descartados y revisión" con el motivo.
 GOLDEN = {
     "Embargo con varias hojas.xlsx":        (5725, 5725,  0,  4691),
-    "EMBARGO DE CUENTAS - 16-04-26.xlsx":   (35089, 35028, 61, 14908),
-    "EMBARGO DE CTA 09-04-2026.xlsx":       (1663, 1652,  11, 1601),
+    "EMBARGO DE CUENTAS - 16-04-26.xlsx":   (35089, 35027, 62, 14907),
+    "EMBARGO DE CTA 09-04-2026.xlsx":       (1663, 1651,  12, 1600),
     "Oficio_DEAJGCC26-4272.pdf":            (190,  190,   0,  190),
 }
 
@@ -179,57 +193,95 @@ class CruceContraRedshift(unittest.TestCase):
         self.assertEqual(personas[1]["nombre_en_sistema"], "")
 
 
-class TipoDeDocumentoDiscrepante(unittest.TestCase):
-    """El caso que el cruce por número solo no puede distinguir.
+class ElTipoDeDocumentoTambienTieneQueCoincidir(unittest.TestCase):
+    """Ser cliente son dos condiciones: el número Y el tipo.
 
-    Encontrado sobre un oficio real: de 7 personas marcadas como clientes, 2
-    lo eran por número repetido entre países — una cédula colombiana que en la
-    base es un DNI argentino, y otra que es un RUT chileno. Son personas
-    distintas, y decirle a un juzgado que embargue a la equivocada es el error
-    más caro que puede cometer este módulo.
+    Encontrado sobre un oficio real: de 7 personas marcadas como clientes por
+    número, 2 lo eran porque una cédula colombiana coincide con un DNI
+    argentino y con un RUT chileno — gente distinta. Decirle a un juzgado que
+    embargue a la persona equivocada es el error más caro de este módulo.
 
-    Se marca y no se descarta a propósito: quién cuenta como cliente lo define
-    la consulta que dio el área, y cambiarlo en silencio sería tan malo como
-    aceptar el falso positivo en silencio.
+    Se rechaza pero NO se esconde: la coincidencia por número queda marcada,
+    porque en un expediente judicial "hubo coincidencia y se descartó por
+    esto" es información.
     """
 
-    def _validador(self, tipo_base, pais):
+    def _validador(self, tipo_base, pais="CO"):
         def ejecutor(sql):
             return [{"dni": "41888857", "nombre_completo": "OTRA PERSONA",
                      "tipo_dni": tipo_base, "customer_id": 1640224,
                      "pais_cliente": pais, "dni_normalizado": "41888857"}]
         return ValidadorRedshift(ejecutor=ejecutor)
 
-    def test_marca_cuando_el_tipo_no_coincide(self):
-        p = [{"numero_documento": "41888857", "tipo_documento": "CC",
-              "nombre_completo": "MARIA ELENA ZULUAGA URIBE", "flags": ""}]
-        marcar_clientes(p, self._validador("DNI", "AR"))
-        self.assertTrue(p[0]["es_cliente"], "sigue siendo cliente según la consulta")
-        self.assertFalse(p[0]["tipo_documento_coincide"])
-        self.assertIn("REVISAR:tipo_documento_no_coincide", p[0]["flags"])
-        self.assertIn("AR", p[0]["flags"], "el país ayuda a entender por qué")
+    def _persona(self, tipo_oficio):
+        return [{"numero_documento": "41888857", "tipo_documento": tipo_oficio,
+                 "nombre_completo": "MARIA ELENA ZULUAGA URIBE", "flags": ""}]
 
-    def test_no_molesta_cuando_coincide(self):
-        p = [{"numero_documento": "41888857", "tipo_documento": "CC",
-              "nombre_completo": "QUIEN SEA", "flags": ""}]
+    def test_mismo_numero_distinto_tipo_NO_es_cliente(self):
+        p = self._persona("CC")
+        marcar_clientes(p, self._validador("DNI", "AR"))
+        self.assertFalse(p[0]["es_cliente"], "una CC colombiana no es un DNI argentino")
+        self.assertTrue(p[0]["coincide_numero"], "el número sí coincidía")
+        self.assertIn("REVISAR:coincide_numero_pero_no_tipo", p[0]["flags"])
+        self.assertIn("AR", p[0]["flags"])
+
+    def test_el_rechazado_no_se_lleva_un_customer_id(self):
+        """Si no es cliente, no puede quedar con el id de otro: alguien lo
+        copiaría al expediente."""
+        p = self._persona("CC")
+        marcar_clientes(p, self._validador("RUT", "CL"))
+        self.assertEqual(p[0]["customer_id"], "")
+
+    def test_mismo_numero_y_mismo_tipo_SI_es_cliente(self):
+        p = self._persona("CC")
         marcar_clientes(p, self._validador("CC", "CO"))
-        self.assertTrue(p[0]["tipo_documento_coincide"])
+        self.assertTrue(p[0]["es_cliente"])
+        self.assertEqual(p[0]["customer_id"], 1640224)
         self.assertNotIn("REVISAR", p[0]["flags"])
 
-    def test_sin_tipo_en_alguno_de_los_dos_no_inventa_una_alerta(self):
-        """Un tipo vacío no es una discrepancia: es un dato que falta."""
-        p = [{"numero_documento": "41888857", "tipo_documento": "",
-              "nombre_completo": "QUIEN SEA", "flags": ""}]
-        marcar_clientes(p, self._validador("DNI", "AR"))
-        self.assertTrue(p[0]["tipo_documento_coincide"])
-        self.assertNotIn("REVISAR", p[0]["flags"])
+    def test_sin_tipo_en_el_oficio_sigue_siendo_cliente_pero_marcado(self):
+        """Rechazarlo sería perder un cliente real por un dato que el juzgado
+        no mandó — el error en la dirección contraria, y también caro."""
+        p = self._persona("")
+        marcar_clientes(p, self._validador("CC", "CO"))
+        self.assertTrue(p[0]["es_cliente"])
+        self.assertIn("REVISAR:no_se_pudo_comparar_el_tipo", p[0]["flags"])
 
     def test_no_pisa_las_alertas_que_ya_traia(self):
-        p = [{"numero_documento": "41888857", "tipo_documento": "CC",
-              "nombre_completo": "X", "flags": "AVISO:nombre_con_caracteres_perdidos"}]
+        p = self._persona("CC")
+        p[0]["flags"] = "AVISO:nombre_con_caracteres_perdidos"
         marcar_clientes(p, self._validador("DNI", "AR"))
         self.assertIn("AVISO:nombre_con_caracteres_perdidos", p[0]["flags"])
-        self.assertIn("REVISAR:tipo_documento_no_coincide", p[0]["flags"])
+        self.assertIn("REVISAR:coincide_numero_pero_no_tipo", p[0]["flags"])
+
+
+class TiposDeDocumentoDeLosOficios(unittest.TestCase):
+    """El mapeo tiene que reconocer lo que los juzgados realmente escriben.
+
+    Con el tipo formando parte del criterio, un sinónimo sin mapear deja de ser
+    cosmético: `Cédula Extranjeria` salía como el literal "CEDULA EXT" y nunca
+    iba a coincidir con el "CE" de la base. Medido sobre los cuatro oficios
+    reales: 1.043 cédulas venezolanas, 253 tarjetas de identidad, 47 cédulas de
+    extranjería y 21 permisos de protección temporal quedaban sin mapear.
+    """
+
+    def test_reconoce_lo_que_aparece_en_los_oficios_reales(self):
+        from embargos.normalize import normalize_doc_type
+        for crudo, esperado in [
+            ("Cédula", "CC"), ("Cédula de Ciudadanía", "CC"), ("CC", "CC"),
+            ("Tarjeta Identidad", "TI"), ("Tarjeta de Identidad", "TI"),
+            ("Cédula Extranjeria", "CE"), ("Cédula de Extranjería", "CE"),
+            ("Pasaporte", "PA"), ("NIT", "NIT"), ("Nit", "NIT"),
+            ("Permiso Proteccion Temporal", "PPT"),
+        ]:
+            self.assertEqual(normalize_doc_type(crudo), esperado, f"con {crudo!r}")
+
+    def test_un_tipo_desconocido_no_se_hace_pasar_por_uno_conocido(self):
+        """Devuelve algo distinto a los códigos canónicos, así que no va a
+        coincidir por accidente con el tipo de la base."""
+        from embargos.normalize import normalize_doc_type
+        self.assertNotIn(normalize_doc_type("Otro - Extranjero"),
+                         ("CC", "CE", "TI", "PA", "NIT", "PPT"))
 
 
 class Empaquetado(unittest.TestCase):
