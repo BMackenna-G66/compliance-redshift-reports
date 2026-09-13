@@ -10990,6 +10990,24 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         return MAP[status] || 'bg-slate-700 text-slate-400';
       },
 
+      // ── Análisis con IA (observación 3.1) ────────────────────────────
+      //
+      // El reporte decía "el análisis de IA únicamente devuelve el nivel de
+      // riesgo". Mirando el prompt, no era culpa del prompt: ya pedía riesgo,
+      // patrones, próximos pasos y observaciones. El problema era lo que la
+      // IA RECIBÍA — título, descripción, alertas y notas. Ni una transacción,
+      // ni un documento, ni el perfil del cliente. Con eso no hay análisis
+      // posible: lo único que puede hacer es repetir el nivel de riesgo,
+      // porque es lo único que tiene.
+      //
+      // Ahora recibe lo que ya consolida la ficha del cliente: volumen y
+      // período, destinos, curva mes a mes, productos, documentación pedida
+      // contra recibida, y el perfil KYC. Es el mismo dato que tiene el
+      // analista en pantalla.
+      //
+      // Va en dos llamadas y no en un endpoint del backend por la latencia:
+      // la ficha son ~5 s y Gemini puede tardar, y el API Gateway corta a los
+      // 30 s. Separadas, cada una entra sobrada.
       async analyzeCaseWithAI() {
         if (!this.activeCase.case_id) return;
         this.activeCaseAILoading = true;
@@ -11001,13 +11019,20 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           const alertsText = this.activeCaseAlerts.length
             ? this.activeCaseAlerts.map(a => `- ${a.entity_value}: ${a.reason} (${a.report_name})`).join('\n')
             : 'Sin alertas vinculadas.';
+
+          const contexto = await this.contextoDelClienteParaIA();
+
           const prompt = `Eres un analista AML/Compliance senior en Global66 (fintech LATAM de remesas internacionales).
 
-Analiza el siguiente caso de investigación y proporciona:
-1. **Evaluación de riesgo** (Alto/Medio/Bajo) con justificación breve
-2. **Patrones detectados** (estructuración, layering, smurfing, u otros indicadores AML relevantes)
-3. **Próximos pasos recomendados** (acciones concretas para el analista)
-4. **Observaciones adicionales** si las hay
+Analiza el siguiente caso y responde:
+1. **Evaluación de riesgo** (Alto/Medio/Bajo) — justificada con los DATOS de abajo, citando cifras concretas.
+2. **Patrones detectados** — estructuración, layering, smurfing, pitufeo, uso de terceros, corredores inusuales, concentración o dispersión de beneficiarios, mezcla de productos. Si un patrón NO aparece en los datos, no lo menciones.
+3. **Qué falta para cerrar** — documentación pendiente o preguntas concretas al cliente.
+4. **Próximos pasos recomendados** — acciones concretas para el analista.
+
+Reglas:
+- Apoyate SOLO en los datos provistos. Si algo no está, decí "no hay datos de X" en vez de suponerlo.
+- Las cifras que uses tienen que salir de los datos, no estimadas.
 
 --- CASO ---
 Título: ${this.activeCase.title}
@@ -11020,18 +11045,105 @@ Reporte origen: ${this.activeCase.report_name || '—'}
 --- ALERTAS VINCULADAS ---
 ${alertsText}
 
+${contexto}
+
 --- NOTAS DE INVESTIGACIÓN ---
 ${notesText}
 
-Responde en español, de forma estructurada y concisa.`;
+Responde en español, estructurado y conciso.`;
 
-          const d = await this.api('POST', '/ai/generate', { prompt, temperature: 0.3, max_tokens: 1500 });
+          // 2048 se quedaba corto: un análisis de 4 secciones sobre la ficha
+          // completa da ~8.000 caracteres y chocaba con MAX_TOKENS. Ahora el
+          // backend avisa cuando pasa, pero mejor que no pase.
+          const d = await this.api('POST', '/ai/generate', { prompt, temperature: 0.3, max_tokens: 8192 });
           this.activeCaseAI = d?.text || 'Sin respuesta de la IA.';
         } catch (e) {
           this.activeCaseAI = 'Error al consultar la IA: ' + (e?.message || e);
         } finally {
           this.activeCaseAILoading = false;
         }
+      },
+
+      // Arma el bloque de datos del cliente para el prompt. Resumido, no
+      // volcado crudo: la curva mes a mes y los destinos dicen más que 300
+      // transacciones sueltas, y el prompt tiene que entrar en el contexto.
+      async contextoDelClienteParaIA() {
+        const eid = this.activeCase.entity_id;
+        if (!eid) return '--- CLIENTE ---\n(el caso no tiene cliente asociado, no hay datos transaccionales)';
+        const kind = this.activeCase.entity_type === 'company' ? 'b2b' : 'b2c';
+        const f = await this.api('GET', `/clientes/${encodeURIComponent(eid)}/ficha?kind=${kind}`);
+        if (!f || f.error) return '--- CLIENTE ---\n(no se pudo traer la ficha del cliente)';
+
+        const L = [];
+        L.push('--- CLIENTE ---');
+        L.push(`Nombre: ${f.nombre || '—'} · ${kind === 'b2b' ? 'company_id' : 'customer_id'} ${f.entity_id}`);
+        L.push(`Período de actividad: ${f.periodo || 'sin transacciones'}`);
+
+        L.push('\n--- PRODUCTOS (derivados del uso) ---');
+        for (const p of (f.productos || [])) {
+          L.push(`${p.tiene ? 'SÍ' : 'no'} · ${p.producto}: ${p.detalle}`);
+        }
+
+        const r = f.resumen || {};
+        if (r.n_efectivas !== undefined) {
+          L.push('\n--- RESUMEN TRANSACCIONAL (solo operaciones efectivas) ---');
+          L.push(`Operaciones: ${r.n_efectivas} · Volumen: USD ${r.total_usd}`);
+          L.push(`Ticket promedio: USD ${r.ticket_promedio_usd} · Ticket mayor: USD ${r.ticket_mayor_usd}`);
+          L.push(`Países de destino: ${r.paises_destino} · Beneficiarios distintos: ${r.beneficiarios}`);
+          // Devueltas y retenidas sólo si las hay: ceros a la IA son ruido que
+          // la invita a comentar cosas que no pasaron.
+          if (Number(r.n_devueltas)) L.push(`Devueltas: ${r.n_devueltas} (USD ${r.devuelto_usd})`);
+          if (Number(r.n_retenidas)) L.push(`Retenidas por compliance: ${r.n_retenidas}`);
+          if (Number(r.n_cripto)) L.push(`Operaciones cripto: ${r.n_cripto} (USD ${r.usd_cripto})`);
+        } else if (f.aviso_transaccional) {
+          L.push(`\n--- RESUMEN TRANSACCIONAL ---\n${f.aviso_transaccional}`);
+        }
+
+        if ((f.por_pais || []).length) {
+          L.push('\n--- DESTINOS ---');
+          for (const p of f.por_pais) L.push(`${p.pais}: ${p.n} operación(es), USD ${p.usd}`);
+        }
+        if ((f.por_mes || []).length) {
+          L.push('\n--- MES A MES (el mes en que cambia el comportamiento importa) ---');
+          for (const m of f.por_mes) {
+            L.push(`${m.mes}: ${m.n} operación(es), USD ${m.usd}`
+                   + (Number(m.n_cripto) ? ` (${m.n_cripto} cripto)` : ''));
+          }
+        }
+
+        const docs = f.documentos || {};
+        L.push('\n--- DOCUMENTACIÓN ---');
+        L.push(`Pedida (${(docs.solicitados || []).length}): `
+               + ((docs.solicitados || []).map(d => d.documento).join(', ') || 'nada'));
+        L.push(`Recibida (${(docs.recibidos || []).length}): `
+               + ((docs.recibidos || []).map(d => d.filename).join(', ') || 'nada'));
+
+        const t = f.totales || {};
+        L.push(`\n--- CORREOS --- ${t.enviados || 0} enviado(s), ${t.recibidos || 0} recibido(s)`);
+        // Lo que dijo el cliente sí va textual: es la única fuente de su
+        // versión de los hechos, y es justo lo que hay que contrastar.
+        for (const m of (f.correos || []).filter(m => m.direccion === 'recibido').slice(0, 5)) {
+          const cuerpo = String(m.cuerpo || '').trim().replace(/\s+/g, ' ').slice(0, 400);
+          if (cuerpo) L.push(`[respuesta del cliente ${(m.cuando || '').slice(0, 16)}]: ${cuerpo}`);
+        }
+
+        const perfil = f.perfil || {};
+        const interes = ['risk_level', 'compliance_status', 'kyc_status', 'pais_residencia',
+                         'nacionalidad', 'profession', 'work_position', 'workplace',
+                         'segmentation', 'fecha_onboarding', 'dias_desde_onboarding',
+                         'activity_name', 'activity_risk_level', 'industry_name',
+                         'monthly_income', 'estimated_annual_billings'];
+        const campos = interes.filter(k => perfil[k] !== undefined && perfil[k] !== null && perfil[k] !== '');
+        if (campos.length) {
+          L.push('\n--- PERFIL KYC ---');
+          for (const k of campos) L.push(`${k.replace(/_/g, ' ')}: ${perfil[k]}`);
+        }
+
+        if ((f.casos || []).length > 1) {
+          L.push(`\n--- OTROS CASOS DEL MISMO CLIENTE (${f.casos.length}) ---`);
+          for (const c of f.casos) L.push(`${(c.created_at || '').slice(0, 10)} [${c.status}] ${c.title}`);
+        }
+        return L.join('\n');
       },
 
       // -----------------------------------------------
