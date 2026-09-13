@@ -2539,6 +2539,9 @@ def handler(event, context):  # noqa: ARG001
         # GET /clientes/{entity_id}/ficha.pdf — la misma ficha, para adjuntar
         if method == "GET" and len(parts) == 3 and parts[0] == "clientes" and parts[2] == "ficha.pdf":
             return descargar_ficha_pdf(parts[1], event.get("queryStringParameters") or {})
+        # GET /clientes/{entity_id}/solicitudes-recientes — qué ya se le pidió
+        if method == "GET" and len(parts) == 3 and parts[0] == "clientes" and parts[2] == "solicitudes-recientes":
+            return solicitudes_recientes(parts[1], event.get("queryStringParameters") or {})
 
         # POST /alerts/{id}/link-case
         if method == "POST" and len(parts) == 3 and parts[0] == "alerts" and parts[2] == "link-case":
@@ -5166,6 +5169,84 @@ def get_client_dossier(entity_id: str, qs: dict):
             "solicitados": len(docs["solicitados"]),
             "documentos_recibidos": len(docs["recibidos"]),
         },
+    })
+
+
+def solicitudes_recientes(entity_id: str, qs: dict):
+    """Qué se le pidió ya a este cliente, mirando TODOS sus casos.
+
+    Sale del punto 2.2 de las observaciones: *"evitar que al cliente le
+    lleguen dos solicitudes de OF en paralelo"*. Esa parte del punto es la
+    única que se puede resolver con código — el resto es acordar un flujo con
+    CX y SLF, que no depende del sistema.
+
+    **El problema está medido, no supuesto.** Sobre los casos en producción:
+    9 de 53 clientes tienen más de un caso, y 3 recibieron más de una
+    solicitud. El peor par salió con **2 minutos de diferencia** desde dos
+    casos distintos, pidiendo los mismos 5 documentos. Del otro lado eso es
+    un cliente que recibe dos correos casi idénticos y no sabe a cuál
+    responder.
+
+    **Avisa, no bloquea.** Reenviar es legítimo y frecuente: el cliente no
+    contestó, o hace falta otra cosa. Lo que no puede pasar es mandarlo *sin
+    enterarse*. Por eso devuelve el detalle y la decisión sigue siendo del
+    analista.
+
+    Se marca `respondida` mirando si entró una respuesta del cliente después
+    de esa solicitud: una sin contestar es la que de verdad duele repetir.
+    """
+    entity_id = str(entity_id or "").strip()
+    if not entity_id:
+        return resp(400, {"error": "Falta el ID del cliente."})
+    try:
+        dias = max(1, min(365, int(qs.get("dias") or 30)))
+    except (TypeError, ValueError):
+        dias = 30
+    excluir = str(qs.get("excluir_caso") or "").strip()
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_casos = ex.submit(_crm_list, "cases")
+        f_ped = ex.submit(_crm_list, "document_requests")
+        casos_todos, pedidos = f_casos.result(), f_ped.result()
+
+    casos = [c for c in casos_todos
+             if str(c.get("entity_id") or "").strip() == entity_id]
+    corte = (dt.datetime.utcnow() - dt.timedelta(days=dias)).strftime("%Y-%m-%d %H:%M:%S")
+
+    salida = []
+    for c in casos:
+        correos = _correos_del_caso(c, pedidos)
+        recibidos = [m.get("cuando", "") for m in correos if m["direccion"] == "recibido"]
+        for m in correos:
+            if m["direccion"] != "enviado" or not m.get("salio"):
+                continue
+            cuando = m.get("cuando", "")
+            if cuando < corte:
+                continue
+            salida.append({
+                "cuando": cuando,
+                "case_id": c.get("case_id", ""),
+                "case_title": c.get("title", ""),
+                "case_status": c.get("status", ""),
+                # El caso desde el que se está escribiendo ahora no es un
+                # duplicado de sí mismo, pero sí es historia: se marca y el
+                # front decide si lo cuenta para el aviso.
+                "es_este_caso": bool(excluir) and c.get("case_id") == excluir,
+                "documentos": m.get("documentos") or [],
+                "para": m.get("para", ""),
+                "respondida": any(r > cuando for r in recibidos),
+            })
+
+    salida.sort(key=lambda x: x["cuando"], reverse=True)
+    # Lo que dispara el aviso: una solicitud a otro caso, todavía sin respuesta.
+    pendientes = [s for s in salida if not s["respondida"] and not s["es_este_caso"]]
+    return resp(200, {
+        "entity_id": entity_id,
+        "dias": dias,
+        "solicitudes": salida,
+        "total": len(salida),
+        "sin_responder_en_otros_casos": len(pendientes),
     })
 
 

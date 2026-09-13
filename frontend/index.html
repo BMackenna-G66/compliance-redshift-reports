@@ -5012,6 +5012,36 @@
         <button @click="cerrarDocRequest()" class="text-slate-400 hover:text-white text-2xl leading-none transition">×</button>
       </div>
 
+      <!-- YA SE LE PIDIÓ (punto 2.2).
+           Medido en producción: un cliente recibió dos solicitudes idénticas
+           de 5 documentos con 2 minutos de diferencia, desde dos casos. Del
+           otro lado son dos correos casi iguales y no se sabe a cuál
+           responder. Avisa, no bloquea: reenviar es legítimo, mandarlo sin
+           enterarse no. -->
+      <div x-show="dupAviso.length" class="mb-4 shrink-0 rounded-xl border border-amber-700/70 bg-amber-950/30 px-4 py-3">
+        <p class="text-sm font-semibold text-amber-200 mb-1.5"
+           x-text="'⚠ A este cliente ya se le pidió documentación y no respondió — '
+                   + dupAviso.length + ' solicitud(es) en otro(s) caso(s)'"></p>
+        <div class="space-y-1">
+          <template x-for="(s,i) in dupAviso" :key="'dup'+i">
+            <div class="text-xs text-amber-100/90 flex items-start gap-2">
+              <span class="text-amber-400 shrink-0" x-text="(s.cuando||'').slice(0,16)"></span>
+              <span class="flex-1">
+                <span class="underline cursor-pointer hover:text-white"
+                      @click="cerrarDocRequest(); openCaseDetail(s.case_id)"
+                      x-text="s.case_title || s.case_id"></span>
+                <span class="text-amber-200/60"
+                      x-text="' · ' + (s.documentos||[]).length + ' documento(s)'
+                              + (s.case_status ? ' · caso ' + s.case_status : '')"></span>
+              </span>
+            </div>
+          </template>
+        </div>
+        <p class="text-[11px] text-amber-200/60 mt-1.5">
+          Podés enviar igual — pero revisá que no le estés pidiendo dos veces lo mismo.
+        </p>
+      </div>
+
       <div class="grid grid-cols-2 gap-6 overflow-y-auto flex-1 pr-1">
       <div class="space-y-4">
         <div class="grid grid-cols-2 gap-3">
@@ -7082,6 +7112,10 @@
       // Número de orden del pedido de previsualización en vuelo. Sólo el
       // último puede escribir en pantalla (ver refreshEmailPreview).
       _emailPreviewSeq: 0,
+      // Solicitudes previas al mismo cliente, sin responder, en otros casos
+      // (punto 2.2). Se llena al abrir el modal, sin bloquearlo.
+      dupAviso: [],
+      _dupSeq: 0,
 
       // Ficha del cliente (punto 6): todo lo suyo en un lugar.
       fichaModal: { open: false },
@@ -9064,6 +9098,7 @@
         };
         this.emailPreviewHtml = ''; this.emailPreviewAttachment = ''; this.emailPreviewError = '';
         this.refreshEmailPreview();
+        this.buscarSolicitudesPrevias();
       },
 
       async submitManualDocumentRequest() {
@@ -10013,7 +10048,27 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       // panel. Sin esto el iframe conserva el correo del cliente anterior —el
       // modal usa x-show, así que el elemento no se destruye— y al abrir el
       // siguiente caso se ve, por un instante, documentación de otra persona.
+      // Busca qué se le pidió ya a este cliente en sus otros casos. No
+      // bloquea la apertura del modal: llega y se muestra el aviso. Si falla,
+      // se calla — un aviso que no se pudo calcular no puede impedir trabajar.
+      async buscarSolicitudesPrevias() {
+        this.dupAviso = [];
+        const m = this.docRequestModal;
+        if (!m.entity_id) return;
+        const pedido = ++this._dupSeq;
+        const d = await this.api('GET',
+          `/clientes/${encodeURIComponent(m.entity_id)}/solicitudes-recientes`
+          + `?dias=30&excluir_caso=${encodeURIComponent(m.case_id || '')}`);
+        // Mismo criterio de orden que la previsualización: si mientras tanto
+        // se abrió el modal de otro cliente, esta respuesta ya no manda.
+        if (pedido !== this._dupSeq || !this.docRequestModal.open) return;
+        this.dupAviso = (d?.solicitudes || [])
+          .filter(s => !s.respondida && !s.es_este_caso);
+      },
+
       cerrarDocRequest() {
+        this.dupAviso = [];
+        this._dupSeq++;
         this._emailPreviewSeq++;
         this.emailPreviewLoading = false;
         this.emailPreviewHtml = '';
@@ -10204,6 +10259,7 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         // que se iba a mandar.
         if (this.docRequestModal.documentos.length === 0) this.docRequestModal.documentos = [...this.docCategoriesAll];
         this.refreshEmailPreview();
+        this.buscarSolicitudesPrevias();
         // Último recurso: resolverlos del ID contra la base. No bloquea la
         // apertura del modal — llega y se completa solo.
         this.completarDatosDelCliente();
