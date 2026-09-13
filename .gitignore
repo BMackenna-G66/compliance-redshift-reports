@@ -72,3 +72,5 @@ EMBARGO*.xlsx
 Oficio*.pdf
 CLIENTE_*.docx
 NOCLIENTE_*.docx
+build_embargos/
+embargos_package.zip
