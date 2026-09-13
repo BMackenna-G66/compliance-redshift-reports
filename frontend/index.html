@@ -1435,20 +1435,126 @@
                              + (c.descartados ? ' · ' + c.descartados + ' descartado(s)' : '')"></div>
                 <p x-show="c.error" class="text-[11px] text-red-400 mt-1" x-text="c.error"></p>
 
-                <!-- detalle abierto: progreso y descargas -->
-                <div x-show="embDetalle && embDetalle.run_id === c.run_id" class="mt-3 space-y-2">
-                  <template x-if="embDetalle && embDetalle.estado !== 'listo' && embDetalle.estado !== 'error'">
-                    <div>
-                      <div class="flex items-center gap-2 text-xs text-slate-400 mb-1">
-                        <span x-text="embEtapa(embDetalle.etapa)"></span>
-                        <span class="ml-auto" x-text="embDetalle.progreso + '%'"></span>
-                      </div>
+                <!-- detalle abierto: avance, resultados y descargas -->
+                <div x-show="embDetalle && embDetalle.run_id === c.run_id" class="mt-3 space-y-4">
+
+                  <!-- TABLA DE AVANCE.
+                       Etapa por etapa en vez de una sola barra: el trabajo pasa
+                       por leer, cruzar y generar, y cuando algo tarda lo que se
+                       necesita saber es EN CUÁL de las tres está. -->
+                  <div>
+                    <span class="text-xs text-slate-500 block mb-1.5">Avance</span>
+                    <div class="rounded-lg border border-slate-700 overflow-hidden">
+                      <table class="w-full text-xs">
+                        <tbody>
+                          <template x-for="(e,i) in embEtapas()" :key="'et'+i">
+                            <tr class="border-b border-slate-700/50 last:border-0"
+                                :class="e.estado==='corriendo' ? 'bg-slate-900/70' : ''">
+                              <td class="px-3 py-1.5 w-6">
+                                <span x-text="e.estado==='hecho' ? '✓' : (e.estado==='corriendo' ? '•' : '·')"
+                                      :class="e.estado==='hecho' ? 'text-emerald-400'
+                                              : (e.estado==='corriendo' ? 'text-teal-400 animate-pulse' : 'text-slate-600')"></span>
+                              </td>
+                              <td class="px-1 py-1.5"
+                                  :class="e.estado==='pendiente' ? 'text-slate-600' : 'text-slate-200'"
+                                  x-text="e.nombre"></td>
+                              <td class="px-3 py-1.5 text-right text-slate-400" x-text="e.detalle"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                    <!-- Las tandas se listan a medida que caen: es el progreso
+                         real, cada una ya está en S3 y se puede bajar. -->
+                    <div x-show="(embDetalle.tandas||[]).length > 1" class="mt-2">
                       <div class="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden">
                         <div class="h-full bg-teal-500 transition-all"
                              :style="'width:' + (embDetalle.progreso||0) + '%'"></div>
                       </div>
+                      <p class="text-[11px] text-slate-500 mt-1"
+                         x-text="(embDetalle.tandas||[]).length + ' tanda(s) · '
+                                 + (embDetalle.generados||0) + ' de '
+                                 + ((embDetalle.conteos||{}).personas||0) + ' oficio(s)'"></p>
                     </div>
-                  </template>
+                  </div>
+
+                  <!-- TABLA DE RESULTADOS -->
+                  <div x-show="embDetalle.estado === 'listo'">
+                    <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+                      <span class="text-xs text-slate-500">Resultados</span>
+                      <template x-for="t in embTipos()" :key="t.k">
+                        <button @click="embVerResultados(embDetalle.run_id, t.k)"
+                          class="text-[11px] px-2 py-0.5 rounded-full border transition"
+                          :class="embResTipo===t.k
+                            ? 'border-orange-500 bg-orange-950/40 text-orange-300'
+                            : 'border-slate-600 text-slate-400 hover:text-white'"
+                          x-text="t.l + ' (' + t.n + ')'"></button>
+                      </template>
+                      <span x-show="embResCargando" class="text-[11px] text-slate-500">cargando…</span>
+                    </div>
+
+                    <!-- El cruce es sólo por número de documento. Cuando el
+                         tipo no coincide es casi seguro otra persona con el
+                         mismo número en otro país, y responderle eso a un
+                         juzgado es el error más caro de este módulo. -->
+                    <div x-show="embResTipo==='clientes' && embDudosos() > 0"
+                         class="mb-2 rounded-lg border border-red-800 bg-red-950/30 px-3 py-2">
+                      <p class="text-xs text-red-200"
+                         x-text="'⚠ ' + embDudosos() + ' de ' + ((embRes||{}).total||0)
+                                 + ' coinciden por número pero el tipo de documento es distinto '
+                                 + '— probablemente sean otra persona. Revisalos antes de responder.'"></p>
+                    </div>
+
+                    <div x-show="embRes" class="rounded-lg border border-slate-700 overflow-hidden">
+                      <div class="overflow-x-auto max-h-80 overflow-y-auto">
+                        <table class="w-full text-xs">
+                          <thead class="sticky top-0"><tr class="bg-slate-900 text-slate-400">
+                            <th class="text-left px-3 py-1.5">Documento</th>
+                            <th class="text-left px-3 py-1.5">Tipo</th>
+                            <th class="text-left px-3 py-1.5">Nombre en el oficio</th>
+                            <th class="text-left px-3 py-1.5" x-show="embResTipo==='clientes'">Nombre en el sistema</th>
+                            <th class="text-left px-3 py-1.5" x-show="embResTipo==='clientes'">customer_id</th>
+                            <th class="text-right px-3 py-1.5" x-show="embResTipo!=='descartados'">Procesos</th>
+                            <th class="text-right px-3 py-1.5" x-show="embResTipo!=='descartados'">A embargar</th>
+                            <th class="text-left px-3 py-1.5">Alertas</th>
+                          </tr></thead>
+                          <tbody>
+                            <template x-for="(f,i) in ((embRes||{}).filas||[])" :key="'rf'+i">
+                              <tr class="border-t border-slate-700/50"
+                                  :class="f.tipo_coincide === false ? 'bg-red-950/25' : ''">
+                                <td class="px-3 py-1.5 font-mono text-slate-200" x-text="f.documento"></td>
+                                <td class="px-3 py-1.5" :class="f.tipo_coincide === false ? 'text-red-300' : 'text-slate-400'"
+                                    x-text="(f.tipo_documento || '—')
+                                            + (f.tipo_coincide === false ? ' ≠ ' + (f.tipo_documento_sistema||'?')
+                                               + (f.pais_cliente ? ' ' + f.pais_cliente : '') : '')"></td>
+                                <td class="px-3 py-1.5 text-slate-300" x-text="f.nombre_completo"></td>
+                                <td class="px-3 py-1.5" x-show="embResTipo==='clientes'"
+                                    :class="f.tipo_coincide === false ? 'text-red-300' : 'text-teal-300'"
+                                    x-text="f.nombre_en_sistema || '—'"></td>
+                                <td class="px-3 py-1.5 font-mono text-slate-400" x-show="embResTipo==='clientes'"
+                                    x-text="f.customer_id || '—'"></td>
+                                <td class="px-3 py-1.5 text-right text-slate-400" x-show="embResTipo!=='descartados'"
+                                    x-text="f.cantidad_procesos || '—'"></td>
+                                <td class="px-3 py-1.5 text-right text-slate-300" x-show="embResTipo!=='descartados'"
+                                    x-text="embMonto(f.valor_total)"></td>
+                                <td class="px-3 py-1.5 text-amber-300/80" x-text="f.alertas || ''"></td>
+                              </tr>
+                            </template>
+                            <tr x-show="!((embRes||{}).filas||[]).length">
+                              <td colspan="8" class="px-3 py-4 text-center text-slate-600">Ninguno.</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                      <!-- Si hay más de las que entran, se dice: una tabla
+                           cortada en silencio se lee como la lista completa. -->
+                      <p x-show="embRes && embRes.total > embRes.mostrando"
+                         class="px-3 py-1.5 bg-slate-900/60 text-[11px] text-slate-500 border-t border-slate-700"
+                         x-text="'Se muestran ' + embRes.mostrando + ' de ' + embRes.total
+                                 + '. La lista completa está en el Excel.'"></p>
+                    </div>
+                  </div>
+
                   <div x-show="(embDetalle.descargas||[]).length" class="flex flex-wrap gap-2">
                     <template x-for="(d,i) in (embDetalle.descargas||[])" :key="'d'+i">
                       <a :href="d.url" target="_blank"
@@ -7379,6 +7485,7 @@
       embModo: 'persona', embFecha: '', embCiudad: 'Bogotá D.C.',
       embHistorial: [], embHistorialCargando: false, embDetalle: null,
       embCorriendo: 0, _embReloj: null,
+      embRes: null, embResTipo: 'clientes', embResCargando: false,
 
       // Ficha del cliente (punto 6): todo lo suyo en un lugar.
       fichaModal: { open: false },
@@ -10698,7 +10805,11 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         const d = await this.api('GET', '/embargos/' + encodeURIComponent(runId));
         if (!d || d.error) return;
         this.embDetalle = d;
+        this.embRes = null;
         clearInterval(this._embReloj); this._embReloj = null;
+        // Al abrir una corrida terminada se traen los clientes sin pedirlo:
+        // son los pocos que importan (7 de 190 en el oficio de prueba).
+        if (d.estado === 'listo') this.embVerResultados(runId, 'clientes');
         // Mientras corre se refresca solo. El progreso sale del estado en S3,
         // que la Lambda actualiza al cerrar cada tanda: es real, no estimado.
         if (d.estado !== 'listo' && d.estado !== 'error') {
@@ -10709,9 +10820,61 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
             if (n.estado === 'listo' || n.estado === 'error') {
               clearInterval(this._embReloj); this._embReloj = null;
               this.embCargarHistorial();
+              if (n.estado === 'listo') this.embVerResultados(runId, 'clientes');
             }
           }, 5000);
         }
+      },
+
+      // Las tres etapas, con su estado y el dato que importa de cada una.
+      // Una barra sola no dice en cuál está cuando algo tarda.
+      embEtapas() {
+        const d = this.embDetalle || {};
+        const c = d.conteos || {};
+        const orden = ['extrayendo', 'validando', 'generando', 'cerrando', 'listo'];
+        const pos = orden.indexOf(d.etapa);
+        const est = (nombre) => {
+          if (d.estado === 'error') return orden.indexOf(nombre) < pos ? 'hecho' : 'pendiente';
+          if (d.estado === 'listo') return 'hecho';
+          const i = orden.indexOf(nombre);
+          return i < pos ? 'hecho' : (i === pos ? 'corriendo' : 'pendiente');
+        };
+        const n = (v) => (Number(v) || 0).toLocaleString('es-CO');
+        return [
+          { nombre: 'Leer el oficio', estado: est('extrayendo'),
+            detalle: c.filas ? `${n(c.filas)} fila(s) · ${n(c.personas)} persona(s)`
+                             + (c.descartados ? ` · ${n(c.descartados)} descartada(s)` : '') : '' },
+          { nombre: 'Cruzar contra la base', estado: est('validando'),
+            detalle: c.clientes !== undefined
+              ? `${n(c.clientes)} cliente(s) · ${n(c.no_clientes)} no cliente(s)`
+                + (d.consultas_redshift ? ` · ${d.consultas_redshift} consulta(s)` : '') : '' },
+          { nombre: 'Generar los oficios', estado: est('generando'),
+            detalle: d.generados ? `${n(d.generados)} de ${n(c.personas)}` : '' },
+          { nombre: 'Armar el Excel', estado: est('cerrando'),
+            detalle: d.excel_clave ? 'listo' : '' },
+        ];
+      },
+
+      embDudosos() {
+        return ((this.embRes || {}).filas || []).filter(f => f.tipo_coincide === false).length;
+      },
+
+      embTipos() {
+        const c = (this.embDetalle || {}).conteos || {};
+        return [
+          { k: 'clientes', l: 'Clientes', n: c.clientes || 0 },
+          { k: 'no_clientes', l: 'No clientes', n: c.no_clientes || 0 },
+          { k: 'descartados', l: 'Descartados', n: c.descartados || 0 },
+        ];
+      },
+
+      async embVerResultados(runId, tipo) {
+        this.embResTipo = tipo;
+        this.embResCargando = true;
+        const d = await this.api('GET',
+          `/embargos/${encodeURIComponent(runId)}/resultados?tipo=${tipo}&limite=200`);
+        this.embResCargando = false;
+        this.embRes = (d && !d.error) ? d : { filas: [], total: 0, mostrando: 0 };
       },
 
       embMetricas() {

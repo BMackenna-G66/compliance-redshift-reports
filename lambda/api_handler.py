@@ -2574,6 +2574,9 @@ def handler(event, context):  # noqa: ARG001
             return embargos_ejecutar(body)
         if method == "GET" and parts == ["embargos"]:
             return embargos_historial()
+        # GET /embargos/{run_id}/resultados — las personas, para la tabla
+        if method == "GET" and len(parts) == 3 and parts[0] == "embargos" and parts[2] == "resultados":
+            return embargos_resultados(parts[1], event.get("queryStringParameters") or {})
         # Va último: cualquier otro /embargos/{algo} de 2 segmentos ya matcheó arriba.
         if method == "GET" and len(parts) == 2 and parts[0] == "embargos":
             return embargos_estado(parts[1])
@@ -5354,6 +5357,65 @@ def embargos_estado(run_id: str):
     estado["descargas"] = descargas
     estado["progreso"] = round(hechos * 100 / total) if total else 0
     return resp(200, estado)
+
+
+def embargos_resultados(run_id: str, qs: dict):
+    """Las personas de una corrida, para verlas en pantalla.
+
+    El Excel ya las tiene, pero bajarlo para responder "¿quiénes de estos son
+    nuestros?" es un paso de más justo en la pregunta que más se hace. Acá
+    salen los clientes primero, que son los pocos que importan: en el oficio de
+    prueba fueron 7 de 190.
+
+    **Tope de filas a propósito.** Son datos personales de terceros y no tiene
+    sentido mandar 15.000 por la red para llenar una tabla que nadie va a
+    recorrer entera. Para el detalle completo está el Excel, que además queda
+    registrado como descarga.
+    """
+    tipo = str(qs.get("tipo") or "clientes").lower()
+    if tipo not in ("clientes", "no_clientes", "descartados"):
+        return resp(400, {"error": f"tipo inválido: {tipo}"})
+    try:
+        limite = max(1, min(500, int(qs.get("limite") or 100)))
+    except (TypeError, ValueError):
+        limite = 100
+
+    archivo = "descartados.json" if tipo == "descartados" else "personas.json"
+    try:
+        o = s3.get_object(Bucket=S3_BUCKET, Key=_embargos_clave(run_id, archivo))
+        filas = json.loads(o["Body"].read())
+    except Exception:
+        return resp(404, {"error": "Esa corrida todavía no tiene resultados."})
+
+    if tipo == "clientes":
+        filas = [p for p in filas if p.get("es_cliente")]
+    elif tipo == "no_clientes":
+        filas = [p for p in filas if not p.get("es_cliente")]
+
+    total = len(filas)
+    salida = [{
+        "documento": p.get("numero_documento", ""),
+        "documento_origen": p.get("numero_documento_raw", ""),
+        "tipo_documento": p.get("tipo_documento", ""),
+        "nombre_completo": p.get("nombre_completo", ""),
+        # El nombre del sistema va al lado, no encima: en los registros con el
+        # nombre corrupto de origen, éste es el bueno, y quién decide cuál va
+        # en el Word es el área.
+        "nombre_en_sistema": p.get("nombre_en_sistema", ""),
+        "customer_id": p.get("customer_id", ""),
+        "tipo_documento_sistema": p.get("tipo_documento_sistema", ""),
+        "pais_cliente": p.get("pais_cliente", ""),
+        # False = mismo número, distinto tipo de documento. Casi siempre es
+        # otra persona; la tabla lo tiene que gritar, no esconder.
+        "tipo_coincide": p.get("tipo_documento_coincide", True),
+        "cantidad_procesos": p.get("cantidad_procesos", ""),
+        "valor_total": p.get("valor_total_a_embargar"),
+        "numero_oficio": p.get("numero_oficio", ""),
+        "alertas": p.get("flags", "") or p.get("motivo_descarte", ""),
+    } for p in filas[:limite]]
+
+    return resp(200, {"run_id": run_id, "tipo": tipo, "total": total,
+                      "mostrando": len(salida), "filas": salida})
 
 
 def embargos_historial():

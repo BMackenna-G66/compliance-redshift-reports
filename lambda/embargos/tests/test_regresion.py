@@ -146,8 +146,13 @@ class CruceContraRedshift(unittest.TestCase):
         self.assertIn("kyc_document", sql)
         self.assertIn("customer_v2", sql)
         self.assertIn("inner join", sql)
-        for colado in ("status", "country", "is_company", "active"):
-            self.assertNotIn(colado, sql, f"la consulta no debería filtrar por {colado}")
+        # Lo que define el criterio es el WHERE, no el SELECT. Traer columnas
+        # extra para poder MIRAR un cruce está bien; filtrar por ellas cambia
+        # en silencio quién cuenta como cliente.
+        where = sql.split("where", 1)[1]
+        for colado in ("status", "country", "is_company", "active", "document_type"):
+            self.assertNotIn(colado, where,
+                             f"el WHERE no debería filtrar por {colado}")
 
     def test_lotea_en_vez_de_una_consulta_por_persona(self):
         """Una consulta por persona serían 15.000 viajes al cluster."""
@@ -172,6 +177,59 @@ class CruceContraRedshift(unittest.TestCase):
         self.assertEqual(personas[0]["nombre_en_sistema"], "ANA PEREZ")
         self.assertFalse(personas[1]["es_cliente"])
         self.assertEqual(personas[1]["nombre_en_sistema"], "")
+
+
+class TipoDeDocumentoDiscrepante(unittest.TestCase):
+    """El caso que el cruce por número solo no puede distinguir.
+
+    Encontrado sobre un oficio real: de 7 personas marcadas como clientes, 2
+    lo eran por número repetido entre países — una cédula colombiana que en la
+    base es un DNI argentino, y otra que es un RUT chileno. Son personas
+    distintas, y decirle a un juzgado que embargue a la equivocada es el error
+    más caro que puede cometer este módulo.
+
+    Se marca y no se descarta a propósito: quién cuenta como cliente lo define
+    la consulta que dio el área, y cambiarlo en silencio sería tan malo como
+    aceptar el falso positivo en silencio.
+    """
+
+    def _validador(self, tipo_base, pais):
+        def ejecutor(sql):
+            return [{"dni": "41888857", "nombre_completo": "OTRA PERSONA",
+                     "tipo_dni": tipo_base, "customer_id": 1640224,
+                     "pais_cliente": pais, "dni_normalizado": "41888857"}]
+        return ValidadorRedshift(ejecutor=ejecutor)
+
+    def test_marca_cuando_el_tipo_no_coincide(self):
+        p = [{"numero_documento": "41888857", "tipo_documento": "CC",
+              "nombre_completo": "MARIA ELENA ZULUAGA URIBE", "flags": ""}]
+        marcar_clientes(p, self._validador("DNI", "AR"))
+        self.assertTrue(p[0]["es_cliente"], "sigue siendo cliente según la consulta")
+        self.assertFalse(p[0]["tipo_documento_coincide"])
+        self.assertIn("REVISAR:tipo_documento_no_coincide", p[0]["flags"])
+        self.assertIn("AR", p[0]["flags"], "el país ayuda a entender por qué")
+
+    def test_no_molesta_cuando_coincide(self):
+        p = [{"numero_documento": "41888857", "tipo_documento": "CC",
+              "nombre_completo": "QUIEN SEA", "flags": ""}]
+        marcar_clientes(p, self._validador("CC", "CO"))
+        self.assertTrue(p[0]["tipo_documento_coincide"])
+        self.assertNotIn("REVISAR", p[0]["flags"])
+
+    def test_sin_tipo_en_alguno_de_los_dos_no_inventa_una_alerta(self):
+        """Un tipo vacío no es una discrepancia: es un dato que falta."""
+        p = [{"numero_documento": "41888857", "tipo_documento": "",
+              "nombre_completo": "QUIEN SEA", "flags": ""}]
+        marcar_clientes(p, self._validador("DNI", "AR"))
+        self.assertTrue(p[0]["tipo_documento_coincide"])
+        self.assertNotIn("REVISAR", p[0]["flags"])
+
+    def test_no_pisa_las_alertas_que_ya_traia(self):
+        p = [{"numero_documento": "41888857", "tipo_documento": "CC",
+              "nombre_completo": "X", "flags": "AVISO:nombre_con_caracteres_perdidos"}]
+        marcar_clientes(p, self._validador("DNI", "AR"))
+        self.assertIn("AVISO:nombre_con_caracteres_perdidos", p[0]["flags"])
+        self.assertIn("REVISAR:tipo_documento_no_coincide", p[0]["flags"])
 
 
 class Empaquetado(unittest.TestCase):
