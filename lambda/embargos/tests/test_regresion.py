@@ -28,7 +28,8 @@ RAIZ = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RAIZ))
 
 from embargos import extract  # noqa: E402
-from embargos.redshift import ValidadorRedshift, clave_sql, marcar_clientes  # noqa: E402
+from embargos.redshift import (ValidadorRedshift, clave_sql, homologa,  # noqa: E402
+                               marcar_clientes)
 
 MUESTRAS = RAIZ / "embargos" / "muestras"
 
@@ -193,6 +194,49 @@ class CruceContraRedshift(unittest.TestCase):
         self.assertEqual(personas[1]["nombre_en_sistema"], "")
 
 
+class Homologacion(unittest.TestCase):
+    """Los pares reales medidos contra la base, uno por uno.
+
+    Se cruzaron los 1.055 documentos no-CC de los cuatro oficios contra
+    Redshift. De los 18 que cruzan salió la regla: **lo que discrimina no es el
+    código del tipo, es el país.** Un venezolano en Colombia figura como CC, CE
+    o PPT según cómo se registró y sigue siendo él; un DNI argentino con el
+    mismo número es otra persona.
+
+    Cada caso de abajo se observó en los datos, no se supuso.
+    """
+
+    def test_los_pares_que_SI_son_la_misma_persona(self):
+        for to, tb, pais, n in [
+            ("CV", "CC", "CO", 3),    # venezolano registrado con cédula colombiana
+            ("TI", "CC", "CO", 2),    # menor que ya tiene cédula
+            ("CV", "PPT", "CO", 1),   # venezolano con permiso de protección
+            ("CV", "CE", "CO", 1),    # venezolano con cédula de extranjería
+            ("CE", "CC", "CO", 1),    # extranjero que ya tiene cédula
+            ("CE", "CE", "CO", 1),    # idénticos
+            ("CV", "DNI", "VE", 1),   # cédula venezolana = DNI venezolano
+        ]:
+            self.assertTrue(homologa(to, tb, pais),
+                            f"{to}→{tb}/{pais} ({n} personas reales) debería homologar")
+
+    def test_los_pares_que_son_OTRA_persona(self):
+        """Otro país es otro espacio documental. Son 8 de los 18 cruces."""
+        for to, tb, pais in [("CV", "DNI", "AR"), ("CV", "DNI", "CL"),
+                             ("CC", "DNI", "AR"), ("CC", "RUT", "CL")]:
+            self.assertFalse(homologa(to, tb, pais),
+                             f"{to}→{tb}/{pais} NO debería homologar")
+
+    def test_un_tipo_que_falta_no_afirma_discrepancia(self):
+        self.assertTrue(homologa("", "CC", "CO"))
+        self.assertTrue(homologa("CC", "", ""))
+
+    def test_sin_pais_en_la_base_no_homologa_un_tipo_distinto(self):
+        """Sin país no se puede afirmar que sea el mismo espacio documental.
+        Ante la duda, que lo mire un analista."""
+        self.assertFalse(homologa("CC", "DNI", ""))
+        self.assertTrue(homologa("CC", "CC", ""), "idénticos sí, sin importar el país")
+
+
 class ElTipoDeDocumentoTambienTieneQueCoincidir(unittest.TestCase):
     """Ser cliente son dos condiciones: el número Y el tipo.
 
@@ -222,7 +266,7 @@ class ElTipoDeDocumentoTambienTieneQueCoincidir(unittest.TestCase):
         marcar_clientes(p, self._validador("DNI", "AR"))
         self.assertFalse(p[0]["es_cliente"], "una CC colombiana no es un DNI argentino")
         self.assertTrue(p[0]["coincide_numero"], "el número sí coincidía")
-        self.assertIn("REVISAR:coincide_numero_pero_no_tipo", p[0]["flags"])
+        self.assertIn("REVISAR:documento_de_otro_pais", p[0]["flags"])
         self.assertIn("AR", p[0]["flags"])
 
     def test_el_rechazado_no_se_lleva_un_customer_id(self):
@@ -231,6 +275,13 @@ class ElTipoDeDocumentoTambienTieneQueCoincidir(unittest.TestCase):
         p = self._persona("CC")
         marcar_clientes(p, self._validador("RUT", "CL"))
         self.assertEqual(p[0]["customer_id"], "")
+
+    def test_homologado_por_pais_SI_es_cliente(self):
+        """Distinto código, mismo espacio documental colombiano."""
+        p = self._persona("CV")
+        marcar_clientes(p, self._validador("CC", "CO"))
+        self.assertTrue(p[0]["es_cliente"])
+        self.assertIn("AVISO:tipo_homologado", p[0]["flags"])
 
     def test_mismo_numero_y_mismo_tipo_SI_es_cliente(self):
         p = self._persona("CC")
@@ -252,7 +303,7 @@ class ElTipoDeDocumentoTambienTieneQueCoincidir(unittest.TestCase):
         p[0]["flags"] = "AVISO:nombre_con_caracteres_perdidos"
         marcar_clientes(p, self._validador("DNI", "AR"))
         self.assertIn("AVISO:nombre_con_caracteres_perdidos", p[0]["flags"])
-        self.assertIn("REVISAR:coincide_numero_pero_no_tipo", p[0]["flags"])
+        self.assertIn("REVISAR:documento_de_otro_pais", p[0]["flags"])
 
 
 class TiposDeDocumentoDeLosOficios(unittest.TestCase):
