@@ -1,0 +1,6 @@
+# Dependencias de la Lambda de embargos. Van en su propio paquete, no en el
+# compartido: pesan ~58 MB netos y el compartido ya está en 147 MB de 250.
+openpyxl>=3.1.2      # lectura de los XLSX del juzgado y escritura del resultado
+pdfplumber>=0.11.0   # oficios en PDF con capa de texto (no escaneados)
+docxtpl>=0.17.0      # render de las plantillas Word
+ftfy>=6.2.0          # repara el mojibake de los archivos con encoding roto

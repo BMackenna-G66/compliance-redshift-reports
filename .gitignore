@@ -55,3 +55,22 @@ response.json
 .env.local
 *.pem
 *.key
+
+# ── Embargos: datos personales, NUNCA al repo ──────────────────────────
+# Este repositorio es PÚBLICO. Los insumos de oficios judiciales traen
+# nombre y documento de decenas de miles de personas (Ley 1581 de 2012),
+# y los oficios generados llevan el nombre y la cédula en el propio nombre
+# del archivo. Sólo viajan el código y las plantillas en blanco.
+lambda/embargos/muestras/
+lambda/embargos/salida/
+**/DEMO_oficios_clientes/
+**/DEMO_oficios_no_clientes/
+*_oficios_clientes.zip
+*_oficios_no_clientes.zip
+resultado_validacion*.xlsx
+EMBARGO*.xlsx
+Oficio*.pdf
+CLIENTE_*.docx
+NOCLIENTE_*.docx
+build_embargos/
+embargos_package.zip

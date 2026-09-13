@@ -40,6 +40,11 @@ cp lambda/assets/*.png "$BUILD_DIR/assets/"
 # Su carpeta tests/ la borra el trim de más abajo, así que no viaja al paquete.
 cp -R lambda/relevo "$BUILD_DIR/"
 
+# Módulo Embargos (respuesta masiva a oficios judiciales). Mismo motivo que
+# relevo: es un paquete y los cp de arriba son archivo por archivo. Sus
+# muestras NO existen en el repo (datos personales, ver .gitignore).
+cp -R lambda/embargos "$BUILD_DIR/"
+
 echo "→ Installing Python dependencies for Linux/x86_64 (Lambda runtime)"
 # --platform / --only-binary forces wheels compatible with the Lambda runtime.
 pip install \
