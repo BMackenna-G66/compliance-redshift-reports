@@ -10757,8 +10757,23 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           if (!d?.url) { this.embError = d?.error || 'No se pudo preparar la subida.'; return; }
           // Sube el navegador directo a S3: un oficio puede pesar varios MB y
           // el API Gateway corta el cuerpo de un request mucho antes.
-          const r = await fetch(d.url, { method: 'PUT', body: archivo });
-          if (!r.ok) { this.embError = `La subida falló (${r.status}).`; return; }
+          //
+          // El Content-Type va explícito y es EL QUE MANDÓ EL BACKEND, no el
+          // que adivina el navegador. S3 lo firma dentro de la URL: si los dos
+          // valores no son idénticos, la subida devuelve 403
+          // SignatureDoesNotMatch. Sin este header el navegador pone el suyo
+          // igual, y ahí falla.
+          const r = await fetch(d.url, {
+            method: 'PUT', body: archivo,
+            headers: { 'Content-Type': d.content_type || 'application/octet-stream' },
+          });
+          if (!r.ok) {
+            this.embError = r.status === 403
+              ? 'La subida fue rechazada por S3 (403). Si el archivo estuvo mucho '
+                + 'rato sin subir, el enlace pudo vencer: volvé a elegirlo.'
+              : `La subida falló (${r.status}).`;
+            return;
+          }
           this.embRunId = d.run_id;
           this.embArchivo = d.archivo_nombre;
           await this.embPrevisualizar();

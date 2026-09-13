@@ -5224,6 +5224,20 @@ EMBARGOS_PREFIJO = os.environ.get("EMBARGOS_PREFIJO", "embargos")
 # que hacer, y el nombre del archivo lo elige quien sube.
 EMBARGOS_EXT = (".xlsx", ".xls", ".csv", ".pdf")
 
+# Content-Type por extensión. **Lo decide el backend, no el navegador**, y por
+# una razón concreta: S3 firma el Content-Type dentro de la URL prefirmada, así
+# que el valor que se firma y el que manda el navegador tienen que ser idénticos
+# o la subida devuelve 403 SignatureDoesNotMatch. Y lo que el navegador cree que
+# es un .xlsx cambia entre Chrome, Safari y Windows. Derivándolo de la extensión
+# el valor es el mismo siempre: el backend lo firma, lo devuelve, y el front lo
+# reenvía tal cual.
+EMBARGOS_TIPOS = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".csv": "text/csv",
+    ".pdf": "application/pdf",
+}
+
 
 def _embargos_clave(run_id: str, *partes) -> str:
     return "/".join([EMBARGOS_PREFIJO, _clave_segura(run_id), *partes])
@@ -5246,13 +5260,17 @@ def embargos_subir_url(body: dict):
     run_id = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     limpio = re.sub(r"[^A-Za-z0-9._-]+", "_", nombre)[:120]
     clave = _embargos_clave(run_id, limpio)
+    tipo = EMBARGOS_TIPOS.get(ext, "application/octet-stream")
     try:
         url = s3.generate_presigned_url(
-            "put_object", Params={"Bucket": S3_BUCKET, "Key": clave}, ExpiresIn=900)
+            "put_object",
+            Params={"Bucket": S3_BUCKET, "Key": clave, "ContentType": tipo},
+            ExpiresIn=900)
     except Exception as e:
         return resp(500, {"error": f"No pude preparar la subida: {str(e)[:200]}"})
+    # `content_type` vuelve al front para que lo reenvíe IDÉNTICO en el PUT.
     return resp(200, {"run_id": run_id, "url": url, "clave": limpio,
-                      "archivo_nombre": limpio})
+                      "archivo_nombre": limpio, "content_type": tipo})
 
 
 def embargos_previsualizar(body: dict):

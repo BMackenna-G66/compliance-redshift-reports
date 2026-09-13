@@ -194,6 +194,58 @@ class CruceContraRedshift(unittest.TestCase):
         self.assertEqual(personas[1]["nombre_en_sistema"], "")
 
 
+class DocumentoConLetrasOCeros(unittest.TestCase):
+    """El documento se consulta en sus dos formas, no sólo en la reducida.
+
+    El pipeline reduce a dígitos y quita ceros; la consulta del área conserva
+    letras y ceros. Medido sobre los 42.593 registros válidos de los cuatro
+    archivos reales, 11 filas (8 personas) difieren: `CE20562420` → `20562420`,
+    `V19884947` → `19884947`, `093124803` → `93124803`.
+
+    Consultando sólo la reducida, a esas personas no se las encontraría si la
+    base guarda el documento con sus letras. Cada una sería un "no es cliente"
+    dicho a un juzgado sobre alguien que sí lo es.
+    """
+
+    def _validador(self, en_la_base):
+        self.consultado = []
+
+        def ejecutor(sql):
+            import re as _re
+            pedidos = _re.findall(r"'([^']+)'", sql.split("IN (", 1)[1])
+            self.consultado += pedidos
+            return [{"dni": en_la_base, "nombre_completo": "QUIEN SEA",
+                     "tipo_dni": "CE", "customer_id": 5001, "pais_cliente": "CO",
+                     "dni_normalizado": en_la_base}] if en_la_base in pedidos else []
+        return ValidadorRedshift(ejecutor=ejecutor)
+
+    def _persona(self):
+        return [{"numero_documento": "20562420", "numero_documento_raw": "CE20562420",
+                 "tipo_documento": "CE", "nombre_completo": "X", "flags": ""}]
+
+    def test_consulta_las_dos_formas(self):
+        v = self._validador(en_la_base="nada")
+        marcar_clientes(self._persona(), v)
+        self.assertIn("CE20562420", self.consultado, "falta la forma del oficio")
+        self.assertIn("20562420", self.consultado, "falta la forma reducida")
+
+    def test_lo_encuentra_si_la_base_guarda_las_letras(self):
+        p = self._persona()
+        marcar_clientes(p, self._validador(en_la_base="CE20562420"))
+        self.assertTrue(p[0]["es_cliente"], "la base lo tiene como CE20562420")
+        self.assertEqual(p[0]["customer_id"], 5001)
+
+    def test_lo_encuentra_si_la_base_guarda_solo_digitos(self):
+        p = self._persona()
+        marcar_clientes(p, self._validador(en_la_base="20562420"))
+        self.assertTrue(p[0]["es_cliente"])
+
+    def test_si_no_esta_en_ninguna_forma_no_es_cliente(self):
+        p = self._persona()
+        marcar_clientes(p, self._validador(en_la_base="99999999"))
+        self.assertFalse(p[0]["es_cliente"])
+
+
 class Homologacion(unittest.TestCase):
     """Los pares reales medidos contra la base, uno por uno.
 
