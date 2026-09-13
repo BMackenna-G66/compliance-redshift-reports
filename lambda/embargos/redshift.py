@@ -73,13 +73,21 @@ def clave_sql(documento) -> str:
     si los dos lados no normalizan igual, el cruce falla en silencio y todos
     salen "no cliente".
 
-    Ojo con una diferencia conocida río arriba: `normalize_doc_id` del pipeline
-    reduce a dígitos y quita ceros a la izquierda, mientras que esta expresión
-    conserva letras y ceros. Hoy no cambia nada —medido sobre los 42.477
-    documentos de los cuatro archivos reales: cero con ceros a la izquierda, y
-    los que traen letras los descarta `validate_doc_id` antes de llegar acá,
-    con motivo `documento_no_numerico`, para revisión manual—. Queda anotado
-    porque el día que se acepten pasaportes hay que resolverlo a propósito.
+    **Hay una diferencia real río arriba, y por eso se consultan dos formas.**
+    `normalize_doc_id` del pipeline reduce a dígitos y quita ceros a la
+    izquierda; esta expresión conserva letras y ceros. Medido sobre los 42.593
+    registros válidos de los cuatro archivos reales, 11 filas (8 personas)
+    difieren entre una forma y otra:
+
+        093124803 → 93124803      (cero a la izquierda)
+        CE20562420 → 20562420     V19884947 → 19884947
+        AS277807 → 277807         13BF82411 → 1382411
+
+    Consultando sólo la forma reducida, a esas personas no se las encontraría
+    si la base guarda el documento con sus letras — falsos negativos, o sea
+    decirle a un juzgado que no tenemos a alguien que sí es cliente. Por eso
+    `marcar_clientes` consulta las dos formas y prefiere la coincidencia con el
+    documento tal como vino en el oficio.
     """
     return _SOLO_ALFANUM.sub("", str(documento or "").strip().upper())
 
@@ -225,9 +233,23 @@ def marcar_clientes(personas: List[Dict], validador) -> List[Dict]:
     poder contrastarlos, sobre todo donde el nombre del oficio viene corrupto
     de origen.
     """
-    hallazgos = validador.validar([p["numero_documento"] for p in personas])
+    # Dos formas por persona: el documento como vino en el oficio y el
+    # reducido a dígitos. Ver `clave_sql` — son 8 personas de 42.593 en los
+    # archivos reales, pero cada una es un "no es cliente" dicho a un juzgado.
+    a_consultar = []
     for p in personas:
-        datos = hallazgos.get(p["numero_documento"]) or {}
+        for v in (p.get("numero_documento_raw"), p.get("numero_documento")):
+            k = clave_sql(v)
+            if k:
+                a_consultar.append(k)
+
+    hallazgos = validador.validar(sorted(set(a_consultar)))
+    for p in personas:
+        crudo = clave_sql(p.get("numero_documento_raw"))
+        reducido = clave_sql(p.get("numero_documento"))
+        # Se prefiere el documento tal como lo escribió el juzgado: si la base
+        # lo tiene así, es la coincidencia más fiel. El reducido es el respaldo.
+        datos = (hallazgos.get(crudo) or hallazgos.get(reducido) or {})
         coincide_numero = bool(datos)
 
         tipo_oficio = str(p.get("tipo_documento") or "").strip().upper()
