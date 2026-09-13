@@ -84,6 +84,58 @@ def clave_sql(documento) -> str:
     return _SOLO_ALFANUM.sub("", str(documento or "").strip().upper())
 
 
+# ---------------------------------------------------------------------------
+# Homologación de tipos de documento
+# ---------------------------------------------------------------------------
+# El oficio y nuestra base no hablan el mismo vocabulario. El juzgado escribe
+# "Cédula Venezolana"; nosotros guardamos a esa misma persona como CC, CE, PPT
+# o DNI según cómo se registró. Exigir que los códigos sean idénticos perdería
+# clientes reales.
+#
+# **Lo que discrimina no es el código del tipo: es el país.** Medido cruzando
+# los 1.055 documentos no-CC de los cuatro oficios reales contra la base — de
+# los 18 que cruzan:
+#
+#     CV → CC/CO (3) · TI → CC/CO (2) · CV → PPT/CO (1) · CV → CE/CO (1)
+#     CE → CC/CO (1) · CE → CE/CO (1) · CV → DNI/VE (1)      ← misma persona
+#     CV → DNI/AR (7) · CV → DNI/CL (1)                      ← otra persona
+#
+# Un oficio de un juzgado colombiano busca gente en el espacio documental
+# colombiano. Un registro nuestro con país CO está en ese mismo espacio, sin
+# importar con qué código se cargó: un venezolano en Colombia puede figurar
+# como CC, CE o PPT y sigue siendo él. Un DNI argentino con el mismo número no.
+
+# País que emite cada tipo de documento del oficio, cuando el tipo lo dice.
+# Sirve para el caso de la cédula venezolana: si nuestra base tiene a esa
+# persona con país VE, es la misma cédula con otro nombre de código.
+PAIS_DEL_TIPO = {
+    "CV": "VE",    # Cédula Venezolana
+}
+
+# El espacio documental del oficio. Estos son oficios de juzgados colombianos.
+PAIS_DEL_OFICIO = "CO"
+
+
+def homologa(tipo_oficio: str, tipo_base: str, pais_base: str) -> bool:
+    """¿El documento del oficio y el de la base pueden ser de la misma persona?
+
+    Devuelve True cuando son homologables. La regla, en una línea: **el mismo
+    espacio documental homologa; otro país, no.**
+    """
+    to = str(tipo_oficio or "").strip().upper()
+    tb = str(tipo_base or "").strip().upper()
+    pb = str(pais_base or "").strip().upper()
+
+    if not to or not tb:
+        return True            # falta un dato: no hay discrepancia que afirmar
+    if to == tb:
+        return True            # idénticos, sin vueltas
+    if pb == PAIS_DEL_OFICIO:
+        return True            # mismo espacio documental colombiano
+    # Tipos que nombran su país de emisión: homologan con ese país.
+    return bool(pb) and PAIS_DEL_TIPO.get(to) == pb
+
+
 class ValidadorRedshift:
     """Implementa el Protocol `ValidadorClientes` sobre la Data API.
 
@@ -180,8 +232,9 @@ def marcar_clientes(personas: List[Dict], validador) -> List[Dict]:
 
         tipo_oficio = str(p.get("tipo_documento") or "").strip().upper()
         tipo_base = str(datos.get("tipo_documento_sistema") or "").strip().upper()
+        pais_base = str(datos.get("pais_cliente") or "").strip().upper()
         sin_tipo = not tipo_oficio or not tipo_base
-        coincide_tipo = sin_tipo or tipo_oficio == tipo_base
+        coincide_tipo = homologa(tipo_oficio, tipo_base, pais_base)
 
         p["es_cliente"] = coincide_numero and coincide_tipo
         p["coincide_numero"] = coincide_numero
@@ -193,9 +246,15 @@ def marcar_clientes(personas: List[Dict], validador) -> List[Dict]:
 
         marca = ""
         if coincide_numero and not coincide_tipo:
-            marca = (f"REVISAR:coincide_numero_pero_no_tipo "
+            marca = (f"REVISAR:documento_de_otro_pais "
                      f"(oficio {tipo_oficio} / base {tipo_base}"
-                     + (f", {p['pais_cliente']}" if p.get("pais_cliente") else "") + ")")
+                     + (f", {pais_base}" if pais_base else "") + ")")
+        elif coincide_numero and tipo_oficio and tipo_base and tipo_oficio != tipo_base:
+            # Homologado: distinto código, mismo espacio documental. Se deja
+            # dicho para que se vea que hubo una equivalencia y cuál.
+            marca = (f"AVISO:tipo_homologado "
+                     f"(oficio {tipo_oficio} / base {tipo_base}"
+                     + (f", {pais_base}" if pais_base else "") + ")")
         elif coincide_numero and sin_tipo:
             marca = ("REVISAR:no_se_pudo_comparar_el_tipo "
                      f"(oficio {tipo_oficio or 'sin dato'} / base {tipo_base or 'sin dato'})")
