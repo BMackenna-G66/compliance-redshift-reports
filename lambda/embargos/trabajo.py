@@ -352,5 +352,73 @@ def ejecutar(evento: dict, contexto=None) -> dict:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def previsualizar(evento: dict) -> dict:
+    """Lee el archivo y devuelve qué entendió, SIN generar nada.
+
+    Es la mitad que convierte esto en un proceso revisable. El plan lo pide
+    así y tiene razón: extraer 35.000 filas toma 6 segundos, y ver el mapeo de
+    columnas antes de confirmar es lo que evita descubrir que la columna del
+    documento se leyó mal recién después de mandarle 15.000 oficios a un
+    juzgado. La confirmación va en el medio, a propósito.
+
+    Corre en esta Lambda y no en la del portal porque necesita `pdfplumber` y
+    `openpyxl`, que pesan y no tienen por qué estar allá. El portal la invoca
+    de forma síncrona: 6 s entran de sobra en los 30 s del API Gateway.
+    """
+    from . import extract
+
+    run_id = str(evento.get("run_id") or "").strip()
+    if not run_id:
+        raise ValueError("falta run_id")
+    nombre = str(evento.get("archivo_nombre") or "archivo")
+
+    tmp = Path(tempfile.mkdtemp(dir="/tmp"))
+    try:
+        origen = _bajar(run_id, evento.get("archivo_clave") or nombre, tmp / nombre)
+        r = extract.extraer(origen, evento.get("alias"))
+        rep = r.reporte
+
+        personas = extract.consolidar_por_persona(r.registros)
+        # Sólo las primeras filas: es una vista previa, y cada fila de más son
+        # datos personales viajando sin necesidad.
+        muestra = [{
+            "documento": x.numero_documento,
+            "documento_origen": x.numero_documento_raw,
+            "tipo": x.tipo_documento,
+            "nombre": x.nombre_completo,
+            "oficio": x.numero_oficio,
+            "proceso": x.numero_proceso,
+            "monto": x.valor_limite_embargo,
+            "hoja": x.hoja_origen,
+            "fila": x.fila_origen,
+            "alertas": [f for f in (x.flags or [])],
+        } for x in r.registros[:10]]
+
+        return {
+            "run_id": run_id,
+            "archivo": nombre,
+            "formato": rep.formato,
+            "hojas": rep.hojas,
+            "hojas_omitidas": rep.hojas_omitidas,
+            "conteos": {
+                "filas": rep.filas_leidas,
+                "validos": rep.registros_validos,
+                "descartados": rep.registros_descartados,
+                "personas": len(personas),
+            },
+            "metadatos": rep.metadatos_documento,
+            # Las alertas de calidad se ven acá y no sólo en el Excel: son
+            # justamente los registros que necesitan una decisión humana.
+            "alertas": rep.conteo_flags,
+            "motivos_descarte": rep.motivos_descarte,
+            "muestra": muestra,
+        }
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def lambda_handler(event, context):
-    return ejecutar(event or {}, context)
+    event = event or {}
+    if event.get("accion") == "previsualizar":
+        return previsualizar(event)
+    return ejecutar(event, context)
