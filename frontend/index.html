@@ -1948,6 +1948,39 @@
                         </div>
                       </div>
                     </div>
+
+                    <!-- CORREOS DEL CASO.
+                         El caso nace de un correo del partner, y hasta ahora
+                         no había forma de volver a él: se identificaba al
+                         cliente pero había que buscarlo a mano en la bandeja.
+                         El dato ya venía en la API (`correos[].url_gmail`),
+                         sólo faltaba mostrarlo. -->
+                    <div class="mt-4 text-xs">
+                      <p class="text-slate-500 mb-1"
+                         x-text="'Correos de este caso (' + (relevoDetalleDe(c.id).correos||[]).length + '):'"></p>
+                      <div class="space-y-1">
+                        <template x-for="(m,i) in (relevoDetalleDe(c.id).correos||[])" :key="'rm'+i">
+                          <div class="bg-slate-900/50 rounded px-2 py-1.5 flex items-start gap-2">
+                            <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px]"
+                                  :class="relevoColorCorreo(m.tipo)"
+                                  x-text="relevoEtiquetaCorreo(m.tipo)"></span>
+                            <span class="flex-1 min-w-0">
+                              <span class="text-slate-300 break-words" x-text="m.asunto || '(sin asunto)'"></span>
+                              <span class="text-slate-600 block" x-text="(m.fecha||'').slice(0,16)"></span>
+                            </span>
+                            <!-- Abre el hilo en Gmail. Es el enlace que faltaba:
+                                 sin esto hay que copiar el asunto y buscarlo. -->
+                            <a x-show="m.url_gmail" :href="m.url_gmail" target="_blank" rel="noopener"
+                               @click.stop
+                               class="shrink-0 text-orange-400 hover:text-orange-300 whitespace-nowrap"
+                               title="Abrir el hilo en Gmail">abrir ↗</a>
+                          </div>
+                        </template>
+                        <p x-show="!(relevoDetalleDe(c.id).correos||[]).length" class="text-slate-600">
+                          Sin correos asociados.
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -7861,6 +7894,19 @@
           respuesta_recibida:'Respondió todo', devuelto:'Devuelto al partner',
           cerrado:'Cerrado', sin_respuesta:'Sin respuesta', descartado:'Descartado'})[e] || (e || '—');
       },
+      // Los tipos de correo que trae el motor, en lenguaje de analista.
+      relevoEtiquetaCorreo(t) {
+        return ({ rfi_nuevo: 'RFI del partner', respuesta_cliente: 'Respuesta del cliente',
+                  recordatorio: 'Recordatorio', devolucion: 'Devolución al partner',
+                  pedido: 'Pedido al cliente' })[t] || (t || 'correo');
+      },
+      relevoColorCorreo(t) {
+        return t === 'rfi_nuevo' ? 'bg-orange-950/50 text-orange-300'
+             : t === 'respuesta_cliente' ? 'bg-sky-950/50 text-sky-300'
+             : t === 'devolucion' ? 'bg-emerald-950/50 text-emerald-300'
+             : 'bg-slate-700 text-slate-300';
+      },
+
       relevoEtiquetaAccion(a) {
         return ({pedido_enviado:'Pedido enviado', recontactado:'Recontactado',
           respuesta_parcial:'Respondió a medias', respuesta_recibida:'Respondió todo',
