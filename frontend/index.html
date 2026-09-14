@@ -1987,8 +1987,13 @@
             </template>
             <p x-show="relevoCasosFiltrados().length===0 && !relevoCargando"
                class="text-center text-slate-500 py-8 text-sm"
-               x-text="relevoBuscarCaso
+               x-html="relevoBuscarCaso
                  ? 'Nada coincide con «' + relevoBuscarCaso + '».'
+                   + (relevoMeta.generado_en
+                      ? '<br><span class=\'text-xs text-slate-600\'>La pantalla muestra el corte de las '
+                        + relevoMeta.generado_en.slice(11,16)
+                        + '. Un caso que acaba de llegar aparece en la próxima actualización, cada 5 minutos.</span>'
+                      : '')
                  : 'Sin casos con esos filtros.'"></p>
           </div>
         </div>
@@ -7985,7 +7990,16 @@
       relevoNormalizar(v) {
         return String(v ?? '')
           .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-          .toLowerCase().replace(/[.\-_\s]/g, '');
+          // Los dos puntos también: el id de un caso es "dlocal:rmt:28576564"
+          // y sin quitarlos, buscar "RMT28576564" de corrido no matchea nunca.
+          .toLowerCase().replace(/[.\-_\s:/]/g, '')
+          // Ceros a la izquierda dentro de cada número. El identificador que
+          // el partner pone en el asunto es "RMT028576564" —con el cero— y es
+          // justo lo que uno copia y pega, pero el caso guarda 28576564. Sin
+          // esto, buscar el identificador tal como viene en el correo no
+          // encuentra nada, que es el peor resultado posible: parece que el
+          // caso no existe.
+          .replace(/\d+/g, (n) => n.replace(/^0+(?=\d)/, ''));
       },
       relevoCoincide(campos, termino) {
         const t = this.relevoNormalizar(termino);
