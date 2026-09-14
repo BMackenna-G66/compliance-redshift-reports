@@ -1731,6 +1731,12 @@
               <input type="checkbox" x-model="relevoSoloVencidos" @change="relevoCargar(true)"
                 class="w-3.5 h-3.5 accent-red-500"> Solo vencidos
             </label>
+            <!-- El dueño del caso se deduce de quién hizo la última acción, así
+                 que esto funciona también sobre lo ya trabajado. -->
+            <label class="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+              <input type="checkbox" x-model="relevoSoloMios"
+                class="w-3.5 h-3.5 accent-teal-500"> Solo los míos
+            </label>
             <span x-show="relevoFiltroCliente"
               class="text-xs text-orange-300 flex items-center gap-1.5 px-2 py-1 rounded-lg bg-orange-950/40 border border-orange-800">
               <span>👤</span>
@@ -1788,6 +1794,12 @@
                       <span x-show="c.caso_partner" x-text="' · caso ' + c.caso_partner"></span>
                       · <span x-text="c.n_transacciones"></span> trx
                       · <span x-text="(c.items||[]).length"></span> ítems pedidos
+                      <!-- Quién lo tiene. Sale de la última acción registrada,
+                           así que aparece también en lo ya trabajado. -->
+                      <span x-show="c.analista"
+                            :class="relevoEsMio(c) ? 'text-teal-400' : 'text-slate-400'"
+                            x-text="' · ' + (relevoEsMio(c) ? 'mío' : relevoCorto(c.analista))"
+                            :title="c.analista + (c.analista_desde ? ' · desde ' + c.analista_desde.slice(0,16) : '')"></span>
                     </div>
                   </div>
                   <button x-show="relevoPuedePedir(c)" @click.stop="relevoAbrirPedido(c)"
@@ -7875,6 +7887,7 @@
       relevoBandejaTotal: 0, relevoConfig: {}, relevoVencidos: 0, relevoDescargando: '',
       relevoFiltroPartner: '', relevoFiltroEstado: '', relevoFiltroCliente: '',
       relevoSoloVencidos: false, relevoSoloPendientes: false, relevoSoloAccionables: false,
+      relevoSoloMios: false,
       relevoBuscar: '', relevoBuscarCaso: '', relevoBuscarCliente: '',
       relevoSel: [], relevoLoteEnviando: false, relevoOrden: 'prioridad',
       relevoPrueba: { remitente: '', asunto: '', cuerpo: '' },
@@ -7892,10 +7905,19 @@
                       'pedido_enviado','recontactado','respuesta_parcial',
                       'respuesta_recibida','devuelto','cerrado','sin_respuesta','descartado'],
 
+      relevoEsMio(c) {
+        return String(c.analista || '').toLowerCase() === (this.currentUserEmail || '').toLowerCase();
+      },
+      // Sólo el usuario del correo: en una fila angosta, "benjamin.mackenna"
+      // dice quién es sin ocupar el ancho de la dirección entera.
+      relevoCorto(correo) {
+        return String(correo || '').split('@')[0];
+      },
+
       relevoEtiquetaEstado(e) {
         return ({informativo:'Informativo', sin_cliente:'Sin cliente', sin_correo:'Sin correo',
-          listo_para_pedir:'Listo para pedir', pedido_enviado:'Pedido enviado',
-          recontactado:'Recontactado', respuesta_parcial:'Respondió a medias',
+          listo_para_pedir:'Listo para pedir', pedido_enviado:'Pendiente del cliente',
+          recontactado:'Pendiente (recontactado)', respuesta_parcial:'Respondió a medias',
           respuesta_recibida:'Respondió todo', devuelto:'Devuelto al partner',
           cerrado:'Cerrado', sin_respuesta:'Sin respuesta', descartado:'Descartado'})[e] || (e || '—');
       },
@@ -8048,7 +8070,10 @@
       relevoCasosFiltrados() {
         const t = this.relevoBuscarCaso;
         if (!t || !t.trim()) return this.relevoOrdenar(this.relevoCasos);
-        return this.relevoOrdenar(this.relevoCasos.filter(c => this.relevoCoincide([
+        const mio = (this.currentUserEmail || '').toLowerCase();
+        return this.relevoOrdenar(this.relevoCasos.filter(c =>
+          (!this.relevoSoloMios || String(c.analista || '').toLowerCase() === mio)
+          && this.relevoCoincide([
           c.cliente_nombre, c.cliente_correo, c.cliente_id,
           c.caso_partner, c.id, c.partner,
           ...(c.transacciones || []),

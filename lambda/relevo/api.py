@@ -47,6 +47,33 @@ def guardar_config(clave, valor, quien=""):
 
 
 # ── casos ────────────────────────────────────────────────────────────────
+# Acciones que significan "alguien se hizo cargo de este caso". Mirar el
+# correo no cuenta; haber escrito sí.
+_ACCIONES_DE_DUEÑO = ("pedido_enviado", "recontactado", "devuelto",
+                      "cerrado", "descartado", "marcado_pedido")
+
+
+def _analista(c):
+    """Quién tiene este caso, deducido de las acciones ya registradas.
+
+    **Se deriva en vez de asignarse.** Un campo de asignación aparte habría
+    que mantenerlo al día a mano, empezaría vacío para todos los casos ya
+    trabajados, y se desincronizaría el día que alguien actúe sin reasignarlo.
+    La acción, en cambio, ya la firma quien la hizo: el que mandó el pedido es
+    el que está esperando la respuesta.
+
+    Manda la última: si otro analista recontacta o devuelve, el caso pasa a ser
+    suyo, que es lo que de verdad ocurrió.
+    """
+    propias = [a for a in (c.get("acciones") or [])
+               if a.get("accion") in _ACCIONES_DE_DUEÑO and a.get("quien")]
+    if not propias:
+        return {}
+    ult = max(propias, key=lambda a: a.get("cuando") or "")
+    return {"analista": ult["quien"], "analista_desde": ult.get("cuando"),
+            "analista_por": ult.get("accion")}
+
+
 def _resumen_caso(c):
     """Lo que la lista necesita. El detalle completo va en /relevo/casos/{id}."""
     cl = c.get("cliente") or {}
@@ -82,6 +109,9 @@ def _resumen_caso(c):
         "agotado": seg.get("agotado"),
         "proximo_contacto": seg.get("proximo_contacto"),
         "faltantes": seg.get("faltantes"),
+        # Quién se hizo cargo. Derivado de las acciones (ver `_analista`), así
+        # que vale también para los casos ya trabajados.
+        **_analista(c),
     }
 
 
@@ -94,6 +124,9 @@ def listar_casos(q):
         cs = [c for c in cs if str(c.get("partner", "")).lower() == q["partner"].lower()]
     if q.get("estado"):
         cs = [c for c in cs if c.get("estado") == q["estado"]]
+    if q.get("analista"):
+        a = q["analista"].strip().lower()
+        cs = [c for c in cs if str(_analista(c).get("analista", "")).lower() == a]
     if q.get("cliente_id"):
         cs = [c for c in cs if str(_resumen_caso(c).get("cliente_id")) == str(q["cliente_id"])]
     if str(q.get("vencidos", "")).lower() in ("1", "true", "si", "sí"):
