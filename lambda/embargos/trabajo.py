@@ -48,8 +48,19 @@ BUCKET = os.environ.get("S3_BUCKET", "")
 PREFIJO = os.environ.get("EMBARGOS_PREFIJO", "embargos")
 YO = os.environ.get("AWS_LAMBDA_FUNCTION_NAME", "compliance-embargos")
 
-# Cuántos oficios por ZIP. 500 × 23 KB ≈ 11 MB: se descarga sin drama.
-POR_TANDA = int(os.environ.get("EMBARGOS_POR_TANDA", "500"))
+# Cuántos oficios por ZIP.
+#
+# Con 500 el archivo de 14.907 personas daba 30 ZIP de 11 MB, y 30 enlaces son
+# incómodos de bajar uno por uno. Con 2.000 son 8 ZIP de ~45 MB, que sigue
+# siendo un tamaño de descarga cómodo.
+#
+# El techo no es el tiempo (21 ms por documento: 2.000 son ~40 s) sino el
+# disco: una tanda necesita en /tmp los documentos más el ZIP, o sea
+# 2 × N × 23 KB. Con 2.000 son ~92 MB contra los 2 GB de almacenamiento
+# efímero de esta Lambda, y cada tanda se borra apenas sube. Subirlo mucho más
+# empieza a competir con ese margen y hace más cara cada reanudación, porque
+# el trabajo que se pierde al cortar es el de la tanda en curso.
+POR_TANDA = int(os.environ.get("EMBARGOS_POR_TANDA", "2000"))
 # Margen antes del timeout para cerrar la tanda y auto-invocarse. Generar un
 # documento son ~10 ms, pero subir el ZIP y guardar el estado no: 90 s alcanza
 # para cerrar prolijo incluso si la tanda va lenta.
@@ -141,9 +152,13 @@ def _extraer(estado: dict, tmp: Path) -> dict:
     s3.put_object(Bucket=BUCKET, Key=_clave(estado["run_id"], "personas.json"),
                   Body=json.dumps(personas, ensure_ascii=False, default=str).encode(),
                   ContentType="application/json")
+    # `.to_dict()` y no `default=str`: los descartados son objetos, y dejando
+    # que json los serialice "como sea" salían convertidos a STRINGS. El Excel
+    # después les pide `.keys()` y revienta — pero sólo cuando hay descartados,
+    # así que con el oficio en PDF (0 descartados) la prueba pasaba igual.
     s3.put_object(Bucket=BUCKET, Key=_clave(estado["run_id"], "descartados.json"),
-                  Body=json.dumps([d for d in r.descartados], ensure_ascii=False,
-                                  default=str).encode(),
+                  Body=json.dumps([d.to_dict() for d in r.descartados],
+                                  ensure_ascii=False, default=str).encode(),
                   ContentType="application/json")
 
     estado["conteos"] = {
@@ -250,6 +265,17 @@ def _cerrar(estado: dict, tmp: Path) -> dict:
     personas = json.loads(o["Body"].read())
     o = s3.get_object(Bucket=BUCKET, Key=_clave(estado["run_id"], "descartados.json"))
     descartados = json.loads(o["Body"].read())
+    # Defensa: si los descartados vinieran en un formato que el Excel no sabe
+    # escribir, se anotan y se sigue. Una corrida de 30 tandas ya generadas no
+    # puede perderse porque una hoja auxiliar esté mal — que es exactamente lo
+    # que pasó cuando se serializaban como texto en vez de diccionarios.
+    malos = [d for d in descartados if not isinstance(d, dict)]
+    if malos:
+        descartados = [d for d in descartados if isinstance(d, dict)]
+        estado["aviso"] = (f"{len(malos)} descartado(s) no se pudieron incluir en el "
+                           f"Excel por un formato antiguo; los conteos son correctos.")
+        print(f"[embargos] run={estado['run_id']} {len(malos)} descartados ilegibles, "
+              f"se omiten de la hoja")
 
     clientes = [p for p in personas if p.get("es_cliente")]
     no_clientes = [p for p in personas if not p.get("es_cliente")]
@@ -284,6 +310,9 @@ def _cerrar(estado: dict, tmp: Path) -> dict:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     estado["estado"] = "listo"
     estado["etapa"] = "listo"
+    # Se limpia el error de un intento anterior: una corrida que terminó bien
+    # no puede seguir mostrando en pantalla el fallo del que se recuperó.
+    estado.pop("error", None)
     estado["terminado_at"] = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[embargos] run={estado['run_id']} LISTO: "
           f"{estado['conteos'].get('clientes')} clientes, "

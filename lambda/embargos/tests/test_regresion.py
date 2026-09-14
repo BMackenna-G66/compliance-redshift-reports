@@ -387,6 +387,51 @@ class TiposDeDocumentoDeLosOficios(unittest.TestCase):
                          ("CC", "CE", "TI", "PA", "NIT", "PPT"))
 
 
+class ElExcelSeArmaAunqueHayaDescartados(unittest.TestCase):
+    """El caso que mis pruebas no cubrían y reventó en producción.
+
+    El trabajo guarda los descartados en S3 antes de armar el Excel. Se
+    serializaban con `json.dumps(..., default=str)` sobre objetos, así que
+    salían convertidos a STRINGS; el Excel después les pide `.keys()` y falla
+    con `AttributeError: 'str' object has no attribute 'keys'`.
+
+    No se detectó porque probé con el oficio en PDF, que tiene **0
+    descartados** — el único de los cuatro archivos sin ninguno. El archivo de
+    35.089 filas tiene 62 y falló al cerrar, con los 30 ZIP ya generados.
+
+    La lección está en el test: los descartados tienen que llegar al Excel como
+    diccionarios, y hay que probar un archivo que TENGA descartados.
+    """
+
+    def test_los_descartados_se_serializan_como_diccionarios(self):
+        nombre = "EMBARGO DE CUENTAS - 16-04-26.xlsx"
+        if not _hay(nombre):
+            self.skipTest(f"falta la muestra {nombre}")
+        r = extract.extraer(MUESTRAS / nombre)
+        self.assertGreater(len(r.descartados), 0, "este archivo tiene 62 descartados")
+
+        import json as _json
+        crudo = _json.dumps([d.to_dict() for d in r.descartados],
+                            ensure_ascii=False, default=str)
+        vuelta = _json.loads(crudo)
+        self.assertTrue(all(isinstance(x, dict) for x in vuelta),
+                        "cada descartado tiene que ser un dict, no un string")
+        # Lo que el Excel necesita de verdad:
+        self.assertTrue(hasattr(vuelta[0], "keys"))
+        self.assertIn("numero_documento", vuelta[0])
+
+    def test_serializarlos_con_default_str_los_rompe(self):
+        """El bug exacto, fijado: así es como NO hay que hacerlo."""
+        nombre = "EMBARGO DE CUENTAS - 16-04-26.xlsx"
+        if not _hay(nombre):
+            self.skipTest(f"falta la muestra {nombre}")
+        r = extract.extraer(MUESTRAS / nombre)
+        import json as _json
+        malo = _json.loads(_json.dumps([d for d in r.descartados[:3]], default=str))
+        self.assertTrue(all(isinstance(x, str) for x in malo),
+                        "confirma que `default=str` los aplasta a texto")
+
+
 class Empaquetado(unittest.TestCase):
     def test_el_modulo_y_las_plantillas_viajan_en_el_paquete(self):
         """`build_lambda.sh` copia archivo por archivo: un módulo que nadie
