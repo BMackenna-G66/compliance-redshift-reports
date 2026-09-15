@@ -438,3 +438,115 @@ def enviar_lote(caso_ids, quien="", confirmado=False, revisado=False):
     enviados = sum(1 for r in resultados if r.get("enviado"))
     return {"enviados": enviados, "fallidos": len(resultados) - enviados,
             "resultados": resultados}
+
+
+# ── respuesta de texto libre al cliente ──────────────────────────────────
+#
+# El pedido inicial y el recontacto son plantillas: dicen exactamente qué
+# documentos faltan. Pero una conversación real tiene un tramo que no entra
+# ahí — el cliente pregunta si el comprobante sirve, manda algo que no se
+# entiende, o hay que avisarle que ya está todo. Para eso hacía falta poder
+# escribirle texto libre sin salirse del caso.
+#
+# **Sigue el mismo hilo.** Reusa el token `[rfi: …]` del pedido que ya salió,
+# así la respuesta del cliente vuelve a entrar al mismo caso por el camino que
+# ya funciona. Sin eso sería un correo suelto y su respuesta caería en la
+# bandeja sin atarse a nada.
+
+def _token_del_caso(caso_id):
+    """El token del pedido que ya salió, o None si nunca se le escribió."""
+    for s in solicitudes_de(caso_id):
+        if s.get("enviado") and s.get("ref"):
+            return s["ref"]
+    return None
+
+
+def previsualizar_libre(caso_id, texto="", asunto=""):
+    """Cómo quedaría el correo. No toca la red."""
+    caso, meta = _buscar_caso(caso_id)
+    if caso is None:
+        return {"error": f"caso '{caso_id}' no encontrado"}
+
+    cli = (caso.get("cliente") or {})
+    datos = cli.get("cliente") if isinstance(cli.get("cliente"), dict) else cli
+    datos = datos or {}
+    para = str(datos.get("cliente_correo") or "").strip()
+    nombre = str(datos.get("cliente_nombre") or "").strip()
+
+    token = _token_del_caso(caso_id)
+    asunto_final = str(asunto or "").strip() or (
+        correo.asunto_de(token) if token else correo.asunto_de(correo.token_nuevo()))
+
+    cuerpo = str(texto or "").strip()
+    html = None
+    if cuerpo:
+        try:
+            from . import plantilla
+            # El hueco de la plantilla vive dentro de un <p><span>, así que
+            # sólo admite contenido en línea: los saltos van como <br> y nada
+            # de bloques. Lo escribe un analista, pero se escapa igual — un
+            # `<` mal puesto rompería el correo del cliente.
+            parrafos = plantilla.SALTO.join(
+                plantilla._e(l) for l in cuerpo.splitlines())
+            html = plantilla.componer(nombre, parrafos,
+                                      empresa=correo.es_empresa(nombre))
+        except Exception as e:
+            print(f"[relevo/envio] sin plantilla para el texto libre: {e}")
+
+    avisos = []
+    if not para:
+        avisos.append("El caso no tiene correo de cliente resuelto.")
+    if not token:
+        avisos.append("A este caso todavía no se le envió el pedido, así que el "
+                      "correo abre un hilo nuevo en vez de continuar uno.")
+    if not cuerpo:
+        avisos.append("Escribí el mensaje: un correo vacío no se manda.")
+
+    permitido, motivo = puede_enviar(caso.get("partner"))
+    if not permitido:
+        avisos.append(motivo)
+
+    return {"caso_id": caso_id, "para": para, "nombre": nombre,
+            "asunto": asunto_final, "texto": cuerpo, "html": html,
+            "sigue_hilo": bool(token), "avisos": avisos,
+            "puede_enviar": bool(permitido and para and cuerpo)}
+
+
+def responder_libre(caso_id, texto="", quien="", asunto=""):
+    """Le manda al cliente un correo de texto libre, dentro del mismo hilo.
+
+    **Sin bloqueo de doble envío, a propósito.** El pedido no se manda dos
+    veces porque sería pedirle lo mismo otra vez; una aclaración puede
+    necesitar varias idas y vueltas, que es lo que hace una conversación.
+
+    **No mueve el estado del caso ni gasta un intento de recontacto.** Queda
+    como `mensaje_libre`, que es informativa (ver `casos.ACCIONES_INFORMATIVAS`):
+    si contara como estado, un "gracias, ya lo recibimos" haría retroceder el
+    caso a "esperando al cliente".
+    """
+    quien = str(quien or "").strip()
+    if not quien:
+        return {"enviado": False,
+                "error": "quien es requerido: no se le escribe a un cliente sin autor"}
+
+    pv = previsualizar_libre(caso_id, texto=texto, asunto=asunto)
+    if pv.get("error"):
+        return {"enviado": False, "error": pv["error"]}
+    if not pv["puede_enviar"]:
+        return {"enviado": False, "bloqueado": True,
+                "error": "; ".join(pv["avisos"]) or "no se puede enviar"}
+
+    compuesto = {"para": pv["para"], "asunto": pv["asunto"],
+                 "texto": pv["texto"], "html": pv["html"] or pv["texto"]}
+    try:
+        _enviar_smtp(compuesto)
+    except Exception as e:
+        print(f"[relevo] falló el mensaje libre de {caso_id}: {str(e)[:200]}")
+        return {"enviado": False, "error": str(e)[:400]}
+
+    casos.registrar(caso_id, "mensaje_libre", quien=quien,
+                    detalle={"correo": pv["para"], "asunto": pv["asunto"],
+                             "caracteres": len(pv["texto"]),
+                             "sigue_hilo": pv["sigue_hilo"]})
+    return {"enviado": True, "para": pv["para"], "asunto": pv["asunto"],
+            "sigue_hilo": pv["sigue_hilo"]}

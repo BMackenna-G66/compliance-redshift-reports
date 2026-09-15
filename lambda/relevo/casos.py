@@ -47,6 +47,13 @@ TERMINALES = ["devuelto", "cerrado", "sin_respuesta", "descartado"]
 # Las que cuentan como «le escribimos al cliente». Son las que suman intento.
 CONTACTOS = ["pedido_enviado", "recontactado"]
 
+# Acciones que quedan en el historial pero NO derivan estado ni suman intento.
+# Un mensaje de texto libre —aclararle algo al cliente, contestarle una duda—
+# es parte de la conversación, pero no es "le pedimos la documentación": si
+# contara como estado, un "gracias, ya lo vimos" haría retroceder al caso, y si
+# contara como intento gastaría uno de los tres del recontacto.
+ACCIONES_INFORMATIVAS = ["mensaje_libre"]
+
 # Política de recontacto. Vive acá y no repartida en el código: cambiarla es
 # cambiar estas dos líneas.
 POLITICA = {
@@ -327,8 +334,9 @@ def por_cliente(casos):
 
 def registrar(caso_id, accion, quien="", detalle=None, ruta=None):
     """Anota una acción. Sólo agrega: el histórico no se reescribe nunca."""
-    if accion not in ACCIONES:
-        raise ValueError(f"acción desconocida: {accion!r}. Válidas: {', '.join(ACCIONES)}")
+    validas = ACCIONES + ACCIONES_INFORMATIVAS
+    if accion not in validas:
+        raise ValueError(f"acción desconocida: {accion!r}. Válidas: {', '.join(validas)}")
     ev = {"caso": caso_id, "accion": accion, "quien": quien,
           "cuando": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
           "detalle": detalle or {}}

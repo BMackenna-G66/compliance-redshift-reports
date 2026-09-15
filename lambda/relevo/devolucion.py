@@ -32,6 +32,7 @@ sigue componiéndose de estructura extraída, nunca de texto libre generado.
 
 Lo único libre es la nota del analista, que la escribe una persona.
 """
+import re
 import os
 import time
 
@@ -249,6 +250,32 @@ def adjuntos_de(caso_id, con_enlace=True):
     return fuera
 
 
+# Restos que Gmail deja en el cuerpo cuando el cliente responde adjuntando
+# cosas. En pantalla se conservan —un enlace de Drive puede ser la única vía a
+# un documento que el cliente compartió en vez de adjuntar— pero al partner no
+# van: o no puede abrirlos, o puede, y entonces es un documento de KYC viajando
+# como link reenviable a un tercero. Los `[image: x.jpeg]` son sólo ruido: los
+# archivos ya van listados arriba, con su nombre y su fecha.
+_SOLO_URL = re.compile(r"^\s*<?https?://\S+>?\s*$")
+# Sin anclas: Gmail pone varios seguidos en la misma línea
+# (`[image: 1.jpeg][image: 2.jpeg]`), así que se quitan de a uno donde estén y
+# recién después se decide si la línea quedó vacía.
+_MARCA_IMAGEN = re.compile(r"\[image:\s*[^\]]*\]", re.I)
+
+
+def _para_el_partner(lineas):
+    """Las líneas del cliente, sin los restos del cliente de correo."""
+    fuera = []
+    for l in lineas:
+        if _SOLO_URL.match(l):
+            continue
+        limpia = _MARCA_IMAGEN.sub("", l).strip()
+        if not limpia:
+            continue
+        fuera.append(limpia)
+    return fuera
+
+
 def _texto_cliente(caso_id, maximo=3):
     """Lo que el cliente escribió, si escribió algo. Va tal cual: es su
     respuesta, no la nuestra, y recortarla o reescribirla sería tergiversarla."""
@@ -312,45 +339,64 @@ def componer(caso, idioma="en", nota="", caso_id=None):
                       "sistema sabe que llegaron, no que sirvan.")
 
     ref_txt = f" ({referencia})" if referencia else ""
+    # Se arman las dos versiones a la vez y desde los mismos datos: el texto
+    # plano —que es el que se pega a mano y el que queda si la plantilla falla—
+    # y los bloques, que la plantilla convierte en HTML de verdad. Derivar uno
+    # del otro fue el error anterior: el HTML salía de reemplazar saltos por
+    # <br>, y quedaban 81 seguidos.
     lineas = [T["saludo"], "", T["intro"].format(ref=ref_txt), ""]
-    if txs:
-        lineas.append(T["tx"])
-        lineas += [f"  - {v}" for v in txs]
+    bloques = [{"t": "p", "texto": T["saludo"]},
+               {"t": "p", "texto": T["intro"].format(ref=ref_txt)}]
+
+    def _seccion(titulo, items, numerada=False):
+        if not items:
+            return
+        lineas.append(titulo)
+        lineas.extend(f"  {i}. {x}" if numerada else f"  - {x}"
+                      for i, x in enumerate(items, 1))
         lineas.append("")
-    if pedido:
-        lineas.append(T["pedido"])
-        lineas += [f"  {i}. {x}" for i, x in enumerate(pedido, 1)]
-        lineas.append("")
-    if entregados:
-        lineas.append(T["entregado"])
-        lineas += [f"  - {x}" for x in entregados]
-        lineas.append("")
-    if pendientes:
-        lineas.append(T["pendiente"])
-        lineas += [f"  - {x}" for x in pendientes]
-        lineas.append("")
+        bloques.append({"t": "h", "texto": titulo})
+        bloques.append({"t": "ol" if numerada else "ul", "items": list(items)})
+
+    _seccion(T["tx"], txs)
+    _seccion(T["pedido"], pedido, numerada=True)
+    _seccion(T["entregado"], entregados)
+    _seccion(T["pendiente"], pendientes)
+
     if adj:
-        lineas.append(T["archivos"])
+        nombres = []
         for a in adj:
             fecha = str(a.get("cuando") or "")[:10]
             marca = f" ({T['recibido_el'].format(fecha=fecha)})" if fecha else ""
-            lineas.append(f"  - {a['nombre']}{marca}")
-        lineas.append("")
+            nombres.append(f"{a['nombre']}{marca}")
+        _seccion(T["archivos"], nombres)
     elif textos:
         lineas += [T["sin_archivos"], ""]
+        bloques.append({"t": "p", "texto": T["sin_archivos"]})
+
     for t in textos:
-        lineas += [f"> {l}" for l in t["texto"].splitlines() if l.strip()]
+        dichas = _para_el_partner([l for l in t["texto"].splitlines() if l.strip()])
+        if not dichas:
+            continue
+        lineas += [f"> {l}" for l in dichas]
         lineas.append("")
+        bloques.append({"t": "cita", "lineas": dichas})
+
     if nota:
         lineas += [str(nota).strip(), ""]
+        bloques.append({"t": "p", "texto": str(nota).strip()})
+
     lineas += [T["cierre"], "", T["firma"]]
+    bloques.append({"t": "p", "texto": T["cierre"]})
+    for l in T["firma"].splitlines():
+        bloques.append({"t": "p", "texto": l})
 
     texto = "\n".join(lineas)
-    # El mismo texto, dentro de la plantilla B2B. Si no está disponible se
+    # Los mismos datos, dentro de la plantilla B2B. Si no está disponible se
     # devuelve None y la pantalla usa el plano.
     try:
         from . import plantilla
-        html = plantilla.componer_partner(texto)
+        html = plantilla.componer_partner(bloques, idioma)
     except Exception as e:
         print(f"[relevo/devolucion] sin plantilla de partner: {e}")
         html = None

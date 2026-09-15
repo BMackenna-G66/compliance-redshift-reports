@@ -2765,6 +2765,18 @@ def handler(event, context):  # noqa: ARG001
                         parts[2], quien=body.get("quien") or body.get("actor_email", ""),
                         nota=body.get("nota", "")))
                 return resp(200, recontacto.previsualizar_recontacto(parts[2]))
+            # POST /relevo/casos/{id}/mensaje — texto libre al cliente, dentro
+            # del mismo hilo. No mueve el estado ni gasta un intento.
+            if method == "POST" and len(parts) == 4 and parts[1] == "casos" and parts[3] == "mensaje":
+                from relevo import envio
+                if body.get("enviar"):
+                    return resp(200, envio.responder_libre(
+                        parts[2], texto=body.get("texto", ""),
+                        quien=body.get("quien") or body.get("actor_email", ""),
+                        asunto=body.get("asunto", "")))
+                return resp(200, envio.previsualizar_libre(
+                    parts[2], texto=body.get("texto", ""),
+                    asunto=body.get("asunto", "")))
             # POST /relevo/interruptores — prender o apagar el envío. Es la
             # única vía: el interruptor arranca apagado y sólo una persona lo
             # mueve, con su nombre registrado.

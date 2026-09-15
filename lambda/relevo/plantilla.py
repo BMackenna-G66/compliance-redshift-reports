@@ -176,14 +176,53 @@ def cargar_partner():
     return _cache_partner
 
 
-def componer_partner(texto_plano):
-    """El texto de la devolución, dentro de la plantilla B2B.
+MARCA_PIE = "PIE"
 
-    Entra texto plano y sale HTML: lo que compone `devolucion.componer()` son
-    líneas, no marcado. Se escapa todo —el nombre del cliente, los nombres de
-    archivo y lo que escribió el cliente vienen de afuera— y se convierten los
-    saltos en <br>, que es el mismo contrato que respeta la plantilla de
-    cliente: contenido en línea, nada de bloques.
+# El pie, en el idioma del correo. Antes estaba escrito en español dentro del
+# HTML: un correo con el cuerpo en inglés y el pie en castellano, que es
+# exactamente el tipo de detalle que le dice a un banco corresponsal que del
+# otro lado nadie revisó lo que mandó.
+PIES = {
+    "en": ("Compliance · Global66<br>"
+           "This message answers an information request about a transaction "
+           "under review. Reply to this email if further records are needed."),
+    "es": ("Compliance · Global66<br>"
+           "Este mensaje responde a una solicitud de información sobre una "
+           "operación en revisión. Si necesitan antecedentes adicionales, "
+           "respondan este correo."),
+    "pt": ("Compliance · Global66<br>"
+           "Esta mensagem responde a uma solicitação de informação sobre uma "
+           "operação em análise. Respondam a este e-mail se precisarem de "
+           "documentação adicional."),
+}
+
+
+def _esc(t):
+    """Escapa SIN recortar: en una cita del cliente la sangría es parte de lo
+    que escribió. Aparte de `_e`, que sí recorta y la usa el bloque del pedido.
+    """
+    return _html.escape(str(t or ""))
+
+
+def componer_partner(bloques, idioma="en"):
+    """La devolución al partner, dentro de la plantilla B2B.
+
+    Entra una lista de bloques estructurados y sale HTML de verdad: párrafos,
+    listas numeradas, viñetas y una cita para lo que escribió el cliente.
+
+    **Antes esto convertía texto plano a `<br>` y nada más.** Ese contrato —
+    "contenido en línea, nada de bloques"— viene de la plantilla del CLIENTE,
+    donde el hueco vive dentro de un `<p><span>` y meter un `<ul>` produce HTML
+    inválido. Acá el hueco está en un `<td>`, que admite bloques perfectamente;
+    la restricción se arrastró sin que aplicara. El resultado medido sobre una
+    devolución real: 81 `<br>` seguidos y un cuerpo de 2.168 px para 3.000
+    caracteres de texto, o sea mayormente espacio en blanco.
+
+    Los bloques son:
+        {"t":"p",    "texto": str}          párrafo
+        {"t":"h",    "texto": str}          encabezado de sección
+        {"t":"ol"|"ul", "items": [str]}     lista numerada o con viñetas
+        {"t":"cita", "lineas": [str]}       lo que escribió el cliente
 
     Devuelve None si la plantilla no está: el texto plano sigue sirviendo y
     quedarse sin poder devolver es peor que devolver sin marca.
@@ -196,5 +235,30 @@ def componer_partner(texto_plano):
     if MARCA_CUERPO not in base:
         print("[relevo/plantilla] el marcador CUERPO no está en partner.html")
         return None
-    cuerpo = _html.escape(str(texto_plano or "")).replace("\n", "<br>")
-    return base.replace(MARCA_CUERPO, cuerpo)
+
+    partes = []
+    for b in (bloques or []):
+        t = b.get("t")
+        if t == "p":
+            partes.append(
+                f'<p style="margin:0 0 12px">{_esc(b.get("texto"))}</p>')
+        elif t == "h":
+            partes.append(
+                '<p style="margin:18px 0 6px;font-weight:600;color:#1433b4">'
+                f'{_esc(b.get("texto"))}</p>')
+        elif t in ("ol", "ul"):
+            items = "".join(f'<li style="margin:0 0 4px">{_esc(x)}</li>'
+                            for x in (b.get("items") or []))
+            partes.append(f'<{t} style="margin:0 0 12px;padding-left:22px">{items}</{t}>')
+        elif t == "cita":
+            # Lo que escribió el cliente, textual. Va en cita y no como texto
+            # nuestro: es su declaración, y el partner tiene que poder ver dónde
+            # termina lo que decimos nosotros y empieza lo que dijo él.
+            dentro = "<br>".join(_esc(l) for l in (b.get("lineas") or []))
+            partes.append(
+                '<blockquote style="margin:0 0 12px;padding:10px 14px;'
+                'border-left:3px solid #c9cde8;background:#f7f8fc;color:#3a4160">'
+                f'{dentro}</blockquote>')
+
+    html = base.replace(MARCA_CUERPO, "\n".join(partes))
+    return html.replace(MARCA_PIE, PIES.get(idioma) or PIES["en"])
