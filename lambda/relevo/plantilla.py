@@ -37,7 +37,11 @@ RUTA = Path(__file__).resolve().parent / "plantillas" / "base.html"
 # un analista de un banco corresponsal no le corresponde y se lee como si le
 # hubiéramos mandado una campaña de marketing por error.
 RUTA_PARTNER = Path(__file__).resolve().parent / "plantillas" / "partner.html"
-MARCA_CUERPO = "CUERPO"
+# Entre arrobas dobles a propósito. Antes eran las palabras sueltas CUERPO y
+# PIE, y una palabra suelta puede aparecer también en un comentario del HTML:
+# el replace la toma a ella igual que al marcador y el correo sale con el
+# cuerpo pegado dos veces. Pasó al armar la base corporativa.
+MARCA_CUERPO = "@@CUERPO@@"
 
 MARCA_NOMBRE = "{!Account.first_name__c}"
 MARCA_TEXTO = "TEXTO LIBRE<br>TEXTO LIBRE<br>TEXTO LIBRE"
@@ -45,10 +49,13 @@ MARCA_TEXTO = "TEXTO LIBRE<br>TEXTO LIBRE<br>TEXTO LIBRE"
 # Las frases en tuteo que trae la plantilla, y su versión formal. Se listan
 # acá y no se buscan por heurística: son dos, están escritas, y adivinarlas
 # con una regex sobre el HTML sería frágil y silencioso al fallar.
+# Había una tercera, "¿Tienes dudas?", que vivía en el pie de consumo. Ese pie
+# ya no está —la plantilla usa la base corporativa— así que ese replace no
+# encontraba nada y no hacía nada: se saca para que la lista siga diciendo la
+# verdad sobre lo que hay en el HTML.
 FORMAL = [
     ("Hola {nombre},", "Estimados de {nombre}:"),
     ("Quedamos atentos a tu respuesta.", "Quedamos atentos a su respuesta."),
-    ("¿Tienes dudas?", "¿Tienen dudas?"),
 ]
 
 _cache = None
@@ -176,7 +183,7 @@ def cargar_partner():
     return _cache_partner
 
 
-MARCA_PIE = "PIE"
+MARCA_PIE = "@@PIE@@"
 
 # El pie, en el idioma del correo. Antes estaba escrito en español dentro del
 # HTML: un correo con el cuerpo en inglés y el pie en castellano, que es
@@ -232,8 +239,11 @@ def componer_partner(bloques, idioma="en"):
     except Exception as e:
         print(f"[relevo/plantilla] no pude leer {RUTA_PARTNER}: {e}")
         return None
-    if MARCA_CUERPO not in base:
-        print("[relevo/plantilla] el marcador CUERPO no está en partner.html")
+    # Exactamente uno: cero significa que la plantilla cambió y el cuerpo no
+    # entraría; más de uno, que el correo saldría con el cuerpo repetido.
+    if base.count(MARCA_CUERPO) != 1 or base.count(MARCA_PIE) != 1:
+        print(f"[relevo/plantilla] partner.html tiene {base.count(MARCA_CUERPO)}×"
+              f"{MARCA_CUERPO} y {base.count(MARCA_PIE)}×{MARCA_PIE}; esperaba uno de cada uno")
         return None
 
     partes = []
