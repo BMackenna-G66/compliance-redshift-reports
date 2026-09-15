@@ -40,6 +40,11 @@ from relevo import plantilla  # noqa: E402
 CLAUSULA = ("Respóndenos este correo adjuntando tus documentos a la brevedad. "
             "Conserva el asunto tal como está, así podemos vincular tu respuesta "
             "y procesar tu caso sin demoras.")
+CLAUSULA_FORMAL = ("Respóndannos este correo adjuntando sus documentos a la brevedad. "
+                   "Conserven el asunto tal como está, así podemos vincular su respuesta "
+                   "y procesar su caso sin demoras.")
+# Dónde va cada trato. El B2B es de empresa, así que lleva la formal.
+FORMALES = {"b2b_generico"}
 
 # Lo que jamás puede llegar al cliente: huecos sin rellenar, marcadores del
 # renderizador o restos de un comentario que se partió.
@@ -111,9 +116,14 @@ class Plantillas(unittest.TestCase):
                     self.assertNotIn(resto, texto)
 
     def test_la_clausula_esta_en_todos(self):
+        """Y en el trato que corresponde al destinatario, no en los dos."""
         for clave, html in self._todas():
+            esperada, otra = ((CLAUSULA_FORMAL, CLAUSULA) if clave in FORMALES
+                              else (CLAUSULA, CLAUSULA_FORMAL))
             with self.subTest(clave):
-                self.assertIn(CLAUSULA, visible(html))
+                texto = visible(html)
+                self.assertIn(esperada, texto)
+                self.assertNotIn(otra, texto)
 
     def test_los_marcadores_del_renderizador_siguen_ahi(self):
         """Antes de renderizar, el archivo tiene que traer lo que se reemplaza."""
@@ -176,6 +186,15 @@ class PlantillasRelevo(unittest.TestCase):
         texto = visible(html)
         self.assertIn("Estimados de ACME SpA:", texto)
         self.assertIn("Quedamos atentos a su respuesta.", texto)
+        # El pie también: si la cláusula se quedara en tuteo, el correo trataría
+        # de usted arriba y de tú abajo.
+        self.assertIn(CLAUSULA_FORMAL, texto)
+        self.assertNotIn(CLAUSULA, texto)
+
+    def test_persona_se_queda_en_tuteo(self):
+        texto = visible(plantilla.componer("Ana Pérez", "Necesitamos tu comprobante."))
+        self.assertIn(CLAUSULA, texto)
+        self.assertNotIn(CLAUSULA_FORMAL, texto)
 
     def test_las_frases_formales_existen_en_el_html(self):
         """Si una frase de FORMAL ya no está en la plantilla, el replace no

@@ -2829,6 +2829,9 @@
               <button @click="casesViewMode='kanban'"
                 :class="casesViewMode==='kanban' ? 'bg-slate-500 text-white' : 'text-slate-400 hover:text-white'"
                 class="px-3 py-1.5 rounded-md transition">⊟ Kanban</button>
+              <button @click="casesViewMode='timeline'"
+                :class="casesViewMode==='timeline' ? 'bg-slate-500 text-white' : 'text-slate-400 hover:text-white'"
+                class="px-3 py-1.5 rounded-md transition">⏱ Plazos</button>
             </div>
             <button x-show="isAdmin() && casesViewMode==='cards'" @click="toggleCaseSelectMode()"
               :class="caseSelectMode ? 'bg-slate-600 text-white' : 'bg-slate-700 text-slate-300 hover:text-white'"
@@ -2892,6 +2895,45 @@
           </select>
         </div>
 
+        <!-- ── Semáforo de plazo ──────────────────────────────────────────
+             El plazo corre sólo para los casos nacidos de una alerta
+             transaccional: 3 días desde que se creó el caso, con recontacto a
+             la mitad. Los contadores vienen del mismo listado, así que lo que
+             dicen los chips es exactamente lo que hay abajo. -->
+        <div class="flex flex-wrap items-center gap-2 mb-5 bg-slate-800/60 border border-slate-700 rounded-xl px-4 py-3">
+          <span class="text-xs font-semibold text-slate-400 mr-1">⏱ Plazo</span>
+          <template x-for="s in [
+              {k:'',                l:'Todos',       p:''},
+              {k:'vencido',         l:'Vencidos',    p:'🔴'},
+              {k:'por_recontactar', l:'Recontactar', p:'🟡'},
+              {k:'por_contactar',   l:'Sin contactar', p:'🟡'},
+              {k:'en_plazo',        l:'En plazo',    p:'🟢'},
+              {k:'sin_plazo',       l:'Sin plazo',   p:'⚪'}]" :key="s.k">
+            <button @click="caseSlaFilter=s.k; loadCases()"
+              :class="caseSlaFilter===s.k ? 'bg-slate-600 text-white border-slate-500' : 'bg-slate-900/60 text-slate-400 border-slate-700 hover:text-white'"
+              class="px-3 py-1.5 text-xs font-medium rounded-lg border transition whitespace-nowrap">
+              <span x-text="s.p"></span>
+              <span x-text="s.l"></span>
+              <span x-show="s.k && caseSlaResumen[s.k==='sin_plazo' ? '' : s.k] !== undefined"
+                class="ml-1 opacity-70"
+                x-text="'(' + (caseSlaResumen[s.k==='sin_plazo' ? '' : s.k] || 0) + ')'"></span>
+            </button>
+          </template>
+
+          <div class="w-px h-6 bg-slate-700 mx-1"></div>
+          <span class="text-xs text-slate-400">Días abierto</span>
+          <input type="number" min="0" step="0.5" x-model="caseDiasMin" @change="loadCases()"
+            placeholder="mín"
+            class="w-20 bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-orange-400">
+          <span class="text-xs text-slate-500">a</span>
+          <input type="number" min="0" step="0.5" x-model="caseDiasMax" @change="loadCases()"
+            placeholder="máx"
+            class="w-20 bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-orange-400">
+          <button x-show="caseSlaFilter || caseDiasMin !== '' || caseDiasMax !== ''"
+            @click="limpiarFiltroSla()"
+            class="text-xs text-slate-400 hover:text-white underline ml-1">limpiar</button>
+        </div>
+
         <!-- Loading -->
         <div x-show="casesLoading" class="text-center py-12 text-slate-400">
           <div class="animate-spin text-3xl mb-2">⟳</div>
@@ -2899,10 +2941,14 @@
         </div>
 
         <!-- Empty state -->
-        <div x-show="!casesLoading && filteredCases().length === 0" class="text-center py-16 text-slate-500">
+        <!-- El vacío de la línea de tiempo es otro (tiene su propio mensaje),
+             así que este se limita a las vistas que listan todos los casos. -->
+        <div x-show="!casesLoading && casesViewMode!=='timeline' && filteredCases().length === 0"
+          class="text-center py-16 text-slate-500">
           <div class="text-4xl mb-3">📂</div>
           <p class="text-lg font-medium text-slate-400 mb-1">No hay casos</p>
-          <p class="text-sm">Crea el primer caso de investigación</p>
+          <p class="text-sm"
+            x-text="(caseSlaFilter || caseDiasMin !== '' || caseDiasMax !== '') ? 'Ningún caso cae en ese filtro de plazo' : 'Crea el primer caso de investigación'"></p>
         </div>
 
         <!-- ── CARDS VIEW ── -->
@@ -2923,6 +2969,23 @@
               </div>
               <h3 class="text-sm font-semibold text-white mb-1 line-clamp-2 group-hover:text-orange-300 transition"
                 x-text="c.title"></h3>
+              <!-- Plazo. Sólo aparece si el caso vino de una alerta: al resto
+                   no se le prometió ningún plazo y un badge vacío confunde. -->
+              <div x-show="c.sla_aplica" class="mb-1.5">
+                <span class="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border font-medium"
+                  :class="slaEstilo(c).clase">
+                  <span x-text="slaEstilo(c).punto"></span>
+                  <span x-text="slaTexto(c)"></span>
+                </span>
+                <span x-show="c.sla_accion==='recontactar' || c.sla_accion==='contactar'"
+                  class="ml-1 text-[11px] text-amber-400 font-medium"
+                  x-text="c.sla_accion==='contactar' ? '· sin contactar' : '· toca recontactar'"></span>
+                <div x-show="c.sla_estado!=='cerrado'" class="mt-1 h-1 bg-slate-700 rounded-full overflow-hidden">
+                  <div class="h-full rounded-full transition-all"
+                    :class="c.sla_estado==='vencido' ? 'bg-red-500' : (c.sla_estado==='en_plazo' ? 'bg-emerald-500' : 'bg-amber-500')"
+                    :style="'width:' + slaAvance(c) + '%'"></div>
+                </div>
+              </div>
               <p x-show="c.entity_name" class="text-xs text-teal-300/90 mb-1 truncate" x-text="c.entity_name"></p>
               <p class="text-xs text-slate-400 mb-3 line-clamp-2" x-text="c.description || '—'"></p>
               <div class="flex items-center justify-between text-xs text-slate-500">
@@ -2975,7 +3038,10 @@
                   <div @click="openCaseDetail(c.case_id)"
                     class="bg-slate-800 border border-slate-700 rounded-lg p-3 cursor-pointer hover:border-orange-500 transition group">
                     <div class="flex items-start justify-between gap-1 mb-1">
-                      <span class="text-xs font-mono text-slate-600" x-text="c.case_id.slice(0,6)+'…'"></span>
+                      <span class="text-xs font-mono text-slate-600 flex items-center gap-1">
+                        <span x-show="c.sla_aplica" :title="slaTexto(c)" x-text="slaEstilo(c).punto"></span>
+                        <span x-text="c.case_id.slice(0,6)+'…'"></span>
+                      </span>
                       <span class="px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0"
                         :class="c.priority==='high' ? 'bg-red-900/50 text-red-300' : c.priority==='medium' ? 'bg-yellow-900/50 text-yellow-300' : 'bg-slate-700 text-slate-400'"
                         x-text="c.priority==='high'?'Alta':c.priority==='medium'?'Media':'Baja'"></span>
@@ -3004,6 +3070,85 @@
               </div>
             </div>
           </template>
+        </div>
+
+        <!-- ── LÍNEA DE TIEMPO ──────────────────────────────────────────────
+             Los casos con plazo, ordenados por lo que les queda. El orden es
+             el de la urgencia, no el de creación: lo primero que se ve es lo
+             que hay que cerrar hoy. Los cerrados no aparecen: ya no hay nada
+             que hacer con ellos y sólo agregarían ruido a la lista. -->
+        <div x-show="!casesLoading && casesViewMode==='timeline'" x-cloak>
+
+          <div x-show="casosConPlazo().length===0" class="text-center py-16 text-slate-500">
+            <div class="text-4xl mb-3">⏱</div>
+            <p class="text-lg font-medium text-slate-400 mb-1">Ningún caso con plazo abierto</p>
+            <p class="text-sm">El plazo corre sólo para casos creados desde una alerta transaccional.</p>
+          </div>
+
+          <div x-show="casosConPlazo().length>0" class="space-y-5">
+            <template x-for="tr in tramosDeLaLinea()" :key="tr.k">
+              <div x-show="tr.cs.length>0" class="border rounded-xl p-4" :class="tr.color">
+                <div class="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 class="text-sm font-bold text-white" x-text="tr.t"></h3>
+                    <p class="text-xs text-slate-400" x-text="tr.d"></p>
+                  </div>
+                  <span class="text-lg font-bold text-white" x-text="tr.cs.length"></span>
+                </div>
+
+                <div class="space-y-1.5">
+                  <template x-for="c in tr.cs" :key="c.case_id">
+                    <div @click="openCaseDetail(c.case_id)"
+                      class="flex items-center gap-3 bg-slate-900/50 hover:bg-slate-800 border border-slate-700/60 hover:border-orange-500 rounded-lg px-3 py-2 cursor-pointer transition group">
+
+                      <span class="text-sm flex-shrink-0" x-text="slaEstilo(c).punto"></span>
+
+                      <div class="min-w-0 flex-1">
+                        <p class="text-xs font-medium text-white truncate group-hover:text-orange-300 transition"
+                          x-text="c.title"></p>
+                        <p class="text-[11px] text-slate-500 truncate">
+                          <span x-text="c.entity_name || c.entity_id || '—'"></span>
+                          <span x-show="c.report_name"> · <span x-text="c.report_name"></span></span>
+                          <span x-show="c.assigned_to"> · <span x-text="c.assigned_to.split('@')[0]"></span></span>
+                        </p>
+                      </div>
+
+                      <!-- Las tres columnas de la derecha llevan ancho fijo,
+                           incluida la de los avisos aunque esté vacía: si
+                           colapsara, las filas con aviso correrían la barra y
+                           la barra dejaría de ser comparable entre filas, que
+                           es lo único para lo que está. -->
+                      <div class="hidden lg:flex flex-shrink-0 w-28 justify-end gap-1">
+                        <span x-show="c.sla_accion==='recontactar' || c.sla_accion==='contactar'"
+                          class="text-[10px] px-2 py-0.5 rounded-full bg-amber-900/60 text-amber-300 border border-amber-700 whitespace-nowrap self-center"
+                          x-text="c.sla_accion==='contactar' ? 'sin contactar' : 'recontactar'"></span>
+                        <span x-show="c.sla_respondio"
+                          class="text-[10px] px-2 py-0.5 rounded-full bg-teal-900/60 text-teal-300 border border-teal-700 whitespace-nowrap self-center">
+                          respondió
+                        </span>
+                      </div>
+
+                      <div class="hidden sm:block w-28 flex-shrink-0">
+                        <div class="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                          <div class="h-full rounded-full"
+                            :class="c.sla_estado==='vencido' ? 'bg-red-500' : (c.sla_estado==='en_plazo' ? 'bg-emerald-500' : 'bg-amber-500')"
+                            :style="'width:' + slaAvance(c) + '%'"></div>
+                        </div>
+                      </div>
+
+                      <div class="text-right flex-shrink-0 w-32">
+                        <p class="text-[11px] font-semibold"
+                          :class="c.sla_estado==='vencido' ? 'text-red-300' : (c.sla_estado==='en_plazo' ? 'text-emerald-300' : 'text-amber-300')"
+                          x-text="slaTexto(c)"></p>
+                        <p class="text-[10px] text-slate-500"
+                          x-text="'abierto ' + slaDias(c.sla_dias)"></p>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
       </div>
 
@@ -7555,6 +7700,12 @@
       caseStatusFilter: 'all',
       casePriorityFilter: '',
       caseAssignedFilter: '',
+      // Semáforo de plazo (sólo casos nacidos de una alerta transaccional).
+      caseSlaFilter: '',
+      caseDiasMin: '',
+      caseDiasMax: '',
+      caseSlaResumen: {},
+      caseSlaConfig: {},
       activeCase: {},
       activeCaseNotes: [],
       activeCaseAlerts: [],
@@ -10688,9 +10839,14 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           if (this.caseStatusFilter && this.caseStatusFilter !== 'all') qs.set('status', this.caseStatusFilter);
           if (this.casePriorityFilter) qs.set('priority', this.casePriorityFilter);
           if (this.caseAssignedFilter) qs.set('assigned_to', this.caseAssignedFilter);
+          if (this.caseSlaFilter) qs.set('sla', this.caseSlaFilter);
+          if (this.caseDiasMin !== '') qs.set('dias_min', this.caseDiasMin);
+          if (this.caseDiasMax !== '') qs.set('dias_max', this.caseDiasMax);
           const path = '/cases' + (qs.toString() ? '?' + qs.toString() : '');
           const d = await this.api('GET', path);
           this.cases = d?.cases || [];
+          this.caseSlaResumen = d?.sla_resumen || {};
+          this.caseSlaConfig = d?.sla_config || {};
         } finally {
           this.casesLoading = false;
         }
@@ -10698,6 +10854,100 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
 
       filteredCases() {
         return this.cases;
+      },
+
+      // ── Semáforo de plazo ──────────────────────────────────────────────
+      // El plazo lo calcula la API (lambda/sla_casos.py) y llega en los
+      // campos sla_*. Acá sólo se pinta: si el front recalculara las horas
+      // con el reloj del navegador, dos analistas en husos distintos verían
+      // semáforos distintos para el mismo caso.
+      SLA_ESTILO: {
+        en_plazo:        { clase: 'bg-emerald-900/50 text-emerald-300 border-emerald-700', punto: '🟢' },
+        por_recontactar: { clase: 'bg-amber-900/50 text-amber-300 border-amber-700',       punto: '🟡' },
+        por_contactar:   { clase: 'bg-amber-900/50 text-amber-200 border-amber-600',       punto: '🟡' },
+        vencido:         { clase: 'bg-red-900/50 text-red-300 border-red-700',             punto: '🔴' },
+        cerrado:         { clase: 'bg-slate-700/60 text-slate-400 border-slate-600',       punto: '⚪' },
+      },
+
+      slaEstilo(c) {
+        return this.SLA_ESTILO[c?.sla_estado] || { clase: 'bg-slate-700/40 text-slate-500 border-slate-700', punto: '' };
+      },
+
+      slaTexto(c) {
+        if (!c?.sla_aplica) return '';
+        if (c.sla_estado === 'cerrado') return 'Cerrado en ' + this.slaDias(c.sla_dias);
+        const restan = c.sla_horas_restantes;
+        if (restan === null || restan === undefined) return c.sla_etiqueta;
+        if (restan < 0) return 'Vencido hace ' + this.slaDias(Math.abs(restan) / 24);
+        if (restan < 24) return 'Cierra en ' + Math.round(restan) + ' h';
+        return 'Cierra en ' + this.slaDias(restan / 24);
+      },
+
+      slaDias(d) {
+        if (d === null || d === undefined) return '—';
+        const n = Number(d);
+        // Un decimal mientras el número es chico —la diferencia entre 1,2 y
+        // 1,8 días importa cuando el plazo son 3— y redondeo de ahí en más,
+        // donde "38 días" y "38,4 días" dicen lo mismo. Coma, no punto.
+        const txt = (n < 10 ? n.toFixed(1) : String(Math.round(n))).replace('.', ',');
+        return txt + (txt === '1,0' ? ' día' : ' días');
+      },
+
+      // Qué porción del plazo ya se consumió, para la barra. Se topa en 100
+      // porque hay casos de 59 días: sin tope, la barra de uno de 4 días se
+      // vería igual de llena que la de uno de 59 y la vista no diría nada.
+      slaAvance(c) {
+        if (!c?.sla_aplica || c.sla_horas === null || c.sla_horas === undefined) return 0;
+        return Math.max(0, Math.min(100, (c.sla_horas / this.slaHorasCierre()) * 100));
+      },
+
+      // Los umbrales los manda la API (lambda/sla_casos.py). Los literales de
+      // acá son sólo el respaldo para el primer render, antes de que llegue
+      // la respuesta: el número que manda es siempre el del backend, para que
+      // no haya dos definiciones del plazo que puedan separarse.
+      slaHorasCierre() { return this.caseSlaConfig.horas_cierre ?? 72; },
+      slaHorasRecontacto() { return this.caseSlaConfig.horas_recontacto ?? 36; },
+
+      limpiarFiltroSla() {
+        this.caseSlaFilter = ''; this.caseDiasMin = ''; this.caseDiasMax = '';
+        this.loadCases();
+      },
+
+      // Los casos con reloj, del más urgente al que más aire tiene. Es lo que
+      // ordena la línea de tiempo: primero lo que hay que cerrar hoy.
+      casosConPlazo() {
+        return this.cases
+          .filter(c => c.sla_aplica && c.sla_estado !== 'cerrado')
+          .sort((a, b) => (a.sla_horas_restantes ?? 0) - (b.sla_horas_restantes ?? 0));
+      },
+
+      // Los tramos de la línea de tiempo, en el orden en que hay que mirarlos.
+      //
+      // Los cortes son los hitos de la regla, no bloques redondos de 24 h. Con
+      // bloques redondos, la franja "24–48 h restantes" cruzaba por la mitad
+      // la marca de recontacto (que cae a las 36 h restantes) y mezclaba en un
+      // mismo grupo casos que ya había que recontactar con otros que todavía
+      // no: el subtítulo decía "ventana de recontacto" y era cierto sólo para
+      // la mitad de las filas.
+      tramosDeLaLinea() {
+        const casos = this.casosConPlazo();
+        const marca = this.slaHorasCierre() - this.slaHorasRecontacto();  // 36 h restantes
+        const r = c => c.sla_horas_restantes ?? 0;
+        const dias = h => this.slaDias(h / 24);
+        return [
+          { k: 'vencido', t: 'Vencidos — cerrar', d: 'Pasaron los ' + dias(this.slaHorasCierre()),
+            color: 'border-red-700 bg-red-950/30',
+            cs: casos.filter(c => r(c) < 0) },
+          { k: 'hoy', t: 'Cierran en menos de 24 h', d: 'Últimas horas del plazo',
+            color: 'border-orange-700 bg-orange-950/30',
+            cs: casos.filter(c => r(c) >= 0 && r(c) < 24) },
+          { k: 'recontacto', t: 'Pasó el recontacto', d: 'Ya cruzaron ' + dias(this.slaHorasRecontacto()) + ' desde que se abrieron',
+            color: 'border-amber-700 bg-amber-950/20',
+            cs: casos.filter(c => r(c) >= 24 && r(c) < marca) },
+          { k: 'nuevos', t: 'Dentro del primer tramo', d: 'Todavía no llegan al recontacto',
+            color: 'border-emerald-800 bg-emerald-950/20',
+            cs: casos.filter(c => r(c) >= marca) },
+        ];
       },
 
       async openCaseDetail(case_id) {

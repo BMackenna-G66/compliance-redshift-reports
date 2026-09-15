@@ -56,6 +56,16 @@ MARCA_TEXTO = "TEXTO LIBRE<br>TEXTO LIBRE<br>TEXTO LIBRE"
 FORMAL = [
     ("Hola {nombre},", "Estimados de {nombre}:"),
     ("Quedamos atentos a tu respuesta.", "Quedamos atentos a su respuesta."),
+    # La cláusula de respuesta del pie. Una sola plantilla sirve a persona y a
+    # empresa, así que el archivo la trae en tuteo y el pase a "usted" se hace
+    # acá, en el envío. Va entera y no por palabras: "tu" y "tus" aparecen en
+    # más lugares del correo, y reemplazarlas sueltas tocaría el cuerpo.
+    ("Respóndenos este correo adjuntando tus documentos a la brevedad. "
+     "Conserva el asunto tal como está, así podemos vincular tu respuesta "
+     "y procesar tu caso sin demoras.",
+     "Respóndannos este correo adjuntando sus documentos a la brevedad. "
+     "Conserven el asunto tal como está, así podemos vincular su respuesta "
+     "y procesar su caso sin demoras."),
 ]
 
 _cache = None
