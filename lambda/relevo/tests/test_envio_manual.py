@@ -369,3 +369,71 @@ class FormatoCorporativo(unittest.TestCase):
         i = html.index(plantilla.MARCA_TEXTO)
         self.assertIn("<span", html[max(0, i - 200):i])
         self.assertIn("<p ", html[max(0, i - 400):i])
+
+
+class RespuestaLibreAlCliente(Base):
+    """Texto libre al cliente, dentro del mismo hilo.
+
+    El pedido y el recontacto son plantillas: dicen qué documentos faltan. Una
+    conversación real tiene un tramo que no entra ahí — el cliente pregunta si
+    el comprobante sirve, manda algo que no se entiende, o hay que avisarle que
+    ya está todo.
+    """
+
+    CID = CASO["id"]
+
+    def _ya_le_escribimos(self, ref="abc123"):
+        """Deja una solicitud enviada, como si el pedido ya hubiera salido."""
+        self.dep.poner(envio.COLECCION, "s1",
+                       {"caso_id": self.CID, "enviado": True, "ref": ref,
+                        "cuando": "2026-09-14 10:00:00"})
+
+    def test_exige_autor(self):
+        r = envio.responder_libre(self.CID, texto="hola", quien="")
+        self.assertFalse(r["enviado"])
+        self.assertIn("quien", r["error"])
+
+    def test_no_manda_un_mensaje_vacio(self):
+        pv = envio.previsualizar_libre(self.CID, texto="   ")
+        self.assertFalse(pv["puede_enviar"])
+        self.assertTrue(any("vacío" in a for a in pv["avisos"]), pv["avisos"])
+
+    def test_respeta_el_interruptor(self):
+        """Mismo portón que el pedido: es un correo a un cliente real."""
+        self.cfg["sw_envio_general"] = False
+        pv = envio.previsualizar_libre(self.CID, texto="hola")
+        self.assertFalse(pv["puede_enviar"])
+
+    def test_sigue_el_hilo_del_pedido_ya_enviado(self):
+        """Reusa el token [rfi: …] para que la respuesta del cliente vuelva a
+        entrar al mismo caso. Sin eso sería un correo suelto y su respuesta
+        caería en la bandeja sin atarse a nada."""
+        self._ya_le_escribimos()
+        pv = envio.previsualizar_libre(self.CID, texto="hola")
+        self.assertTrue(pv["sigue_hilo"])
+        self.assertIn("abc123", pv["asunto"])
+
+    def test_sin_pedido_previo_avisa_que_abre_hilo_nuevo(self):
+        pv = envio.previsualizar_libre(self.CID, texto="hola")
+        self.assertFalse(pv["sigue_hilo"])
+        self.assertTrue(any("hilo nuevo" in a for a in pv["avisos"]), pv["avisos"])
+
+    def test_no_tiene_bloqueo_de_doble_envio(self):
+        """A diferencia del pedido: una aclaración puede necesitar varias idas
+        y vueltas, que es lo que hace una conversación."""
+        self._ya_le_escribimos()
+        pv = envio.previsualizar_libre(self.CID, texto="hola")
+        self.assertTrue(pv["puede_enviar"], "ya se le escribió, y aun así se puede")
+
+    def test_va_al_correo_del_cliente_y_con_su_nombre(self):
+        pv = envio.previsualizar_libre(self.CID, texto="hola")
+        self.assertEqual(pv["para"], "caragova1985@gmail.com")
+        self.assertIn("Carlos", pv["nombre"])
+
+    def test_el_texto_del_analista_se_escapa(self):
+        """Lo escribe una persona de la casa, pero un `<` mal puesto rompería
+        el correo del cliente igual."""
+        pv = envio.previsualizar_libre(self.CID, texto="mirá <script>x</script>")
+        if pv.get("html"):
+            self.assertNotIn("<script>x</script>", pv["html"])
+            self.assertIn("&lt;script&gt;", pv["html"])

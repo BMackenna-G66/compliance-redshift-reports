@@ -278,12 +278,14 @@ class DescargaEnLote(Base):
 class PlantillaDelPartner(unittest.TestCase):
     """La devolución va a un banco, no a un cliente."""
 
+    HOLA = [{"t": "p", "texto": "Hola"}]
+
     def test_no_lleva_el_pie_de_consumo(self):
         """La plantilla de cliente trae «¿Tienes dudas?», centro de ayuda,
         WhatsApp y las tiendas de apps. A un analista de un corresponsal eso
         se le lee como una campaña de marketing mandada por error."""
         from relevo import plantilla
-        h = plantilla.componer_partner("Hola")
+        h = plantilla.componer_partner(self.HOLA)
         self.assertIsNotNone(h)
         for basura in ("¿Tienes dudas?", "Whatsapp", "Play Store", "App Store",
                        "Centro de ayuda"):
@@ -291,25 +293,141 @@ class PlantillaDelPartner(unittest.TestCase):
 
     def test_conserva_la_marca(self):
         from relevo import plantilla
-        h = plantilla.componer_partner("Hola")
+        h = plantilla.componer_partner(self.HOLA)
         self.assertIn("d15k2d11r6t6rl", h)      # el logo oficial
         self.assertIn("#1433b4", h)             # el azul de marca
+
+    def test_el_logo_va_a_lo_ancho_y_no_aplastado(self):
+        """El banner es 1800x483. Con `height="26"` renderizaba a 97x26 y no
+        se leía nada — es la imagen que dice quién manda el correo."""
+        import re
+        from relevo import plantilla
+        h = plantilla.componer_partner(self.HOLA)
+        # Sólo la etiqueta <img>: el comentario del HTML menciona el height
+        # viejo para explicar el cambio, y buscarlo en todo el documento
+        # haría fallar el test por el comentario, no por el marcado.
+        img = re.search(r"<img\b[^>]*>", h).group(0)
+        self.assertIn('width="620"', img)
+        self.assertIn("height:auto", img)
+        self.assertNotIn('height="26"', img)
 
     def test_escapa_lo_que_viene_de_afuera(self):
         """Nombres de archivo y texto del cliente entran en un HTML."""
         from relevo import plantilla
-        h = plantilla.componer_partner("<script>alert(1)</script>")
+        h = plantilla.componer_partner([{"t": "p", "texto": "<script>alert(1)</script>"}])
         self.assertNotIn("<script>alert(1)</script>", h)
         self.assertIn("&lt;script&gt;", h)
 
-    def test_los_saltos_se_vuelven_br(self):
+    def test_escapa_tambien_dentro_de_las_listas_y_la_cita(self):
         from relevo import plantilla
-        h = plantilla.componer_partner("linea uno\nlinea dos")
-        self.assertIn("linea uno<br>linea dos", h)
+        h = plantilla.componer_partner([
+            {"t": "ul", "items": ["<b>archivo</b>.pdf"]},
+            {"t": "cita", "lineas": ["dijo <script>x</script>"]},
+        ])
+        self.assertNotIn("<b>archivo</b>", h)
+        self.assertNotIn("<script>x</script>", h)
+        self.assertIn("&lt;b&gt;archivo", h)
 
-    def test_no_deja_el_marcador_sin_reemplazar(self):
+    def test_las_listas_salen_como_listas_y_no_como_saltos(self):
+        """El bug que motivó el cambio: el cuerpo era una pared de <br>.
+        Medido sobre una devolución real, 81 seguidos para 3.000 caracteres,
+        con el correo ocupando 2.168 px de mayormente nada."""
         from relevo import plantilla
-        self.assertNotIn("CUERPO", plantilla.componer_partner("Hola"))
+        h = plantilla.componer_partner([
+            {"t": "h", "texto": "Information requested:"},
+            {"t": "ol", "items": ["Identity document", "Source of funds"]},
+        ])
+        self.assertIn("<ol", h)
+        self.assertIn("<li", h)
+        self.assertEqual(h.count("<li"), 2)
+
+    def test_lo_que_dijo_el_cliente_va_en_cita(self):
+        """El partner tiene que ver dónde termina lo que decimos nosotros y
+        empieza la declaración del cliente."""
+        from relevo import plantilla
+        h = plantilla.componer_partner([{"t": "cita", "lineas": ["Ahorros", "Mi mamá"]}])
+        self.assertIn("<blockquote", h)
+        self.assertIn("Ahorros<br>Mi mamá", h)
+
+    def test_el_pie_sigue_el_idioma_del_correo(self):
+        """El cuerpo salía en inglés y el pie en español, fijo en el HTML. A un
+        banco corresponsal eso le dice que nadie revisó lo que le mandaron."""
+        from relevo import plantilla
+        en = plantilla.componer_partner(self.HOLA, "en")
+        pt = plantilla.componer_partner(self.HOLA, "pt")
+        es = plantilla.componer_partner(self.HOLA, "es")
+        self.assertIn("This message answers an information request", en)
+        self.assertNotIn("Este mensaje responde", en)
+        self.assertIn("Esta mensagem responde", pt)
+        self.assertIn("Este mensaje responde", es)
+
+    def test_un_idioma_desconocido_cae_en_ingles(self):
+        from relevo import plantilla
+        h = plantilla.componer_partner(self.HOLA, "fr")
+        self.assertIn("This message answers", h)
+
+    def test_no_deja_ningun_marcador_sin_reemplazar(self):
+        from relevo import plantilla
+        h = plantilla.componer_partner(self.HOLA)
+        self.assertNotIn("CUERPO", h)
+        self.assertNotIn(">PIE<", h)
+
+
+class LoQueNoVaAlPartner(unittest.TestCase):
+    """Los restos que Gmail deja cuando el cliente responde adjuntando.
+
+    Medido sobre la respuesta real de un cliente: 2 enlaces de Google Drive a
+    sus propios archivos y 5 marcadores `[image: x.jpeg]`. Los dos bloques de
+    cita ocupaban 1.133 px de los 2.107 del correo.
+
+    Los enlaces son lo grave: o el partner no puede abrirlos —y entonces es
+    ruido— o sí puede, y entonces es un documento de identidad viajando como
+    link reenviable a un tercero. En pantalla se conservan, porque un enlace de
+    Drive puede ser la única vía a algo que el cliente no adjuntó.
+    """
+
+    def test_saca_los_enlaces_sueltos(self):
+        from relevo import devolucion as D
+        fuera = D._para_el_partner([
+            "Adjunto lo pedido",
+            "<https://drive.google.com/file/d/1ik2VCpn/view?usp=drivesdk>",
+            "https://drive.google.com/file/d/otro/view",
+            "Gracias",
+        ])
+        self.assertEqual(fuera, ["Adjunto lo pedido", "Gracias"])
+
+    def test_saca_los_marcadores_de_imagen(self):
+        from relevo import devolucion as D
+        self.assertEqual(
+            D._para_el_partner(["Comprobante:", "[image: 2.jpeg]", "[IMAGE: Cheque BNB.jpeg]"]),
+            ["Comprobante:"])
+
+    def test_saca_varios_marcadores_de_la_misma_linea(self):
+        """Gmail los encadena: `[image: 1.jpeg][image: 2.jpeg]` en una línea.
+        Con la versión anclada quedaban dos sin sacar."""
+        from relevo import devolucion as D
+        self.assertEqual(
+            D._para_el_partner(["[image: 1.jpeg][image: 2.jpeg]"]), [])
+
+    def test_conserva_el_texto_que_acompania_al_marcador(self):
+        """Si el cliente escribió algo en la misma línea, eso es su
+        declaración y tiene que llegar; se va sólo el marcador."""
+        from relevo import devolucion as D
+        self.assertEqual(
+            D._para_el_partner(["Folio del inmueble. [image: 1.jpeg]"]),
+            ["Folio del inmueble."])
+
+    def test_no_se_lleva_texto_que_menciona_un_enlace(self):
+        """Sólo las líneas que SON un enlace. Si el cliente escribió una frase
+        con una URL adentro, esa frase es su declaración y tiene que llegar."""
+        from relevo import devolucion as D
+        frase = "El contrato está en https://ejemplo.com/doc y lo firmé yo"
+        self.assertEqual(D._para_el_partner([frase]), [frase])
+
+    def test_no_toca_una_respuesta_limpia(self):
+        from relevo import devolucion as D
+        ls = ["Hola,", "1. Origen de los fondos: Ahorros", "Saludos"]
+        self.assertEqual(D._para_el_partner(ls), ls)
 
 
 class EnviarAlPartner(Base):
