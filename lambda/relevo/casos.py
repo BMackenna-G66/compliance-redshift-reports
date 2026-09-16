@@ -54,6 +54,32 @@ CONTACTOS = ["pedido_enviado", "recontactado"]
 # contara como intento gastaría uno de los tres del recontacto.
 ACCIONES_INFORMATIVAS = ["mensaje_libre"]
 
+# La corrección a mano. Lleva el estado en `detalle["estado"]`.
+#
+# Existe porque el estado derivado es correcto respecto del registro, y el
+# registro puede no ser correcto respecto de la realidad: el pedido se mandó
+# desde el correo y no desde acá, el partner contestó por teléfono, el caso se
+# resolvió afuera. Sin una salida manual la única opción del analista es
+# registrar una acción que no ocurrió, que es peor: ensucia el histórico con
+# un hecho falso en vez de con una corrección declarada.
+#
+# No rompe el append-only ni el "no se guarda estado": la marca es una
+# anotación más, firmada y fechada como cualquier otra, y el estado se sigue
+# derivando. Lo que cambia es desde dónde: ver `_estado`.
+ACCION_MANUAL = "estado_manual"
+ACCIONES_MANUALES = [ACCION_MANUAL]
+
+# Qué se puede fijar a mano: dónde está el caso en el circuito.
+#
+# Quedan afuera `informativo`, `sin_cliente`, `sin_correo` y `sin_requerimiento`
+# a propósito: no son etapas del trabajo sino diagnósticos de los datos —el
+# cliente no se encontró, no tiene correo, no se entendió el pedido—. Ponerlos
+# a mano no arregla el dato que falta, sólo tapa el diagnóstico que dice dónde
+# está el problema.
+ESTADOS_MANUALES = ["listo_para_pedir", "pedido_enviado", "recontactado",
+                    "respuesta_parcial", "respuesta_recibida", "devuelto",
+                    "sin_respuesta", "cerrado", "descartado"]
+
 # Política de recontacto. Vive acá y no repartida en el código: cambiarla es
 # cambiar estas dos líneas.
 POLITICA = {
@@ -183,6 +209,22 @@ def _estado(caso):
         el cliente ya respondió.
     """
     hechas = [a for a in caso["acciones"] if a["accion"] in ACCIONES]
+
+    # La marca manual mueve el punto de partida: lo anterior a ella ya fue
+    # tenido en cuenta por quien la puso, y desde ahí se sigue derivando
+    # normalmente. Por eso no alcanza con "gana la última acción": un caso que
+    # alguien sacó de `cerrado` volvería a cerrarse sola la próxima vez que se
+    # registre cualquier cosa, porque las terminales son pegajosas. Corriendo
+    # el punto de partida, la terminal vieja sencillamente ya no se mira.
+    manuales = [a for a in caso["acciones"] if a["accion"] == ACCION_MANUAL
+                and (a.get("detalle") or {}).get("estado") in ESTADOS]
+    if manuales:
+        marca = manuales[-1]
+        posteriores = [a for a in hechas if (a.get("cuando") or "") > (marca.get("cuando") or "")]
+        if not posteriores:
+            return (marca["detalle"])["estado"]
+        hechas = posteriores
+
     if hechas:
         terminales = [a for a in hechas if a["accion"] in TERMINALES]
         return (terminales[-1] if terminales else hechas[-1])["accion"]
@@ -244,7 +286,15 @@ def _seguimiento(caso, hoy=None):
     quedar desincronizado con el histórico.
     """
     hoy = hoy or datetime.now(timezone.utc).astimezone()
-    contactos = [a for a in caso["acciones"] if a["accion"] in CONTACTOS]
+    # Una marca manual a `pedido_enviado` o `recontactado` cuenta como intento.
+    # El caso típico de la marca es justamente que el contacto ocurrió fuera de
+    # la herramienta —se mandó desde el correo, se llamó—: si no sumara, el
+    # contador de intentos diría que quedan tres cuando en la realidad se
+    # gastaron, y la política de recontacto se aplicaría sobre un número falso.
+    contactos = [a for a in caso["acciones"]
+                 if a["accion"] in CONTACTOS
+                 or (a["accion"] == ACCION_MANUAL
+                     and (a.get("detalle") or {}).get("estado") in CONTACTOS)]
     fuera = {"intentos": len(contactos), "ultimo_contacto": "", "proximo_contacto": "",
              "vencido": False, "agotado": False, "faltantes": [], "recibidos": []}
 
@@ -334,9 +384,19 @@ def por_cliente(casos):
 
 def registrar(caso_id, accion, quien="", detalle=None, ruta=None):
     """Anota una acción. Sólo agrega: el histórico no se reescribe nunca."""
-    validas = ACCIONES + ACCIONES_INFORMATIVAS
+    validas = ACCIONES + ACCIONES_INFORMATIVAS + ACCIONES_MANUALES
     if accion not in validas:
         raise ValueError(f"acción desconocida: {accion!r}. Válidas: {', '.join(validas)}")
+    if accion == ACCION_MANUAL:
+        # Se valida acá y no sólo en el API: una marca manual sin estado, o con
+        # uno que no existe, se guardaría igual y después `_estado` la
+        # ignoraría en silencio. El caso quedaría mostrando el estado viejo y
+        # el analista viendo su corrección en el histórico sin efecto.
+        pedido = (detalle or {}).get("estado")
+        if pedido not in ESTADOS_MANUALES:
+            raise ValueError(
+                f"estado no fijable a mano: {pedido!r}. "
+                f"Fijables: {', '.join(ESTADOS_MANUALES)}")
     ev = {"caso": caso_id, "accion": accion, "quien": quien,
           "cuando": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
           "detalle": detalle or {}}
