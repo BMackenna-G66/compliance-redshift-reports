@@ -136,6 +136,111 @@ class Estado(unittest.TestCase):
         self.assertEqual(C.construir([t], acciones=acc)[0]["estado"], "cerrado")
 
 
+def marca(estado, cuando, quien="ana@global66.com", motivo=""):
+    return {"accion": C.ACCION_MANUAL, "cuando": cuando, "quien": quien,
+            "detalle": {"estado": estado, "motivo": motivo}}
+
+
+class EstadoAMano(unittest.TestCase):
+    """La corrección manual: el estado lo fija una persona cuando el registro
+    no refleja lo que pasó de verdad (el pedido se mandó desde el correo, el
+    partner contestó por teléfono)."""
+
+    def caso(self, acciones):
+        t = tx(cliente=resuelto())
+        return C.construir([t], acciones={C.id_de(t): acciones})[0]
+
+    def test_fija_el_estado(self):
+        self.assertEqual(self.caso([marca("devuelto", "2026-09-06T10:00:00")])["estado"],
+                         "devuelto")
+
+    def test_le_gana_a_lo_anterior(self):
+        c = self.caso([{"accion": "pedido_enviado", "cuando": "2026-09-01T10:00:00"},
+                       marca("respuesta_recibida", "2026-09-05T10:00:00")])
+        self.assertEqual(c["estado"], "respuesta_recibida")
+
+    def test_saca_un_caso_de_una_terminal(self):
+        """Lo que un botón no puede hacer: deshacer un cierre por error."""
+        c = self.caso([{"accion": "cerrado", "cuando": "2026-09-01T10:00:00"},
+                       marca("pedido_enviado", "2026-09-05T10:00:00")])
+        self.assertEqual(c["estado"], "pedido_enviado")
+
+    def test_y_la_terminal_vieja_no_vuelve_con_la_proxima_accion(self):
+        """El punto de la marca: si sólo 'ganara la última', al registrar
+        cualquier cosa después la terminal pegajosa se impondría de nuevo y el
+        caso volvería a cerrarse solo."""
+        c = self.caso([{"accion": "cerrado", "cuando": "2026-09-01T10:00:00"},
+                       marca("pedido_enviado", "2026-09-05T10:00:00"),
+                       {"accion": "recontactado", "cuando": "2026-09-08T10:00:00"}])
+        self.assertEqual(c["estado"], "recontactado")
+
+    def test_lo_posterior_a_la_marca_sigue_derivando(self):
+        c = self.caso([marca("pedido_enviado", "2026-09-01T10:00:00"),
+                       {"accion": "respuesta_recibida", "cuando": "2026-09-03T10:00:00"}])
+        self.assertEqual(c["estado"], "respuesta_recibida")
+
+    def test_una_terminal_posterior_a_la_marca_si_manda(self):
+        c = self.caso([marca("pedido_enviado", "2026-09-01T10:00:00"),
+                       {"accion": "cerrado", "cuando": "2026-09-03T10:00:00"},
+                       {"accion": "recontactado", "cuando": "2026-09-05T10:00:00"}])
+        self.assertEqual(c["estado"], "cerrado")
+
+    def test_manda_la_ultima_marca(self):
+        c = self.caso([marca("devuelto", "2026-09-01T10:00:00"),
+                       marca("recontactado", "2026-09-04T10:00:00")])
+        self.assertEqual(c["estado"], "recontactado")
+
+    def test_una_marca_a_un_estado_que_no_existe_se_ignora(self):
+        """Si se colara una, el estado se sigue derivando en vez de quedar en
+        un valor que la pantalla no sabe pintar."""
+        c = self.caso([{"accion": "pedido_enviado", "cuando": "2026-09-01T10:00:00"},
+                       marca("inventado", "2026-09-05T10:00:00")])
+        self.assertEqual(c["estado"], "pedido_enviado")
+
+    def test_marcar_un_contacto_gasta_un_intento(self):
+        """El caso típico es que el contacto ocurrió fuera de la herramienta.
+        Si no contara, la política de recontacto correría sobre un número
+        falso y el caso pediría un cuarto intento."""
+        c = self.caso([{"accion": "pedido_enviado", "cuando": "2026-09-01T10:00:00"},
+                       marca("recontactado", "2026-09-04T10:00:00")])
+        self.assertEqual(c["seguimiento"]["intentos"], 2)
+
+    def test_marcar_otra_cosa_no_gasta_intento(self):
+        c = self.caso([{"accion": "pedido_enviado", "cuando": "2026-09-01T10:00:00"},
+                       marca("respuesta_recibida", "2026-09-04T10:00:00")])
+        self.assertEqual(c["seguimiento"]["intentos"], 1)
+
+
+class RegistrarAMano(unittest.TestCase):
+    """La validación al escribir: una marca inválida no se guarda."""
+
+    def ruta(self):
+        return Path(tempfile.mkdtemp()) / "acciones.jsonl"
+
+    def test_acepta_un_estado_fijable(self):
+        ev = C.registrar("nium:caso:1", C.ACCION_MANUAL, quien="ana@g66.com",
+                         detalle={"estado": "devuelto"}, ruta=self.ruta())
+        self.assertEqual(ev["detalle"]["estado"], "devuelto")
+
+    def test_rechaza_una_marca_sin_estado(self):
+        with self.assertRaises(ValueError):
+            C.registrar("nium:caso:1", C.ACCION_MANUAL, quien="ana@g66.com",
+                        detalle={}, ruta=self.ruta())
+
+    def test_rechaza_un_diagnostico_de_datos(self):
+        """`sin_correo` no es una etapa del trabajo: describe que falta un dato.
+        Fijarlo a mano taparía el diagnóstico sin arreglar nada."""
+        for estado in ("sin_correo", "sin_cliente", "informativo", "sin_requerimiento"):
+            with self.subTest(estado), self.assertRaises(ValueError):
+                C.registrar("nium:caso:1", C.ACCION_MANUAL, quien="ana@g66.com",
+                            detalle={"estado": estado}, ruta=self.ruta())
+
+    def test_los_tres_estados_que_se_pidieron_son_fijables(self):
+        """Enviado al cliente, recontactado y esperando al partner."""
+        for estado in ("pedido_enviado", "recontactado", "devuelto"):
+            self.assertIn(estado, C.ESTADOS_MANUALES)
+
+
 class Recontacto(unittest.TestCase):
     """El seguimiento se DERIVA de contar acciones: no hay campo que se
     desincronice con el histórico."""

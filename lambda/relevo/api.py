@@ -112,7 +112,32 @@ def _resumen_caso(c):
         # Quién se hizo cargo. Derivado de las acciones (ver `_analista`), así
         # que vale también para los casos ya trabajados.
         **_analista(c),
+        # Y si el estado que se está mostrando lo fijó una persona. Importa
+        # decirlo: un estado derivado del registro y uno declarado a mano se
+        # ven igual en la lista, y no valen lo mismo para auditar.
+        **_marca_manual(c),
     }
+
+
+def _marca_manual(c):
+    """La última corrección a mano, si todavía es la que manda.
+
+    Si después de la marca se registraron acciones, el estado volvió a salir
+    del registro y la marca ya no explica lo que se ve: en ese caso no se
+    informa nada, para no atribuirle a una persona un estado que no puso.
+    """
+    marcas = [a for a in (c.get("acciones") or [])
+              if a.get("accion") == casos.ACCION_MANUAL]
+    if not marcas:
+        return {}
+    ult = marcas[-1]
+    cuando = ult.get("cuando") or ""
+    if any((a.get("cuando") or "") > cuando for a in (c.get("acciones") or [])
+           if a.get("accion") in casos.ACCIONES):
+        return {}
+    det = ult.get("detalle") or {}
+    return {"estado_manual": True, "estado_manual_por": ult.get("quien", ""),
+            "estado_manual_cuando": cuando, "estado_manual_motivo": det.get("motivo", "")}
 
 
 def listar_casos(q):
@@ -155,13 +180,26 @@ def registrar_accion(caso_id, body):
     no cambie, el autor de una acción es declarativo, no verificado.
     """
     accion = (body.get("accion") or "").strip()
-    if accion not in casos.ACCIONES:
+    if accion not in casos.ACCIONES + casos.ACCIONES_MANUALES:
         return {"error": f"acción desconocida: {accion!r}",
-                "validas": list(casos.ACCIONES)}
+                "validas": list(casos.ACCIONES) + list(casos.ACCIONES_MANUALES)}
     quien = (body.get("quien") or body.get("actor_email") or "").strip()
     if not quien:
         return {"error": "quien es requerido: una acción sin autor no sirve de registro"}
-    ev = casos.registrar(caso_id, accion, quien=quien, detalle=body.get("detalle") or {})
+    detalle = body.get("detalle") or {}
+    if accion == casos.ACCION_MANUAL:
+        # El estado puede venir suelto o dentro de `detalle`; la pantalla manda
+        # lo primero, que es más simple de escribir desde el front.
+        estado = (body.get("estado") or detalle.get("estado") or "").strip()
+        if estado not in casos.ESTADOS_MANUALES:
+            return {"error": f"estado no fijable a mano: {estado!r}",
+                    "validos": list(casos.ESTADOS_MANUALES)}
+        detalle = {**detalle, "estado": estado,
+                   "motivo": (body.get("motivo") or detalle.get("motivo") or "").strip()}
+    try:
+        ev = casos.registrar(caso_id, accion, quien=quien, detalle=detalle)
+    except ValueError as e:
+        return {"error": str(e)}
     # Se devuelve el estado recalculado con la acción ya incluida, para que la
     # pantalla no tenga que esperar el próximo snapshot.
     acciones = casos.leer_acciones()
