@@ -79,6 +79,14 @@ except Exception as _e:  # pragma: no cover - sólo si falta reportlab o el mód
     ficha_pdf = None
     print(f"[api] ficha_pdf no disponible, la descarga en PDF queda fuera: {_e}")
 
+# El reloj de los casos de alerta. Mismo import defensivo: si faltara, el
+# listado de casos tiene que seguir saliendo sin el semáforo, no dejar de salir.
+try:
+    import sla_casos
+except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
+    sla_casos = None
+    print(f"[api] sla_casos no disponible, los casos van sin plazo: {_e}")
+
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
 s3 = boto3.client("s3")
@@ -2507,7 +2515,17 @@ def handler(event, context):  # noqa: ARG001
         # GET /cases
         if method == "GET" and parts == ["cases"]:
             qs = event.get("queryStringParameters") or {}
-            return get_cases(qs.get("status"), qs.get("priority"), qs.get("assigned_to"))
+
+            def _dias(clave):
+                """Un valor no numérico se ignora en vez de romper el listado:
+                el filtro viene de la URL y puede llegar cualquier cosa."""
+                try:
+                    return float(qs[clave])
+                except (KeyError, TypeError, ValueError):
+                    return None
+
+            return get_cases(qs.get("status"), qs.get("priority"), qs.get("assigned_to"),
+                             qs.get("sla"), _dias("dias_min"), _dias("dias_max"))
         # POST /cases
         if method == "POST" and parts == ["cases"]:
             return create_case(body)
@@ -4188,10 +4206,44 @@ def _now_str() -> str:
     return dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_cases(status_filter=None, priority_filter=None, assigned_filter=None):
+def _contactos_por_caso() -> dict:
+    """Cuántas veces se le escribió al cliente en cada caso, y cuándo la última.
+
+    Sale de `document_requests`, que es el registro de lo que efectivamente se
+    mandó. Un envío fallido no cuenta como contacto: el cliente no recibió
+    nada, así que el recontacto sigue pendiente.
+
+    Es un listado completo del prefijo, unas 76 lecturas hoy contra las 89 de
+    los casos. Se paga una vez por llamada y evita tener que mantener un
+    contador dentro del caso, que habría que backfillear en los 89 que ya
+    existen y quedaría desincronizado la primera vez que alguien escriba por
+    otro camino.
+    """
+    por_caso = {}
+    for r in _crm_list("document_requests"):
+        cid = r.get("case_id")
+        if not cid or not r.get("sent"):
+            continue
+        d = por_caso.setdefault(cid, {"contactos": 0, "ultimo": ""})
+        d["contactos"] += 1
+        cuando = r.get("created_at", "")
+        if cuando > d["ultimo"]:
+            d["ultimo"] = cuando
+    return por_caso
+
+
+def get_cases(status_filter=None, priority_filter=None, assigned_filter=None,
+              sla_filter=None, dias_min=None, dias_max=None):
     """List cases with optional filters (S3-backed). Ordered by status urgency,
-    priority, then updated_at DESC."""
+    priority, then updated_at DESC.
+
+    `sla_filter` filtra por estado del semáforo (en_plazo, por_recontactar,
+    por_contactar, vencido, cerrado, sin_plazo) y `dias_min`/`dias_max` por
+    días abierto, que es lo que pide la vista de línea de tiempo.
+    """
     try:
+        contactos = _contactos_por_caso() if sla_casos else {}
+        referencia = sla_casos.ahora() if sla_casos else None
         out = []
         for c in _crm_list("cases"):
             if status_filter and status_filter != "all" and c.get("status") != status_filter:
@@ -4217,12 +4269,52 @@ def get_cases(status_filter=None, priority_filter=None, assigned_filter=None):
                 "closed_at": c.get("closed_at", ""),
                 "note_count": len(c.get("notes", [])),
             })
+            if sla_casos:
+                ct = contactos.get(c.get("case_id"), {})
+                out[-1].update(sla_casos.evaluar(
+                    c, referencia,
+                    contactos=ct.get("contactos", 0),
+                    ultimo_contacto=ct.get("ultimo", ""),
+                    respondio=any(_es_correo_recibido(n) for n in (c.get("notes") or []))))
+
+        if sla_casos:
+            out = [x for x in out if _pasa_filtro_sla(x, sla_filter, dias_min, dias_max)]
+
         out.sort(key=lambda x: x["updated_at"], reverse=True)
         out.sort(key=lambda x: (_CASE_STATUS_RANK.get(x["status"], 5),
                                 _PRIORITY_RANK.get(x["priority"], 2)))
-        return resp(200, {"cases": out})
+        # Los umbrales viajan con la respuesta para que el front no los repita:
+        # si mañana el plazo pasa a 5 días, se cambia en sla_casos.py y la
+        # vista de plazos se recorta sola en los hitos nuevos.
+        return resp(200, {
+            "cases": out,
+            "sla_resumen": sla_casos.resumen(out) if sla_casos else {},
+            "sla_config": {
+                "horas_recontacto": sla_casos.HORAS_RECONTACTO,
+                "horas_cierre": sla_casos.HORAS_CIERRE,
+            } if sla_casos else {},
+        })
     except Exception as e:
         return resp(200, {"cases": [], "warning": str(e)})
+
+
+def _pasa_filtro_sla(caso: dict, estado, dias_min, dias_max) -> bool:
+    """Filtros del semáforo. Un caso sin plazo (no vino de una alerta) queda
+    fuera de cualquier filtro por días: no tiene reloj que medir."""
+    if estado and estado != "all":
+        buscado = "" if estado == "sin_plazo" else estado
+        if caso.get("sla_estado") != buscado:
+            return False
+    if dias_min is None and dias_max is None:
+        return True
+    dias = caso.get("sla_dias")
+    if dias is None:
+        return False
+    if dias_min is not None and dias < dias_min:
+        return False
+    if dias_max is not None and dias > dias_max:
+        return False
+    return True
 
 
 def create_case(body: dict):
