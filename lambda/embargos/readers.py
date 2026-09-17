@@ -157,15 +157,39 @@ def extract_pdf_metadata(text: str) -> Dict[str, str]:
     return meta
 
 
+class PdfSinTabla(Exception):
+    """El PDF no entregó la tabla de demandados. Lleva el porqué adentro."""
+
+
+# Un oficio real ronda los 3.300 caracteres por pagina; un escaneo devuelve 0.
+# El umbral esta lejos de los dos para que un PDF con una portada en imagen y
+# el resto en texto no se confunda con un escaneo.
+MIN_CHARS_POR_PAGINA = 50
+
+
 def read_pdf(path: Path) -> Iterator[Dict]:
     import pdfplumber
     settings = {"text_x_tolerance": PDF_X_TOLERANCE}
     with pdfplumber.open(path) as pdf:
         full_text = "\n".join((p.extract_text(x_tolerance=PDF_X_TOLERANCE) or "")
                               for p in pdf.pages)
+        paginas = max(1, len(pdf.pages))
+
+        # Un PDF escaneado devuelve cero filas SIN error, y "0 personas" en la
+        # pantalla se lee como "no hay a quien embargar" cuando en realidad el
+        # archivo no se leyo. En un oficio judicial esa confusion es cara: se
+        # archiva como procesado y las personas nunca se cruzaron. Por eso
+        # falla fuerte y dice que hacer.
+        if len(full_text.strip()) < MIN_CHARS_POR_PAGINA * paginas:
+            raise PdfSinTabla(
+                "El PDF no tiene texto: parece un escaneo o una imagen. "
+                "No se leyo ninguna persona. Pedi el oficio en Excel, o el "
+                "PDF original del juzgado (no la copia escaneada).")
+
         meta = extract_pdf_metadata(full_text)
         yield {"__meta__": meta}
 
+        filas = 0
         mapping: Dict[str, int] = {}
         for pno, page in enumerate(pdf.pages, start=1):
             for table in page.extract_tables(settings) or []:
@@ -183,8 +207,20 @@ def read_pdf(path: Path) -> Iterator[Dict]:
                     doc = clean_text(raw.get("numero_documento"))
                     if not re.search(r"\d{4,}", doc):   # descarta filas de instrucciones
                         continue
+                    filas += 1
                     yield {**raw, "__sheet__": f"pagina {pno}", "__row__": offset,
                            "__page_meta__": meta}
+
+        # Tiene texto pero no salio ninguna fila. Es otro problema —la tabla no
+        # se reconocio, o el oficio no trae tabla— y se dice distinto, porque
+        # el remedio es distinto: aca el archivo sirve y hay que mirar el
+        # formato, no pedirlo de nuevo.
+        if not filas:
+            raise PdfSinTabla(
+                "Se leyo el texto del PDF pero no se reconocio la tabla de "
+                "demandados, asi que no se extrajo ninguna persona. Revisa que "
+                "el oficio traiga la tabla con las columnas de tipo y numero de "
+                "documento; si la trae, mandalo para ajustar la lectura.")
 
 
 # --------------------------------------------------------------------- router
