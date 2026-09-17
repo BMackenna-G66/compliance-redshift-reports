@@ -22,6 +22,7 @@ personales publicadas para que el test pase.
 import hashlib
 import sys
 import unittest
+import tempfile
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
@@ -443,6 +444,59 @@ class Empaquetado(unittest.TestCase):
         """El repo es público y las muestras traen 42.667 personas reales."""
         ignore = (RAIZ.parent / ".gitignore").read_text()
         self.assertIn("lambda/embargos/muestras/", ignore)
+
+
+class PdfQueNoSeDejaLeer(unittest.TestCase):
+    """Un PDF sin tabla tiene que fallar fuerte, no devolver cero personas.
+
+    El modo de falla que esto cubre no rompe nada: `pdfplumber` sobre un
+    escaneo devuelve cero filas y ningún error, así que la corrida terminaba
+    "bien" con 0 personas. En un oficio judicial eso se lee como "no hay a
+    quién embargar", se archiva como procesado, y las personas nunca se
+    cruzaron contra la base. El archivo se leyó mal y nadie se enteró.
+
+    No usan muestras: los PDF se arman acá, así que corren siempre.
+    """
+
+    def _pdf(self, paginas, texto=None):
+        """Un PDF de prueba. Sin `texto` sale en imagen, como un escaneo."""
+        from reportlab.pdfgen import canvas
+        ruta = Path(tempfile.mkdtemp()) / "oficio.pdf"
+        c = canvas.Canvas(str(ruta))
+        for _ in range(paginas):
+            if texto:
+                for j in range(40):
+                    c.drawString(40, 800 - j * 18, texto)
+            else:
+                # Una página con un rectángulo y nada de texto: es lo que
+                # pdfplumber ve en un escaneo.
+                c.rect(40, 40, 500, 700)
+            c.showPage()
+        c.save()
+        return ruta
+
+    def test_un_escaneo_avisa_que_no_tiene_texto(self):
+        from embargos.readers import PdfSinTabla
+        with self.assertRaises(PdfSinTabla) as ctx:
+            extract.extraer(self._pdf(3))
+        self.assertIn("no tiene texto", str(ctx.exception))
+        # Y dice qué hacer, que es lo que convierte el error en algo accionable.
+        self.assertIn("Excel", str(ctx.exception))
+
+    def test_con_texto_pero_sin_tabla_avisa_otra_cosa(self):
+        """Otro problema, otro remedio: acá el archivo sirve y hay que mirar
+        el formato, no pedirlo de nuevo."""
+        from embargos.readers import PdfSinTabla
+        with self.assertRaises(PdfSinTabla) as ctx:
+            extract.extraer(self._pdf(2, texto="Oficio DEAJGCC26-9999 sin tabla adentro."))
+        self.assertIn("no se reconocio la tabla", str(ctx.exception))
+        self.assertNotIn("no tiene texto", str(ctx.exception))
+
+    def test_el_umbral_no_confunde_una_portada_en_imagen(self):
+        """Un oficio con la carátula escaneada y la tabla en texto NO puede
+        caer en el error de 'escaneo': el umbral es por promedio de página."""
+        from embargos.readers import MIN_CHARS_POR_PAGINA
+        self.assertLess(MIN_CHARS_POR_PAGINA, 100)
 
 
 if __name__ == "__main__":
