@@ -6569,6 +6569,11 @@
             class="pb-3 px-2 text-sm font-medium transition">
             📊 SLA
           </button>
+          <button @click="adminSubtab='informe'"
+            :class="adminSubtab==='informe' ? 'border-b-2 border-amber-500 text-amber-400' : 'text-slate-400 hover:text-white'"
+            class="pb-3 px-2 text-sm font-medium transition">
+            📈 Informe de gestión
+          </button>
           <button @click="adminSubtab='priorizacion'; loadPriorityQueueSettings()"
             :class="adminSubtab==='priorizacion' ? 'border-b-2 border-pink-500 text-pink-400' : 'text-slate-400 hover:text-white'"
             class="pb-3 px-2 text-sm font-medium transition">
@@ -6997,7 +7002,7 @@
         <div x-show="adminSubtab==='analistas'">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-semibold text-white">Analistas CRM (Redshift)</h3>
-            <button @click="crmUserModal={open:true,mode:'create',form:{email:'',full_name:'',role_id:1}}"
+            <button @click="crmUserModal={open:true,mode:'create',form:{email:'',full_name:'',role_id:1,equipo:''}}"
               class="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition">
               + Nuevo analista
             </button>
@@ -7014,13 +7019,16 @@
                   <p class="text-xs text-slate-400" x-text="u.email"></p>
                 </div>
                 <span class="text-xs px-2 py-0.5 rounded-full font-medium"
+                  :class="u.equipo ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-700/50 text-slate-500'"
+                  x-text="u.equipo || 'sin equipo'"></span>
+                <span class="text-xs px-2 py-0.5 rounded-full font-medium"
                   :class="u.role_name==='SUPER_ADMIN' ? 'bg-orange-500/20 text-orange-400' : u.role_name==='ADMIN' ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-600/40 text-slate-300'"
                   x-text="u.role_name"></span>
                 <span class="text-xs px-2 py-0.5 rounded-full"
                   :class="u.is_active ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'"
                   x-text="u.is_active ? 'Activo' : 'Inactivo'"></span>
                 <div class="flex gap-2 shrink-0">
-                  <button @click="crmUserModal={open:true,mode:'edit',userId:u.id,form:{full_name:u.full_name||'',role_id:u.role_id,is_active:u.is_active}}"
+                  <button @click="crmUserModal={open:true,mode:'edit',userId:u.id,form:{full_name:u.full_name||'',role_id:u.role_id,is_active:u.is_active,equipo:u.equipo||''}}"
                     class="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition">✏️</button>
                   <button x-show="u.is_active" @click="deactivateCrmUser(u.id)"
                     class="text-xs px-2 py-1 bg-red-900/40 hover:bg-red-800/60 text-red-400 rounded-lg transition">Desactivar</button>
@@ -7047,6 +7055,20 @@
                   <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Nombre completo</label>
                   <input type="text" x-model="crmUserModal.form.full_name" placeholder="Nombre Apellido"
                     class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:border-indigo-500 focus:outline-none">
+                </div>
+                <div>
+                  <div>
+                  <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Equipo</label>
+                  <input type="text" x-model="crmUserModal.form.equipo" list="equipos-conocidos"
+                    placeholder="Monitoreo, Onboarding…"
+                    class="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500">
+                  <datalist id="equipos-conocidos">
+                    <template x-for="e in equiposConocidos()" :key="e"><option :value="e"></option></template>
+                  </datalist>
+                  <p class="text-[11px] text-slate-500 mt-1">
+                    Con lo que agrupa el informe de gestión. Texto libre: el primero que escribas
+                    queda sugerido para el resto.
+                  </p>
                 </div>
                 <div>
                   <label class="text-xs text-slate-400 uppercase tracking-wider mb-1 block">Rol</label>
@@ -7303,6 +7325,77 @@
         </div>
 
         <!-- ---- Sub-tab: Priorización de Alertas ---- -->
+        <!-- ── INFORME DE GESTIÓN ──────────────────────────────────────
+             Un PDF con el estado de los casos por equipo y por analista.
+             Se genera en el backend y baja por una URL prefirmada: el PDF no
+             pasa por el API Gateway, que topea el cuerpo en ~6 MB. -->
+        <div x-show="adminSubtab==='informe'" x-cloak>
+          <div class="bg-slate-800 border border-slate-700 rounded-xl p-6 max-w-4xl">
+            <h2 class="text-lg font-bold text-white mb-1">📈 Informe de gestión de casos</h2>
+            <p class="text-sm text-slate-400 mb-5">
+              Abiertos, cerrados, tiempo de cierre, porcentaje gestionado y casos sin tocar.
+              Primero por equipo y después por analista.
+            </p>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1.5">Desde (creación del caso)</label>
+                <input type="date" x-model="informe.desde"
+                  class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-amber-400">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1.5">Hasta</label>
+                <input type="date" x-model="informe.hasta"
+                  class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-amber-400">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1.5">Analista</label>
+                <select x-model="informe.analista"
+                  class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-amber-400">
+                  <option value="">Todos</option>
+                  <template x-for="u in crmUsers" :key="u.email">
+                    <option :value="u.email" x-text="u.full_name || u.email"></option>
+                  </template>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1.5">Equipo</label>
+                <select x-model="informe.equipo"
+                  class="w-full bg-slate-700 border border-slate-600 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-amber-400">
+                  <option value="">Todos</option>
+                  <template x-for="e in equiposConocidos()" :key="e">
+                    <option :value="e" x-text="e"></option>
+                  </template>
+                </select>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-3">
+              <button @click="descargarInforme()" :disabled="informe.generando"
+                class="px-5 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition">
+                <span x-text="informe.generando ? 'Generando…' : '⬇ Descargar informe (PDF)'"></span>
+              </button>
+              <button x-show="informe.desde || informe.hasta || informe.analista || informe.equipo"
+                @click="informe.desde=''; informe.hasta=''; informe.analista=''; informe.equipo=''"
+                class="text-xs text-slate-400 hover:text-white underline">limpiar filtros</button>
+              <span x-show="informe.ultimo" class="text-xs text-emerald-400">
+                ✓ <span x-text="informe.ultimo?.casos"></span> casos ·
+                <span x-text="informe.ultimo?.equipos"></span> equipos
+              </span>
+            </div>
+
+            <p x-show="informe.error" x-cloak class="mt-3 text-xs text-red-400" x-text="informe.error"></p>
+
+            <!-- El equipo sale del usuario. Si nadie lo cargó, el informe
+                 agrupa todo en "Sin equipo" — que es visible a propósito. -->
+            <p x-show="equiposConocidos().length === 0" x-cloak
+              class="mt-4 text-xs text-amber-300/90 bg-amber-950/30 border border-amber-800 rounded-lg px-3 py-2">
+              Todavía no hay equipos cargados: el informe va a agrupar todo en «Sin equipo».
+              Se asignan en <b>Usuarios con acceso</b>, en el campo Equipo de cada persona.
+            </p>
+          </div>
+        </div>
+
         <div x-show="adminSubtab==='priorizacion'">
           <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 mb-5">
             <div class="flex items-center justify-between">
@@ -7574,6 +7667,9 @@
 
       // Admin panel
       adminSubtab:      'users',
+      // Informe de gestión de casos (PDF descargable desde Administración).
+      informe: { desde: '', hasta: '', analista: '', equipo: '',
+                 generando: false, error: '', ultimo: null },
       priorityQueueSettings: { enabled: false, updated_at: '', updated_by: '' },
       priorityQueueTestLoading: false,
       priorityQueueTestError: '',
@@ -10278,13 +10374,48 @@
         const f = this.crmUserModal.form;
         try {
           if (this.crmUserModal.mode === 'create') {
-            await this.api('POST', '/users', { email: f.email, full_name: f.full_name, role_id: f.role_id });
+            await this.api('POST', '/users', { email: f.email, full_name: f.full_name, role_id: f.role_id, equipo: f.equipo || '' });
           } else {
-            await this.api('POST', `/users/${this.crmUserModal.userId}`, { full_name: f.full_name, role_id: f.role_id, is_active: f.is_active });
+            await this.api('POST', `/users/${this.crmUserModal.userId}`, { full_name: f.full_name, role_id: f.role_id, is_active: f.is_active, equipo: f.equipo || '' });
           }
           this.crmUserModal = { open: false };
           await this.loadCrmAnalysts();
         } catch(e) { alert('Error: ' + e.message); }
+      },
+
+      // ── Informe de gestión ────────────────────────────────────────────
+      // Los equipos salen de los analistas ya cargados: no hay un catálogo
+      // aparte que mantener sincronizado, y el desplegable muestra
+      // exactamente lo que existe.
+      equiposConocidos() {
+        const s = new Set();
+        for (const u of (this.crmAnalysts || [])) if (u.equipo) s.add(u.equipo);
+        for (const u of (this.crmUsers || [])) if (u.equipo) s.add(u.equipo);
+        return [...s].sort();
+      },
+
+      async descargarInforme() {
+        this.informe.generando = true;
+        this.informe.error = '';
+        this.informe.ultimo = null;
+        try {
+          const qs = new URLSearchParams();
+          for (const k of ['desde', 'hasta', 'analista', 'equipo']) {
+            if (this.informe[k]) qs.set(k, this.informe[k]);
+          }
+          qs.set('actor_email', this.currentUserEmail || this.userEmail || '');
+          const d = await this.api('GET', '/informes/gestion.pdf?' + qs.toString());
+          if (d?.error) { this.informe.error = d.error; return; }
+          if (!d?.url) { this.informe.error = 'El informe no devolvió una descarga.'; return; }
+          this.informe.ultimo = d;
+          // El PDF no viene en la respuesta: baja de S3 por una URL
+          // prefirmada que vence en 15 minutos.
+          window.open(d.url, '_blank');
+        } catch (e) {
+          this.informe.error = 'No pude generar el informe: ' + (e?.message || e);
+        } finally {
+          this.informe.generando = false;
+        }
       },
 
       async deactivateCrmUser(userId) {

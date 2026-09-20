@@ -98,6 +98,14 @@ except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
     api_externa = None
     print(f"[api] api_externa no disponible, las rutas /v1 quedan fuera: {_e}")
 
+# El informe de gestión. Dos módulos: la cuenta y el dibujo.
+try:
+    import informe_casos
+    import informe_pdf
+except Exception as _e:  # pragma: no cover
+    informe_casos = informe_pdf = None
+    print(f"[api] informe de gestión no disponible: {_e}")
+
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
 s3 = boto3.client("s3")
@@ -2378,6 +2386,10 @@ def handler(event, context):  # noqa: ARG001
         # customer_id, para consumo de otros sistemas (ej. modelos de Fraude).
         if method == "POST" and parts == ["delitos", "search"]:
             return search_delitos_sync(body, event)
+
+        # GET /informes/gestion.pdf — el informe de gestión de casos.
+        if method == "GET" and parts == ["informes", "gestion.pdf"]:
+            return descargar_informe_gestion(event.get("queryStringParameters") or {})
 
         # ── API externa de casos (/v1) ───────────────────────────────────
         # Va ANTES del resto del ruteo porque `/v1/...` no puede caer nunca en
@@ -7281,6 +7293,9 @@ def get_users():
                 "last_login_at": u.get("last_login_at", ""),
                 "role_name": role_name,
                 "role_id": _ROLE_BY_NAME.get(role_name, 1),
+                # El equipo al que pertenece. Vacío hasta que un admin lo
+                # cargue; el informe de gestión agrupa por esto.
+                "equipo": u.get("equipo", ""),
             })
         users.sort(key=lambda x: x["created_at"], reverse=True)
         return resp(200, {"users": users})
@@ -7381,6 +7396,7 @@ def create_user(body: dict):
         "full_name": full_name or email,
         "is_active": True,
         "role_name": _ROLE_BY_ID.get(role_id, "analyst"),
+        "equipo": str(body.get("equipo", "")).strip()[:60],
         "created_at": _now_str(),
         "last_login_at": "",
     })
@@ -7397,6 +7413,8 @@ def update_user(user_id: str, body: dict):
         changes["role_name"] = _ROLE_BY_ID.get(int(body["role_id"]), "analyst")
     if "is_active" in body:
         changes["is_active"] = bool(body["is_active"])
+    if "equipo" in body:
+        changes["equipo"] = str(body["equipo"]).strip()[:60]
     if not changes:
         return resp(400, {"error": "nothing to update"})
     if _crm_update("users", user_id, changes) is None:
@@ -7873,3 +7891,68 @@ def v1_alertas_por_regla(event: dict, q: dict):
         return resp(502, {"error": f"No pude consultar Redshift: {detalle[:200]}"})
     return resp(200, {"regla": regla, "total": len(filas),
                       "alertas": [api_externa.alerta_publica(f) for f in filas]})
+
+
+def _equipos_por_analista() -> dict:
+    """{'correo': 'equipo'} desde el store de usuarios.
+
+    El informe agrupa por acá. Un analista que tiene casos pero no está en el
+    store —o que está sin equipo— cae en "Sin equipo", que es visible a
+    propósito: es la señal de que falta cargarlo, no un error silencioso.
+    """
+    fuera = {}
+    for u in _crm_list("users"):
+        correo = informe_casos.normalizar_analista(u.get("email"))
+        equipo = str(u.get("equipo") or "").strip()
+        if correo and equipo:
+            fuera[correo] = equipo
+    return fuera
+
+
+def descargar_informe_gestion(q: dict):
+    """El informe de gestión de casos, en PDF.
+
+    Filtros: `desde`, `hasta` (fecha de creación del caso), `analista`, `equipo`.
+
+    Reusa `get_cases` para que los casos sean exactamente los mismos que ve la
+    pantalla —incluido el cálculo del plazo— en vez de releer S3 con otro
+    criterio y que el informe y el listado no coincidan.
+    """
+    if not (informe_casos and informe_pdf):
+        return resp(503, {"error": "El informe no está disponible en este despliegue."})
+    try:
+        r = get_cases(None, None, None)
+        casos = json.loads(r["body"]).get("cases", [])
+        datos = informe_casos.armar(
+            casos,
+            equipos=_equipos_por_analista(),
+            desde=str(q.get("desde") or "").strip(),
+            hasta=str(q.get("hasta") or "").strip(),
+            analista=str(q.get("analista") or "").strip(),
+            equipo=str(q.get("equipo") or "").strip(),
+        )
+        pdf = informe_pdf.construir(
+            datos, pedido_por=str(q.get("actor_email") or "").strip())
+    except Exception as e:
+        print(f"[informe] falló: {type(e).__name__}: {e}")
+        return resp(500, {"error": f"No pude generar el informe: {str(e)[:200]}"})
+
+    # Mismo camino que la ficha en PDF: se sube a S3 y se devuelve una URL
+    # prefirmada, en vez de mandar el archivo en el cuerpo. El API Gateway tope
+    # el payload en ~6 MB y un informe con muchos casos lo pasa.
+    nombre = informe_pdf.nombre_archivo(datos["filtro"])
+    clave = f"informes/{int(time.time())}-{nombre}"
+    try:
+        s3.put_object(Bucket=S3_BUCKET, Key=clave, Body=pdf,
+                      ContentType="application/pdf")
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": clave,
+                    "ResponseContentDisposition": f'attachment; filename="{nombre}"'},
+            ExpiresIn=900)
+    except Exception as e:
+        return resp(500, {"error": f"No pude preparar la descarga: {str(e)[:200]}"})
+
+    g = datos["total_general"]
+    return resp(200, {"url": url, "archivo": nombre, "expira_en_minutos": 15,
+                      "casos": g["total"], "equipos": len(datos["equipos"])})
