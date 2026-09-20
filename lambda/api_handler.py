@@ -2534,10 +2534,15 @@ def handler(event, context):  # noqa: ARG001
 
         # GET /alerts/reviewed
         if method == "GET" and parts == ["alerts", "reviewed"]:
-            return get_alerts(status="reviewed")
+            return get_alerts(status="reviewed",
+                              caso_filtro=(event.get("queryStringParameters") or {}).get("caso") or "")
+        # GET /alerts/export.xlsx — lo que se ve en la tabla, en Excel.
+        if method == "GET" and parts == ["alerts", "export.xlsx"]:
+            return exportar_alertas_excel(event.get("queryStringParameters") or {})
         # GET /alerts
         if method == "GET" and parts == ["alerts"]:
-            return get_alerts(status="active")
+            return get_alerts(status="active",
+                              caso_filtro=(event.get("queryStringParameters") or {}).get("caso") or "")
         # POST /alerts
         if method == "POST" and parts == ["alerts"]:
             return add_alert(body)
@@ -4055,9 +4060,78 @@ def update_case_document_checklist(case_id: str, body: dict):
 _PRIORITY_RANK = {"high": 1, "medium": 2, "low": 3}
 
 
-def get_alerts(status: str = "active"):
+# ── El caso de una alerta ───────────────────────────────────────────────────
+# Dos formas de que una alerta tenga caso, y no son lo mismo:
+#
+#   · **Vinculado**: alguien ató ESTA alerta a ESE caso. Es el dato preciso.
+#   · **Del cliente**: el cliente alertado tiene un caso, pero nadie ató esta
+#     alerta a él. Medido sobre producción: 66 alertas vinculadas contra 72
+#     cuyo cliente tiene caso — esas 6 de diferencia son justo las que se
+#     perderían mostrando sólo el vínculo.
+#
+# Se informan distinto a propósito: "hay un caso de este cliente" no es lo
+# mismo que "esta alerta ya está siendo trabajada", y confundirlos hace que
+# una alerta sin atender parezca atendida.
+_ESTADO_CASO_ES = {"open": "Abierto", "in_progress": "En investigación",
+                   "under_review": "Bajo revisión", "closed": "Cerrado",
+                   "archived": "Archivado"}
+
+
+def _indice_de_casos():
+    """(por_id, por_cliente) para resolver las alertas sin releer S3 por fila."""
+    por_id, por_cliente = {}, {}
+    for c in _crm_list("cases"):
+        cid = c.get("case_id") or ""
+        if cid:
+            por_id[cid] = c
+        ent = str(c.get("entity_id") or "").strip()
+        if ent:
+            por_cliente.setdefault(ent, []).append(c)
+    # El más reciente primero: si el cliente tiene varios, el que se muestra
+    # es el que se está trabajando ahora, no el primero que se creó.
+    for lista in por_cliente.values():
+        lista.sort(key=lambda c: c.get("created_at") or "", reverse=True)
+    return por_id, por_cliente
+
+
+def _caso_de_la_alerta(alerta: dict, por_id: dict, por_cliente: dict) -> dict:
+    """Qué decir en las columnas de caso de esta alerta."""
+    vinculado = por_id.get(alerta.get("case_id") or "")
+    del_cliente = por_cliente.get(str(alerta.get("entity_value") or "").strip(), [])
+
+    caso = vinculado
+    if caso is None:
+        # Sin vínculo explícito: manda el caso abierto más reciente del
+        # cliente; si están todos cerrados, el más reciente igual.
+        abiertos = [c for c in del_cliente if (c.get("status") or "") not in ("closed", "archived")]
+        caso = (abiertos or del_cliente or [None])[0]
+
+    if caso is None:
+        return {"tiene_caso": False, "caso_vinculo": "", "caso_estado": "",
+                "caso_estado_es": "Sin caso", "caso_id": "",
+                "casos_del_cliente": 0, "caso_asignado_a": ""}
+
+    estado = (caso.get("status") or "").strip()
+    return {
+        "tiene_caso": True,
+        "caso_vinculo": "vinculado" if vinculado else "del_cliente",
+        "caso_estado": estado,
+        "caso_estado_es": _ESTADO_CASO_ES.get(estado, estado or "—"),
+        "caso_id": caso.get("case_id", ""),
+        "casos_del_cliente": len(del_cliente),
+        "caso_asignado_a": caso.get("assigned_to", ""),
+    }
+
+
+def get_alerts(status: str = "active", caso_filtro: str = ""):
+    """Las alertas, con el estado del caso de cada cliente.
+
+    `caso_filtro` recorta por situación del caso: `sin_caso`, `con_caso`, o un
+    estado concreto (`open`, `in_progress`, `under_review`, `closed`).
+    """
     # S3-backed: works with the Redshift cluster paused.
     try:
+        por_id, por_cliente = _indice_de_casos()
         out = []
         for i in _crm_list("alerts"):
             if i.get("status", "active") != status:
@@ -4079,7 +4153,16 @@ def get_alerts(status: str = "active"):
                 # Permite marcar en la tabla del reporte qué filas ya tienen
                 # caso abierto, además de quién las tiene asignadas.
                 "case_id": i.get("case_id", ""),
+                **_caso_de_la_alerta(i, por_id, por_cliente),
             })
+
+        if caso_filtro:
+            if caso_filtro == "sin_caso":
+                out = [a for a in out if not a["tiene_caso"]]
+            elif caso_filtro == "con_caso":
+                out = [a for a in out if a["tiene_caso"]]
+            else:
+                out = [a for a in out if a["caso_estado"] == caso_filtro]
         # Stable sort: first by created_at DESC, then by priority → within a
         # priority, newest first (matches the old SQL ORDER BY).
         out.sort(key=lambda a: a["created_at"], reverse=True)
@@ -7961,3 +8044,126 @@ def descargar_informe_gestion(q: dict):
     g = datos["total_general"]
     return resp(200, {"url": url, "archivo": nombre, "expira_en_minutos": 15,
                       "casos": g["total"], "equipos": len(datos["equipos"])})
+
+
+# ---------------------------------------------------------------------------
+# Exportar las alertas a Excel
+# ---------------------------------------------------------------------------
+_EXPORT_COLUMNAS = [
+    ("Prioridad", "priority", 11),
+    ("Campo", "entity_field", 14),
+    ("Valor", "entity_value", 14),
+    ("Reporte", "report_name", 30),
+    ("Razón / Notas", "reason", 46),
+    ("Asignado a", "assigned_to", 30),
+    ("Fecha de la alerta", "created_at", 19),
+    ("¿Tiene caso?", "_tiene", 13),
+    ("Estado del caso", "caso_estado_es", 17),
+    ("Vínculo", "_vinculo", 14),
+    ("Casos del cliente", "casos_del_cliente", 17),
+    ("Analista del caso", "caso_asignado_a", 30),
+    ("ID del caso", "caso_id", 38),
+]
+
+_VINCULO_ES = {"vinculado": "Vinculado a la alerta", "del_cliente": "Otro caso del cliente"}
+_PRIORIDAD_ES = {"high": "Alta", "medium": "Media", "low": "Baja"}
+
+
+def _analista_legible(valor) -> str:
+    """El correo del analista, normalizado. En el store conviven
+    `diego armesto` y `diego.armesto@global66.com` para la misma persona; en un
+    archivo que alguien va a filtrar por analista, eso son dos columnas
+    distintas para uno solo."""
+    if not valor:
+        return ""
+    if informe_casos:
+        norm = informe_casos.normalizar_analista(valor)
+        return "" if norm == informe_casos.SIN_ASIGNAR else norm
+    return str(valor)
+
+
+def exportar_alertas_excel(q: dict):
+    """Las alertas en Excel, con los MISMOS filtros que la pantalla.
+
+    Se aplican acá los filtros de prioridad y analista además del de caso: si
+    el Excel trajera todo mientras la tabla muestra un recorte, el archivo
+    diría otra cosa que la pantalla desde la que se pidió.
+    """
+    estado = str(q.get("status") or "active").strip()
+    r = get_alerts(status=estado, caso_filtro=str(q.get("caso") or "").strip())
+    alertas = json.loads(r["body"]).get("alerts", [])
+
+    prioridad = str(q.get("priority") or "").strip()
+    if prioridad:
+        alertas = [a for a in alertas if a.get("priority") == prioridad]
+    asignado = str(q.get("assigned_to") or "").strip()
+    if asignado:
+        alertas = [a for a in alertas if (a.get("assigned_to") or "") == asignado]
+
+    try:
+        import io as _io
+        import xlsxwriter
+        buf = _io.BytesIO()
+        wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+        ws = wb.add_worksheet("Alertados")
+
+        cab = wb.add_format({"bold": True, "bg_color": "#1433B4", "font_color": "#FFFFFF",
+                             "border": 1, "valign": "vcenter", "text_wrap": True})
+        txt = wb.add_format({"border": 1, "valign": "top", "text_wrap": True})
+        sin = wb.add_format({"border": 1, "valign": "top", "bg_color": "#FEF2F2",
+                             "font_color": "#B91C1C", "bold": True})
+        con = wb.add_format({"border": 1, "valign": "top", "bg_color": "#F0FDF4",
+                             "font_color": "#15803D"})
+
+        for i, (titulo, _, ancho) in enumerate(_EXPORT_COLUMNAS):
+            ws.write(0, i, titulo, cab)
+            ws.set_column(i, i, ancho)
+        ws.freeze_panes(1, 0)
+        ws.set_row(0, 30)
+
+        for f, a in enumerate(alertas, start=1):
+            fila = dict(a)
+            fila["_tiene"] = "Sí" if a.get("tiene_caso") else "No"
+            fila["_vinculo"] = _VINCULO_ES.get(a.get("caso_vinculo"), "")
+            fila["priority"] = _PRIORIDAD_ES.get(a.get("priority"), a.get("priority") or "")
+            fila["assigned_to"] = _analista_legible(a.get("assigned_to"))
+            fila["caso_asignado_a"] = _analista_legible(a.get("caso_asignado_a"))
+            fila["report_name"] = (a.get("report_name") or "").replace("_", " ")
+            for i, (_, clave, _a) in enumerate(_EXPORT_COLUMNAS):
+                v = fila.get(clave, "")
+                # La columna que se mira primero es si hay caso o no: se pinta
+                # para que un Excel de 122 filas se lea de un vistazo.
+                formato = txt
+                if clave == "_tiene":
+                    formato = con if a.get("tiene_caso") else sin
+                ws.write(f, i, "" if v is None else v, formato)
+
+        ws.autofilter(0, 0, max(len(alertas), 1), len(_EXPORT_COLUMNAS) - 1)
+        wb.close()
+        datos = buf.getvalue()
+    except Exception as e:
+        print(f"[alertas/export] falló: {type(e).__name__}: {e}")
+        return resp(500, {"error": f"No pude armar el Excel: {str(e)[:200]}"})
+
+    partes = ["alertados", estado]
+    for extra in (q.get("caso"), prioridad, (asignado or "").split("@")[0]):
+        limpio = re.sub(r"[^A-Za-z0-9_-]+", "", str(extra or ""))[:24]
+        if limpio:
+            partes.append(limpio)
+    nombre = "_".join(partes)[:90] + ".xlsx"
+
+    clave = f"exports/{int(time.time())}-{nombre}"
+    try:
+        s3.put_object(Bucket=S3_BUCKET, Key=clave, Body=datos,
+                      ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": clave,
+                    "ResponseContentDisposition": f'attachment; filename="{nombre}"'},
+            ExpiresIn=900)
+    except Exception as e:
+        return resp(500, {"error": f"No pude preparar la descarga: {str(e)[:200]}"})
+
+    return resp(200, {"url": url, "archivo": nombre, "filas": len(alertas),
+                      "con_caso": sum(1 for a in alertas if a.get("tiene_caso")),
+                      "expira_en_minutos": 15})

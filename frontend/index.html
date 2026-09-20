@@ -2695,9 +2695,31 @@
               <option :value="u.email" x-text="u.full_name"></option>
             </template>
           </select>
-          <span x-show="alertFilter.priority || alertFilter.assigned_to"
+          <!-- Situación del caso del cliente alertado. Separa "no tiene
+               caso" de "tiene uno cerrado": para triar, no es lo mismo. -->
+          <select x-model="alertFilter.caso"
+            class="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-slate-500">
+            <option value="">Todos (con y sin caso)</option>
+            <option value="sin_caso">🚩 Sin caso</option>
+            <option value="con_caso">Con caso (cualquier estado)</option>
+            <option value="open">· Abierto</option>
+            <option value="in_progress">· En investigación</option>
+            <option value="under_review">· Bajo revisión</option>
+            <option value="closed">· Cerrado</option>
+          </select>
+          <span x-show="alertFilter.priority || alertFilter.assigned_to || alertFilter.caso"
             class="text-xs text-slate-500 cursor-pointer hover:text-white"
-            @click="alertFilter = { priority: '', assigned_to: '' }">✕ Limpiar filtros</span>
+            @click="alertFilter = { priority: '', assigned_to: '', caso: '' }">✕ Limpiar filtros</span>
+          <div class="flex-1"></div>
+          <button @click="descargarAlertasExcel()" :disabled="alertExport.bajando"
+            class="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white text-xs font-medium rounded-lg transition whitespace-nowrap">
+            <span x-text="alertExport.bajando ? 'Armando…' : '⬇ Excel'"></span>
+          </button>
+          <a x-show="alertExport.ultimo" x-cloak :href="alertExport.ultimo?.url" target="_blank" rel="noopener"
+            class="text-xs text-emerald-400 hover:text-emerald-300 underline whitespace-nowrap">
+            ⬇ <span x-text="alertExport.ultimo?.filas"></span> filas
+          </a>
+          <span x-show="alertExport.error" x-cloak class="text-xs text-red-400" x-text="alertExport.error"></span>
         </div>
 
         <!-- View toggle -->
@@ -2735,6 +2757,8 @@
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Valor</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Reporte</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Razón / Notas</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">¿Caso?</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Estado del caso</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Asignado a</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Fecha</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Acciones</th>
@@ -2762,6 +2786,39 @@
                     <td class="px-4 py-3 text-slate-300 text-xs max-w-xs">
                       <div class="truncate" :title="a.reason" x-text="a.reason||'—'"></div>
                       <div x-show="a.notes" class="mt-1 text-slate-500 italic truncate" :title="a.notes" x-text="'📝 ' + a.notes"></div>
+                    </td>
+                    <!-- ¿Tiene caso? Se distingue el vínculo explícito de
+                         "otro caso del mismo cliente": decir que una alerta
+                         está atendida cuando sólo hay un caso suelto del
+                         cliente es justo el error que hay que evitar. -->
+                    <td class="px-4 py-3 whitespace-nowrap">
+                      <template x-if="a.tiene_caso">
+                        <span class="text-xs font-medium px-2 py-0.5 rounded-full border"
+                          :class="a.caso_vinculo === 'vinculado'
+                            ? 'bg-emerald-900/50 text-emerald-300 border-emerald-700'
+                            : 'bg-slate-700/50 text-slate-300 border-slate-600'"
+                          :title="a.caso_vinculo === 'vinculado'
+                            ? 'Este caso está vinculado a esta alerta'
+                            : 'El cliente tiene un caso, pero no está vinculado a esta alerta'">
+                          <span x-text="a.caso_vinculo === 'vinculado' ? 'Sí' : 'Del cliente'"></span>
+                          <span x-show="a.casos_del_cliente > 1" class="opacity-70"
+                            x-text="'· ' + a.casos_del_cliente"></span>
+                        </span>
+                      </template>
+                      <template x-if="!a.tiene_caso">
+                        <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-red-900/40 text-red-300 border border-red-800">No</span>
+                      </template>
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap">
+                      <span x-show="!a.tiene_caso" class="text-slate-600 text-xs italic">—</span>
+                      <span x-show="a.tiene_caso" class="text-xs font-medium px-2 py-0.5 rounded-full border"
+                        :class="{
+                          'bg-blue-900/50 text-blue-300 border-blue-800': a.caso_estado === 'open',
+                          'bg-amber-900/50 text-amber-300 border-amber-800': a.caso_estado === 'in_progress',
+                          'bg-purple-900/50 text-purple-300 border-purple-800': a.caso_estado === 'under_review',
+                          'bg-slate-700/50 text-slate-400 border-slate-600': a.caso_estado === 'closed' || a.caso_estado === 'archived'
+                        }"
+                        x-text="a.caso_estado_es"></span>
                     </td>
                     <!-- Assigned to -->
                     <td class="px-4 py-3 text-xs">
@@ -7800,7 +7857,8 @@
       alertsView: 'active',          // 'active' | 'reviewed'
       alertRowOpen: false,
       alertRowData: { entity_field: 'customer_id', entity_value: '', reason: '', report_name: '', row_data: {}, priority: 'medium' },
-      alertFilter: { priority: '', assigned_to: '' },
+      alertFilter: { priority: '', assigned_to: '', caso: '' },
+      alertExport: { bajando: false, error: '', ultimo: null },
       reviewModal: { open: false, alert_id: null, notes: '', reviewed_by: '' },
       assignModal: { open: false, alert_id: null, assigned_to: '' },
       crmUsers: [],
@@ -10813,6 +10871,34 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
       // -----------------------------------------------
       // ALERTS (Alertados / Ya Revisados)
       // -----------------------------------------------
+      // Excel con lo que muestra la tabla, con los mismos filtros. El
+      // archivo lo arma el backend y baja por URL prefirmada; se navega a
+      // ella en vez de window.open, que el navegador bloquea al venir
+      // después de un await.
+      async descargarAlertasExcel() {
+        this.alertExport.bajando = true;
+        this.alertExport.error = '';
+        this.alertExport.ultimo = null;
+        try {
+          const qs = new URLSearchParams();
+          qs.set('status', this.alertsView === 'reviewed' ? 'reviewed' : 'active');
+          if (this.alertFilter.caso) qs.set('caso', this.alertFilter.caso);
+          if (this.alertFilter.priority) qs.set('priority', this.alertFilter.priority);
+          if (this.alertFilter.assigned_to && this.alertFilter.assigned_to !== '__unassigned__') {
+            qs.set('assigned_to', this.alertFilter.assigned_to);
+          }
+          const d = await this.api('GET', '/alerts/export.xlsx?' + qs.toString());
+          if (d?.error) { this.alertExport.error = d.error; return; }
+          if (!d?.url) { this.alertExport.error = 'No se generó el archivo.'; return; }
+          this.alertExport.ultimo = d;
+          window.location.assign(d.url);
+        } catch (e) {
+          this.alertExport.error = 'No pude generar el Excel: ' + (e?.message || e);
+        } finally {
+          this.alertExport.bajando = false;
+        }
+      },
+
       async loadAlerts() {
         this.alertsLoading = true;
         const [activeRes, reviewedRes] = await Promise.all([
@@ -10885,6 +10971,12 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
             result = result.filter(a => a.assigned_to === this.alertFilter.assigned_to);
           }
         }
+        // Situación del caso. `sin_caso` y `con_caso` son las dos preguntas
+        // gruesas; el resto filtra por un estado concreto.
+        const c = this.alertFilter.caso;
+        if (c === 'sin_caso')      result = result.filter(a => !a.tiene_caso);
+        else if (c === 'con_caso') result = result.filter(a => a.tiene_caso);
+        else if (c)                result = result.filter(a => a.caso_estado === c);
         return result;
       },
 
