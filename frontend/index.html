@@ -7384,6 +7384,16 @@
               </span>
             </div>
 
+            <!-- El enlace, siempre visible después de generar. Si el navegador
+                 bloquea la descarga automática, acá está a un clic. -->
+            <div x-show="informe.ultimo" x-cloak class="mt-3 flex items-center gap-2">
+              <a :href="informe.ultimo?.url" target="_blank" rel="noopener"
+                class="text-xs text-amber-300 hover:text-amber-200 underline">
+                ⬇ Si no se descargó solo, bajalo desde acá
+              </a>
+              <span class="text-[11px] text-slate-500">(el enlace vence en 15 minutos)</span>
+            </div>
+
             <p x-show="informe.error" x-cloak class="mt-3 text-xs text-red-400" x-text="informe.error"></p>
 
             <!-- El equipo sale del usuario. Si nadie lo cargó, el informe
@@ -10410,7 +10420,17 @@
           this.informe.ultimo = d;
           // El PDF no viene en la respuesta: baja de S3 por una URL
           // prefirmada que vence en 15 minutos.
-          window.open(d.url, '_blank');
+          //
+          // `window.open` acá lo bloquea el navegador: la llamada ocurre
+          // DESPUÉS del await, así que ya no cuenta como parte del clic y
+          // Chrome la trata como popup. Navegar a la URL no tiene ese
+          // problema, y como el enlace trae Content-Disposition: attachment,
+          // el navegador descarga sin sacarte de la app.
+          try {
+            window.location.assign(d.url);
+          } catch (e) {
+            this.informe.error = 'No pude abrir la descarga automáticamente; usá el enlace de abajo.';
+          }
         } catch (e) {
           this.informe.error = 'No pude generar el informe: ' + (e?.message || e);
         } finally {
