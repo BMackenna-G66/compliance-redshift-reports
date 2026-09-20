@@ -87,6 +87,17 @@ except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
     sla_casos = None
     print(f"[api] sla_casos no disponible, los casos van sin plazo: {_e}")
 
+# La API externa de casos (`/v1/*`). Import defensivo como los de arriba, pero
+# con una diferencia que importa: si el módulo no viaja, las rutas `/v1` no se
+# registran y devuelven 404. NO se degradan a "sin autenticación" — un endpoint
+# de escritura que se abre porque falló un import es exactamente el accidente
+# que no puede pasar.
+try:
+    import api_externa
+except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
+    api_externa = None
+    print(f"[api] api_externa no disponible, las rutas /v1 quedan fuera: {_e}")
+
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
 s3 = boto3.client("s3")
@@ -2367,6 +2378,44 @@ def handler(event, context):  # noqa: ARG001
         # customer_id, para consumo de otros sistemas (ej. modelos de Fraude).
         if method == "POST" and parts == ["delitos", "search"]:
             return search_delitos_sync(body, event)
+
+        # ── API externa de casos (/v1) ───────────────────────────────────
+        # Va ANTES del resto del ruteo porque `/v1/...` no puede caer nunca en
+        # un handler interno por un prefijo parecido. Si el módulo no viajó en
+        # el paquete, estas rutas no existen y devuelven 404: no se degradan a
+        # "sin autenticación".
+        if parts and parts[0] == "v1" and api_externa:
+            qs_v1 = event.get("queryStringParameters") or {}
+            if method == "GET" and parts == ["v1", "casos"]:
+                return v1_listar_casos(event, qs_v1)
+            if method == "POST" and parts == ["v1", "casos"]:
+                return v1_crear_caso(event, body)
+            if method == "GET" and parts == ["v1", "alertas"]:
+                return v1_alertas_por_regla(event, qs_v1)
+            if len(parts) == 3 and parts[1] == "casos":
+                if method == "GET":
+                    return v1_detalle_caso(event, parts[2])
+                if method in ("PATCH", "PUT"):
+                    return v1_actualizar_caso(event, parts[2], body)
+            if len(parts) == 4 and parts[1] == "casos" and parts[3] == "notas":
+                if method == "POST":
+                    return v1_agregar_nota(event, parts[2], body)
+            if len(parts) == 4 and parts[1] == "casos" and parts[3] == "comunicaciones":
+                if method == "GET":
+                    return v1_comunicaciones(event, parts[2])
+                if method == "POST":
+                    return v1_comunicar(event, parts[2], body)
+            return resp(404, {"error": "ruta no encontrada en la API externa",
+                              "rutas": [
+                                  "GET    /v1/casos",
+                                  "POST   /v1/casos",
+                                  "GET    /v1/casos/{id}",
+                                  "PATCH  /v1/casos/{id}",
+                                  "POST   /v1/casos/{id}/notas",
+                                  "GET    /v1/casos/{id}/comunicaciones",
+                                  "POST   /v1/casos/{id}/comunicaciones",
+                                  "GET    /v1/alertas?regla=...",
+                              ]})
         # POST /search/wallet
         if method == "POST" and parts == ["search", "wallet"]:
             return run_wallet_search(body)
@@ -7517,3 +7566,289 @@ def apply_auto_case_rules(report_name: str, rows: list[dict], run_id: str) -> No
                 _create_auto_case(report_name, rule, title, description, "report", "")
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# API externa de casos — /v1/*
+# ---------------------------------------------------------------------------
+# El contrato y la autenticación viven en `api_externa.py`; acá están las rutas,
+# que delegan en las MISMAS funciones que usa el portal. Es deliberado: una
+# segunda implementación de "crear caso" o "cambiar estado" se separa de la
+# primera en el tercer cambio, y entonces el sistema externo y la pantalla
+# muestran cosas distintas del mismo caso.
+# ---------------------------------------------------------------------------
+
+def _v1_error(motivo) -> dict:
+    return resp(motivo[0], motivo[1])
+
+
+def v1_listar_casos(event: dict, q: dict):
+    """GET /v1/casos — filtra y pagina.
+
+    Los filtros son los mismos que ya soporta el portal, más `reporte` y
+    `cliente_id`, que son los que pide un sistema externo para reconciliar
+    contra sus propios registros.
+    """
+    consumidor, motivo = api_externa.autorizar(event, api_externa.LEER)
+    if motivo:
+        return _v1_error(motivo)
+
+    def _num(clave):
+        try:
+            return float(q[clave])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    r = get_cases(q.get("estado") or q.get("status"), q.get("prioridad"),
+                  q.get("asignado_a"), q.get("plazo"), _num("dias_min"), _num("dias_max"))
+    datos = json.loads(r["body"])
+    casos = datos.get("cases", [])
+
+    # Filtros que el listado interno no tiene. Se aplican acá y no se empujan a
+    # `get_cases` para no cambiarle el comportamiento al portal por un pedido
+    # del API externo.
+    reporte = (q.get("reporte") or "").strip()
+    if reporte:
+        casos = [c for c in casos if c.get("report_name") == reporte]
+    cliente = (q.get("cliente_id") or "").strip()
+    if cliente:
+        casos = [c for c in casos if str(c.get("entity_id") or "") == cliente]
+    desde = (q.get("desde") or "").strip()
+    if desde:
+        casos = [c for c in casos if (c.get("created_at") or "") >= desde]
+    hasta = (q.get("hasta") or "").strip()
+    if hasta:
+        casos = [c for c in casos if (c.get("created_at") or "") <= hasta]
+
+    total = len(casos)
+    try:
+        pagina = max(1, int(q.get("pagina", 1)))
+    except (TypeError, ValueError):
+        pagina = 1
+    try:
+        tam = int(q.get("por_pagina", 50))
+    except (TypeError, ValueError):
+        tam = 50
+    tam = max(1, min(tam, api_externa.MAX_POR_PAGINA))
+    inicio = (pagina - 1) * tam
+
+    return resp(200, {
+        "casos": [api_externa.caso_publico(c) for c in casos[inicio:inicio + tam]],
+        "total": total,
+        "pagina": pagina,
+        "por_pagina": tam,
+        "resumen_plazo": datos.get("sla_resumen", {}),
+    })
+
+
+def v1_detalle_caso(event: dict, caso_id: str):
+    consumidor, motivo = api_externa.autorizar(event, api_externa.LEER)
+    if motivo:
+        return _v1_error(motivo)
+    r = get_case_detail(caso_id)
+    if r.get("statusCode") != 200:
+        return r
+    d = json.loads(r["body"])
+    c = d.get("case") or {}
+    notas = d.get("notes") or []
+    # `get_case_detail` devuelve las notas aparte y no deja `note_count` en el
+    # caso, así que el contador del contrato hay que ponerlo acá: sin esto el
+    # listado decía 1 nota y el detalle del mismo caso decía 0.
+    return resp(200, {
+        **api_externa.caso_publico({**c, "note_count": len(notas)}),
+        "alerta": c.get("alert_data") or {},
+        "notas_detalle": [api_externa.nota_publica(n) for n in notas],
+        "adjuntos": [{"archivo": a.get("filename", ""), "origen": a.get("source", ""),
+                      "cuando": a.get("uploaded_at", "")}
+                     for a in (c.get("attachments") or [])],
+    })
+
+
+def v1_crear_caso(event: dict, body: dict):
+    """POST /v1/casos — crea un caso.
+
+    El autor queda como `api:<consumidor>` y NO se puede declarar en el cuerpo:
+    el `created_by` que venga se ignora. En el API interno ese campo es
+    declarativo; acá tiene que decir la verdad, porque es el registro de qué
+    hizo un sistema y no una persona.
+    """
+    consumidor, motivo = api_externa.autorizar(event, api_externa.ESCRIBIR)
+    if motivo:
+        return _v1_error(motivo)
+
+    titulo = str(body.get("titulo") or body.get("title") or "").strip()
+    if not titulo:
+        return resp(400, {"error": "titulo es requerido"})
+    prioridad = str(body.get("prioridad") or "medium").strip().lower()
+    if not api_externa.valida_prioridad(prioridad):
+        return resp(400, {"error": f"prioridad inválida: {prioridad!r}",
+                          "validas": list(api_externa.PRIORIDADES)})
+
+    cliente = body.get("cliente") or {}
+    r = create_case({
+        "title": titulo,
+        "description": str(body.get("descripcion") or "").strip(),
+        "priority": prioridad,
+        "entity_type": str(cliente.get("tipo") or "customer").strip(),
+        "entity_id": str(cliente.get("id") or "").strip(),
+        "entity_name": str(cliente.get("nombre") or "").strip(),
+        "report_name": str((body.get("origen") or {}).get("reporte") or "").strip(),
+        "alert_priority": str((body.get("origen") or {}).get("prioridad_alerta") or "").strip(),
+        "alert_data": body.get("alerta") or {},
+        "assigned_to": str(body.get("asignado_a") or "").strip(),
+        "created_by": api_externa.actor(consumidor),
+    })
+    if r.get("statusCode") not in (200, 201):
+        return r
+    return resp(201, {"id": json.loads(r["body"]).get("case_id", "")})
+
+
+def v1_actualizar_caso(event: dict, caso_id: str, body: dict):
+    """PATCH /v1/casos/{id} — estado, prioridad y/o asignación.
+
+    Cada campo va por la función interna que le corresponde, y no por un update
+    genérico, para que se dispare lo mismo que dispara la pantalla: el sello de
+    `closed_at` al cerrar, la auditoría y el aviso al analista asignado.
+    """
+    consumidor, motivo = api_externa.autorizar(event, api_externa.ESCRIBIR)
+    if motivo:
+        return _v1_error(motivo)
+    quien = api_externa.actor(consumidor)
+    hechos = []
+
+    if "estado" in body:
+        if not api_externa.valida_estado(body["estado"]):
+            return resp(400, {"error": f"estado inválido: {body['estado']!r}",
+                              "validos": list(api_externa.ESTADOS)})
+        r = update_case_status(caso_id, {"status": str(body["estado"]).strip().lower(),
+                                         "actor_email": quien})
+        if r.get("statusCode") != 200:
+            return r
+        hechos.append("estado")
+
+    if "prioridad" in body:
+        if not api_externa.valida_prioridad(body["prioridad"]):
+            return resp(400, {"error": f"prioridad inválida: {body['prioridad']!r}",
+                              "validas": list(api_externa.PRIORIDADES)})
+        r = update_case(caso_id, {"priority": str(body["prioridad"]).strip().lower(),
+                                  "actor_email": quien})
+        if r.get("statusCode") != 200:
+            return r
+        hechos.append("prioridad")
+
+    if "asignado_a" in body:
+        r = update_case_assign(caso_id, {"assigned_to": str(body["asignado_a"] or "").strip(),
+                                         "actor_email": quien})
+        if r.get("statusCode") != 200:
+            return r
+        hechos.append("asignado_a")
+
+    if not hechos:
+        return resp(400, {"error": "nada para actualizar",
+                          "campos": ["estado", "prioridad", "asignado_a"]})
+    return v1_detalle_caso(event, caso_id)
+
+
+def v1_agregar_nota(event: dict, caso_id: str, body: dict):
+    consumidor, motivo = api_externa.autorizar(event, api_externa.ESCRIBIR)
+    if motivo:
+        return _v1_error(motivo)
+    texto = str(body.get("texto") or body.get("content") or "").strip()
+    if not texto:
+        return resp(400, {"error": "texto es requerido"})
+    return add_case_note(caso_id, api_externa.cuerpo_nota(
+        texto, api_externa.actor(consumidor)))
+
+
+def v1_comunicaciones(event: dict, caso_id: str):
+    consumidor, motivo = api_externa.autorizar(event, api_externa.LEER)
+    if motivo:
+        return _v1_error(motivo)
+    r = get_case_emails(caso_id)
+    if r.get("statusCode") != 200:
+        return r
+    d = json.loads(r["body"])
+    return resp(200, {
+        "caso_id": caso_id,
+        "total": d.get("total", 0),
+        "enviados": d.get("enviados", 0),
+        "recibidos": d.get("recibidos", 0),
+        "comunicaciones": [{
+            "direccion": c.get("direccion"), "cuando": c.get("cuando"),
+            "de": c.get("de"), "para": c.get("para"), "asunto": c.get("asunto"),
+            "documentos": c.get("documentos") or [], "salio": c.get("salio"),
+            "error": c.get("error") or "",
+        } for c in (d.get("correos") or [])],
+    })
+
+
+def v1_comunicar(event: dict, caso_id: str, body: dict):
+    """POST /v1/casos/{id}/comunicaciones — le escribe al cliente.
+
+    Es el endpoint de más riesgo del módulo: manda correo a una persona real.
+    Por eso pide su propio permiso (`casos:comunicar`), que puede darse o
+    quitarse sin tocar el resto: una clave puede gestionar el caso completo sin
+    poder escribirle al cliente.
+    """
+    consumidor, motivo = api_externa.autorizar(event, api_externa.COMUNICAR)
+    if motivo:
+        return _v1_error(motivo)
+
+    caso = _crm_get("cases", caso_id)
+    if caso is None:
+        return resp(404, {"error": f"Caso '{caso_id}' no encontrado"})
+
+    correo = str(body.get("correo") or "").strip()
+    alerta = caso.get("alert_data") or {}
+    if not correo:
+        correo = str(alerta.get("email") or "").strip()
+    if not correo:
+        return resp(400, {"error": "No hay correo del cliente en el caso; mandalo en 'correo'."})
+
+    plantilla = str(body.get("plantilla") or "").strip()
+    if plantilla and plantilla not in EMAIL_TEMPLATE_CATALOG:
+        return resp(400, {"error": f"plantilla desconocida: {plantilla!r}",
+                          "validas": list(EMAIL_TEMPLATE_CATALOG)})
+
+    nombre = str(body.get("nombre") or caso.get("entity_name")
+                 or " ".join(x for x in (alerta.get("nombre"), alerta.get("apellido")) if x)).strip()
+    return send_manual_document_request({
+        "entity_type": caso.get("entity_type") or "customer",
+        "entity_id": caso.get("entity_id") or alerta.get("customer_id") or "",
+        "nombre": nombre,
+        "correo": correo,
+        "prioridad": caso.get("alert_priority") or "P3",
+        "alerta": caso.get("report_name") or "",
+        "documentos": body.get("documentos") or [],
+        "case_id": caso_id,
+        "template_key": plantilla,
+        "texto_libre": body.get("texto") or "",
+        "actor_email": api_externa.actor(consumidor),
+    })
+
+
+def v1_alertas_por_regla(event: dict, q: dict):
+    """GET /v1/alertas?regla=PSP-C-AMT-J9H7[&pais=AR] — los clientes que la
+    regla del motor de fraude dejó bloqueados, listos para volverse caso.
+
+    Es el insumo del flujo de Argentina: la regla marca al cliente en el motor
+    y deja su código dentro de `agent_comment`; acá se listan para que el
+    sistema externo decida cuáles convierte en caso con POST /v1/casos.
+    """
+    consumidor, motivo = api_externa.autorizar(event, api_externa.LEER)
+    if motivo:
+        return _v1_error(motivo)
+    regla = str(q.get("regla") or "").strip()
+    if not regla:
+        return resp(400, {"error": "regla es requerida (ej. PSP-C-AMT-J9H7)"})
+    try:
+        sql = api_externa.sql_alertas_por_regla(regla, q.get("pais") or "",
+                                                q.get("limite") or 200)
+    except ValueError as e:
+        return resp(400, {"error": str(e)})
+    try:
+        filas = _rs_exec(sql)
+    except Exception as e:
+        return resp(502, {"error": f"No pude consultar Redshift: {str(e)[:200]}"})
+    return resp(200, {"regla": regla, "total": len(filas),
+                      "alertas": [api_externa.alerta_publica(f) for f in filas]})
