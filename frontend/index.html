@@ -2874,6 +2874,8 @@
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Valor</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Reporte</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Razón / Notas</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">¿Caso?</th>
+                  <th class="text-left px-4 py-3 text-slate-400 font-medium">Estado del caso</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Alertado</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Revisado</th>
                   <th class="text-left px-4 py-3 text-slate-400 font-medium">Revisado por</th>
@@ -2889,6 +2891,38 @@
                     <td class="px-4 py-3 text-slate-300 text-xs max-w-xs">
                       <div class="truncate" :title="a.reason" x-text="a.reason||'—'"></div>
                       <div x-show="a.notes" class="mt-1 text-slate-500 italic truncate" :title="a.notes" x-text="'📝 ' + a.notes"></div>
+                    </td>
+                    <!-- ¿Tiene caso? y en qué estado. Mismo criterio que en
+                         la tabla de activos: el vínculo explícito y "otro caso
+                         del cliente" se distinguen. -->
+                    <td class="px-4 py-3 whitespace-nowrap">
+                      <template x-if="a.tiene_caso">
+                        <span class="text-xs font-medium px-2 py-0.5 rounded-full border"
+                          :class="a.caso_vinculo === 'vinculado'
+                            ? 'bg-emerald-900/50 text-emerald-300 border-emerald-700'
+                            : 'bg-slate-700/50 text-slate-300 border-slate-600'"
+                          :title="a.caso_vinculo === 'vinculado'
+                            ? 'Este caso está vinculado a esta alerta'
+                            : 'El cliente tiene un caso, pero no está vinculado a esta alerta'">
+                          <span x-text="a.caso_vinculo === 'vinculado' ? 'Sí' : 'Del cliente'"></span>
+                          <span x-show="a.casos_del_cliente > 1" class="opacity-70"
+                            x-text="'· ' + a.casos_del_cliente"></span>
+                        </span>
+                      </template>
+                      <template x-if="!a.tiene_caso">
+                        <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-red-900/40 text-red-300 border border-red-800">No</span>
+                      </template>
+                    </td>
+                    <td class="px-4 py-3 whitespace-nowrap">
+                      <span x-show="!a.tiene_caso" class="text-slate-600 text-xs italic">—</span>
+                      <span x-show="a.tiene_caso" class="text-xs font-medium px-2 py-0.5 rounded-full border"
+                        :class="{
+                          'bg-blue-900/50 text-blue-300 border-blue-800': a.caso_estado === 'open',
+                          'bg-amber-900/50 text-amber-300 border-amber-800': a.caso_estado === 'in_progress',
+                          'bg-purple-900/50 text-purple-300 border-purple-800': a.caso_estado === 'under_review',
+                          'bg-slate-700/50 text-slate-400 border-slate-600': a.caso_estado === 'closed' || a.caso_estado === 'archived'
+                        }"
+                        x-text="a.caso_estado_es"></span>
                     </td>
                     <td class="px-4 py-3 text-slate-500 text-xs whitespace-nowrap" x-text="formatDate(a.created_at)"></td>
                     <td class="px-4 py-3 text-green-500 text-xs whitespace-nowrap" x-text="formatDate(a.reviewed_at)"></td>
