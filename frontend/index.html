@@ -6569,7 +6569,7 @@
             class="pb-3 px-2 text-sm font-medium transition">
             📊 SLA
           </button>
-          <button @click="adminSubtab='informe'"
+          <button @click="adminSubtab='informe'; loadCrmAnalysts(); loadCrmUsers()"
             :class="adminSubtab==='informe' ? 'border-b-2 border-amber-500 text-amber-400' : 'text-slate-400 hover:text-white'"
             class="pb-3 px-2 text-sm font-medium transition">
             📈 Informe de gestión

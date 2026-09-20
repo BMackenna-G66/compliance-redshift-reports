@@ -4247,7 +4247,12 @@ def get_crm_users():
     """Return active CRM users for the assignee dropdown (S3-backed)."""
     try:
         users = [
-            {"email": u.get("email", ""), "full_name": u.get("full_name") or u.get("email", "")}
+            {"email": u.get("email", ""),
+             "full_name": u.get("full_name") or u.get("email", ""),
+             # El equipo viaja también acá: ésta es la lista que el portal
+             # tiene siempre cargada, y de ella sale el selector de equipo del
+             # informe de gestión.
+             "equipo": u.get("equipo", "")}
             for u in _crm_list("users") if u.get("is_active", True)
         ]
         users.sort(key=lambda u: u["full_name"])
