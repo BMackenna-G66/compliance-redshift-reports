@@ -7619,6 +7619,13 @@ def v1_listar_casos(event: dict, q: dict):
     hasta = (q.get("hasta") or "").strip()
     if hasta:
         casos = [c for c in casos if (c.get("created_at") or "") <= hasta]
+    # Sincronización incremental. `desde`/`hasta` miran la fecha de CREACIÓN,
+    # que no sirve para "traeme lo que cambió": un caso de hace un mes que un
+    # analista movió hoy no entra por ahí. Este filtro es el que se usa para
+    # ponerse al día sin releer todo.
+    cambiado = (q.get("actualizado_desde") or "").strip()
+    if cambiado:
+        casos = [c for c in casos if (c.get("updated_at") or "") >= cambiado]
 
     total = len(casos)
     try:
@@ -7849,6 +7856,20 @@ def v1_alertas_por_regla(event: dict, q: dict):
     try:
         filas = _rs_exec(sql)
     except Exception as e:
-        return resp(502, {"error": f"No pude consultar Redshift: {str(e)[:200]}"})
+        # El cluster se pausa de noche y `_rs_exec` no lo despierta. Sin este
+        # caso, quien integra recibe la excepción cruda de AWS —"Redshift
+        # endpoint is not available"— y sale a buscar un problema de red o de
+        # credenciales a las 19:05. Es la única causa esperable y tiene
+        # horario, así que se dice.
+        detalle = str(e)
+        if "not available" in detalle or "paused" in detalle.lower():
+            return resp(503, {
+                "error": "redshift_pausado",
+                "message": ("La base analítica está pausada (todos los días "
+                            "entre 18:30 y 04:00, hora de Chile). Sólo afecta a "
+                            "/v1/alertas; el resto de los endpoints responde igual."),
+                "reintentar_despues_de": "04:00 -03:00",
+            })
+        return resp(502, {"error": f"No pude consultar Redshift: {detalle[:200]}"})
     return resp(200, {"regla": regla, "total": len(filas),
                       "alertas": [api_externa.alerta_publica(f) for f in filas]})
