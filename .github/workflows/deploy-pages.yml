@@ -29,8 +29,24 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
         run: |
-          mkdir -p _site
+          mkdir -p _site _site/formularios _site/v2
+
           cp frontend/index.html _site/index.html
+
+          # Los formularios que el botón de los correos ofrece descargar.
+          # Vivían en CloudFront; si no viajan acá, ese botón se rompe en cada
+          # correo que le mandamos a un cliente.
+          cp lambda/attachments/*.pdf _site/formularios/
+
+          # El front nuevo, mientras se construye. Misma URL base a propósito:
+          # la API tiene una lista blanca de orígenes y un dominio nuevo no
+          # podría hablarle hasta que alguien con permisos de API Gateway lo
+          # agregue. Como subcarpeta, el origen es el mismo y funciona hoy.
+          if [ -f frontend/v2/index.html ]; then
+            cp frontend/v2/index.html _site/v2/index.html
+          else
+            echo '<!doctype html><meta charset="utf-8"><title>WatchTower v2</title><p style="font:14px system-ui;padding:2rem">Acá va el front nuevo. Todavía no hay nada publicado.</p>' > _site/v2/index.html
+          fi
           python3 -c "
           import json, os
           cfg = {
@@ -42,6 +58,9 @@ jobs:
             'geminiKey':     os.environ.get('GEMINI_KEY', ''),
           }
           open('_site/config.json','w').write(json.dumps(cfg, indent=2))
+          # El front nuevo lee su config con ruta relativa, así que necesita
+          # la suya en su carpeta.
+          open('_site/v2/config.json','w').write(json.dumps(cfg, indent=2))
           "
 
       - uses: actions/configure-pages@v4
