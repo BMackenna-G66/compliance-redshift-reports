@@ -1,7 +1,7 @@
 # WatchTower v2 — plan de trabajo
 
-> **Estado**: Fases 0 a 6 y 8 terminadas. Falta la 7 (ROS) y **dar el corte**,
-> que es una línea y una decisión.
+> **Estado**: las ocho fases terminadas. Falta **dar el corte**, que es una
+> línea y una decisión.
 > **Regla que manda sobre todo lo demás**: v1 sigue en producción y no se toca.
 > v2 se construye en paralelo, en su propia URL, hasta que esté completo.
 
@@ -353,11 +353,54 @@ La carga inicial bajó de 263 a **228 kB comprimidos**, y ahí se queda: las
 fases que vienen ya no la engordan. El piso son los 152 kB de Firebase, que
 hace falta para el login.
 
-## Fase 7 — ROS / UAF · postergada
+## Fase 7 — ROS / UAF ✅
 
-Pantalla nueva sin equivalente en v1. Queda para cuando esté definido el
-servicio externo que se va a apificar y conectar acá. El diseño muestra una
-pantalla, no un proceso.
+El registro de Reportes de Operación Sospechosa. Todo nuevo: no existía nada
+en el backend —ROS sólo aparecía como una *recomendación* en el informe de
+análisis individual— así que entra el módulo, los endpoints y la pantalla.
+
+**ESTE MÓDULO NO REPORTA, LLEVA EL REGISTRO.** El envío al regulador es
+manual, por sus canales. Decirlo en la pantalla no es una formalidad: sin
+eso, alguien marca «enviado» creyendo que el sistema lo mandó.
+
+**LA DISTINCIÓN QUE ORDENA TODO EL MÓDULO.** El sistema arma los **hechos**
+—sujeto, alertas vinculadas, período, montos— porque ya están en el caso y
+copiarlos a mano es como se cometen errores. La **narrativa** la escribe una
+persona: un ROS es una afirmación legal firmada por el oficial de
+cumplimiento, y un texto generado que alguien firma sin leer es exactamente
+el accidente que hay que evitar. El sistema no la redacta ni la sugiere.
+
+**Lo que se decidió con vos**, frente a lo que proponía el prototipo:
+
+| | Prototipo | Lo que se hizo |
+|---|---|---|
+| Reguladores | cinco (sumaba MX y BR) | **tres**: UIF-AR, UAF-CL, UIAF-CO |
+| Plazos | cuenta regresiva por reporte | **ninguno** — el campo `vence_at` queda vacío para que agregarlos después no obligue a rehacer el modelo |
+| Servicio externo | — | registro propio ahora; `origen` y `externo_id` son la costura para cuando exista |
+
+**El ciclo de vida es lo que se probó de verdad.** Borrador → revisión legal
+→ enviado, más «descartado» —decidir que algo NO se reporta es tan
+registrable como decidir que sí—. Cuatro propiedades que no se negocian, con
+test cada una:
+
+- un ROS **enviado no vuelve atrás**: fingir que no salió es falsear el
+  registro, y para corregirlo se emite otro, que es como funciona con las UIF;
+- **no se envía sin narrativa**: lo reportado sería un documento vacío;
+- **no se salta la revisión**;
+- **todo cambio deja rastro con autor**: un registro sin autor no prueba nada.
+
+**Dos cosas que salieron de mirar y no de escribir.**
+
+1. `build_lambda.sh` copia los archivos **uno por uno**, así que `ros.py` se
+   habría quedado fuera del paquete y los endpoints darían un 503 con cara de
+   problema de infraestructura. Ahora hay un test que compara lo que la API
+   importa con lo que el script copia — siete líneas, y caza el próximo
+   olvido.
+2. En la pantalla, entre los montos aparecía `avg_ticket_usd_7d` con USD 9,15
+   al lado de un total de USD 704. Un promedio **no es un monto movido**, y
+   los dos juntos en una lista titulada «montos», dentro de un documento que
+   lee un regulador, invitan a leerlos como cosas del mismo orden. Se excluyen
+   los promedios, máximos y ratios.
 
 ## Fase 8 — El corte ✅ *(el mecanismo; falta apretar el botón)*
 

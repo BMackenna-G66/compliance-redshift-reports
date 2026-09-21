@@ -302,6 +302,19 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
 
                   <hr style={{ border: 0, borderTop: '1px solid var(--borde)', margin: 'var(--e-2) 0' }} />
 
+                  {/* El ROS nace del caso: es acá donde alguien concluye que
+                      hay sospecha, y desde acá se arma con su evidencia. No
+                      reporta nada — abre el borrador en el registro. */}
+                  <button className="wt-btn" onClick={() => navegar('ros')}>
+                    Reportar a la UAF (ROS)
+                  </button>
+                  <p style={{ margin: 0, fontSize: 'var(--texto-xs)', color: 'var(--texto-mute)' }}>
+                    Abre el registro de ROS para armar el borrador con la evidencia de
+                    este caso. No envía nada al regulador.
+                  </p>
+
+                  <hr style={{ border: 0, borderTop: '1px solid var(--borde)', margin: 'var(--e-2) 0' }} />
+
                   <label style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
                     Nueva nota
                     <textarea className="wt-input"
