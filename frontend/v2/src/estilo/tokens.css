@@ -77,7 +77,7 @@
      cumple sin cambiar el carácter de la paleta.
      El valor se calibra contra el LIENZO (`--fondo`), que es apenas gris y no
      blanco: el gris que cumple sobre blanco todavía reprueba sobre él. */
-  --texto-mute:          #6F6F6F;
+  --texto-mute:          #6C6C6C;
   --texto-sobre-oscuro:  #FFFFFF;
 
   --fondo:               #F5F6F8;   /* el lienzo de la app                  */
@@ -162,19 +162,21 @@
   --g66-navy-texto:      var(--g66-navy);
   /* El teal de marca es un color de superficie: como letra sobre blanco da
      3,2:1. Esta es su versión legible — mismo tono, sólo más oscura. */
-  --g66-teal-texto:      #008285;
+  --g66-teal-texto:      #00797C;
   /* Los tres niveles se oscurecen para usarse como LETRA. El color del badge
      no cambia: sobre blanco, el rosa (3,6:1), el naranja (3,0:1) y el teal
      (3,2:1) no llegan al mínimo de 4,5:1, y un "CRÍTICO" que no se lee es
      peor que no marcarlo. Mismo tono y saturación, sólo más oscuros. */
-  --nivel-critico-texto: #E8004D;
-  --nivel-alto-texto:    #D73D0F;
+  --nivel-critico-texto: #D80048;
+  --nivel-alto-texto:    #C7390E;
   /* El ámbar puro (#FBAE40) sobre blanco da 1,9:1 y ni #B37400 alcanza
      (3,9:1). Este llega a 4,6:1 y sigue leyéndose como ámbar. */
   --nivel-medio-texto:   #8F5E00;
-  --nivel-bajo-texto:    #008285;
+  --nivel-bajo-texto:    #00797C;
   --estado-error-texto:  var(--estado-error);
-  --estado-ok-texto:     var(--estado-ok);
+  /* El verde de superficie da 4,4:1 sobre el gris de las insignias: no
+     alcanza. Como letra va su propia versión, apenas más oscura. */
+  --estado-ok-texto:     #157D3C;
   --violeta-texto:       var(--violeta);
 }
 

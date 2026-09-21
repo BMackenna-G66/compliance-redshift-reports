@@ -15,13 +15,14 @@ import { useRuta } from './ruta.js';
 
 import { Sidebar } from './shell/Sidebar.jsx';
 import { Topbar } from './shell/Topbar.jsx';
+import { Bandeja } from './pantallas/Bandeja.jsx';
 import { Pendiente } from './pantallas/Pendiente.jsx';
 import { Reportes } from './pantallas/Reportes.jsx';
+import { Triage } from './pantallas/Triage.jsx';
 
 /* Qué pantalla construye qué fase. Sirve para que el relleno diga algo útil
    y para que esta lista sea el inventario de lo que falta. */
 const FASE = {
-  dashboard: 'Fase 2', alert: 'Fase 2',
   cases: 'Fase 3', kanban: 'Fase 3', ficha: 'Fase 3',
   informe: 'Fase 4', individual: 'Fase 4', institucional: 'Fase 4',
   history: 'Fase 4', whitelist: 'Fase 4', flags: 'Fase 4',
@@ -33,6 +34,8 @@ const FASE = {
 
 /* Las pantallas ya construidas. Todo lo demás cae en Pendiente. */
 const CONSTRUIDAS = {
+  dashboard: Bandeja,
+  alert: Triage,
   reports: Reportes,
 };
 
@@ -57,7 +60,7 @@ function useTema() {
 
 /* ── Pantallas ──────────────────────────────────────────────────────────── */
 
-function Contenido({ ruta, perfil, api }) {
+function Contenido({ ruta, resto, perfil, api, email, navegar }) {
   const pantalla = PANTALLAS.find((p) => p.id === ruta);
 
   if (!pantalla) {
@@ -84,7 +87,12 @@ function Contenido({ ruta, perfil, api }) {
   }
 
   const Construida = CONSTRUIDAS[ruta];
-  if (Construida) return <Construida api={api} perfil={perfil} />;
+  if (Construida) {
+    return (
+      <Construida api={api} perfil={perfil} email={email} navegar={navegar}
+                  alertId={resto?.[0] || ''} />
+    );
+  }
   return <Pendiente id={ruta} fase={FASE[ruta]} />;
 }
 
@@ -93,7 +101,7 @@ function Contenido({ ruta, perfil, api }) {
 export default function App() {
   const sesion = useSesion();
   const [tema, alternarTema] = useTema();
-  const { ruta, navegar } = useRuta('reports');
+  const { ruta, resto, navegar } = useRuta('dashboard');
 
   const [config, setConfig] = useState(null);
   const [errorConfig, setErrorConfig] = useState('');
@@ -170,7 +178,8 @@ export default function App() {
           ) : !api ? (
             <p className="wt-estado">Conectando…</p>
           ) : (
-            <Contenido ruta={ruta} perfil={sesion.perfil} api={api} />
+            <Contenido ruta={ruta} resto={resto} perfil={sesion.perfil} api={api}
+                       email={sesion.email} navegar={navegar} />
           )}
         </main>
       </div>

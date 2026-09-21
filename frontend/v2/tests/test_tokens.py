@@ -76,35 +76,45 @@ def temas():
     return {"claro": claro, "oscuro": oscuro}
 
 
-# Cada par es (texto, fondo) tal como se va a usar de verdad en la interfaz.
-PARES = [
-    ("--texto", "--superficie"),
-    ("--texto", "--fondo"),
-    ("--texto-2", "--superficie"),
-    ("--texto-2", "--superficie-2"),
-    ("--texto-2", "--superficie-3"),
-    ("--texto-mute", "--superficie"),
-    ("--texto-mute", "--fondo"),
-    ("--g66-azul-texto", "--superficie"),
-    ("--g66-navy-texto", "--superficie"),
-    ("--g66-teal-texto", "--superficie"),
-    ("--nivel-critico-texto", "--superficie"),
-    ("--nivel-alto-texto", "--superficie"),
-    ("--nivel-medio-texto", "--superficie"),
-    ("--nivel-bajo-texto", "--superficie"),
+# Las superficies sobre las que puede caer texto. `--superficie-3` es la que
+# más aprieta: es el gris de las cabeceras y el fondo de las insignias, y dos
+# colores que pasaban sobre blanco reprobaban sobre él.
+SUPERFICIES = ["--fondo", "--superficie", "--superficie-2", "--superficie-3"]
+
+# Los neutros de texto, que no llevan sufijo.
+NEUTROS = ["--texto", "--texto-2", "--texto-mute"]
+
+# Pares con un fondo propio, fuera de la grilla de arriba.
+PARES_SUELTOS = [
     ("--estado-error-texto", "--estado-error-fondo"),
-    ("--estado-ok-texto", "--superficie"),
-    ("--violeta-texto", "--superficie"),
     ("--texto-sobre-oscuro", "--g66-navy-profundo"),
     ("--texto-sobre-oscuro", "--g66-azul"),
+    ("--texto-sobre-oscuro", "--g66-navy-2"),
 ]
+
+
+def pares(tokens):
+    """Todo lo que se dibuja como letra, contra toda superficie donde puede caer.
+
+    Se deriva en vez de listarse a mano: un token `-texto` nuevo queda cubierto
+    sin que nadie se acuerde de agregarlo acá. Así apareció que
+    `--nivel-alto-texto` no llegaba al mínimo sobre el gris de las insignias.
+    """
+    letras = [k for k in tokens if k.endswith("-texto")
+              and k != "--texto-sobre-oscuro"] + NEUTROS
+    return [(a, b) for a in sorted(set(letras)) for b in SUPERFICIES] + PARES_SUELTOS
+
+
+# LO QUE ESTE TEST NO MIDE: los fondos `-tenue` llevan alfa (`#FF297014`) y se
+# componen sobre lo que tengan debajo. Como son translúcidos al 8%, el color
+# efectivo queda muy cerca de `--superficie`, que sí se mide.
 
 
 class Contraste(unittest.TestCase):
 
     def test_todo_par_de_texto_se_lee_en_los_dos_temas(self):
         for nombre, tokens in temas().items():
-            for frente, fondo in PARES:
+            for frente, fondo in pares(tokens):
                 a, b = tokens.get(frente, ""), tokens.get(fondo, "")
                 with self.subTest(tema=nombre, par="%s sobre %s" % (frente, fondo)):
                     self.assertRegex(a, r"^#[0-9A-Fa-f]{6}$", "%s no es un hex" % frente)

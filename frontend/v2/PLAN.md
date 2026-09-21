@@ -1,7 +1,6 @@
 # WatchTower v2 — plan de trabajo
 
-> **Estado**: Fases 0 y 1 terminadas. Las tres decisiones que las bloqueaban
-> están tomadas (§Decisiones). Sigue la Fase 2.
+> **Estado**: Fases 0, 1 y 2 terminadas. Sigue la Fase 3.
 > **Regla que manda sobre todo lo demás**: v1 sigue en producción y no se toca.
 > v2 se construye en paralelo, en su propia URL, hasta que esté completo.
 
@@ -40,7 +39,7 @@ dejar afuera todo lo que es andamio.
 | `src/estilo/tokens.css` | 33 tokens semánticos, de los 89 colores sueltos del prototipo. Tema claro y oscuro. |
 | `src/estilo/base.css` | Reset, tipografía, animaciones y el shell. Cero colores literales. |
 | `src/dominio.js` | Niveles de riesgo, categorías, estados de caso, las 20 pantallas con su llave de permiso. |
-| `tests/test_tokens.py` | 38 pares de contraste medidos en los dos temas. |
+| `tests/test_tokens.py` | 112 pares de contraste medidos en los dos temas. |
 
 **Lo que se verificó contra el repo, no contra el diseño.**
 
@@ -60,19 +59,28 @@ dejar afuera todo lo que es andamio.
   un peso, una pantalla titulada "Flags y pesos" estaría mintiendo y nadie se
   enteraría hasta que un analista defienda un caso con un número que no es.
 
-**Lo que la extracción encontró y hubo que arreglar.** Cuatro colores del
-prototipo no llegan al mínimo de contraste de WCAG AA sobre su propio fondo:
+**Lo que la extracción encontró y hubo que arreglar.** Colores del prototipo
+que no llegan al mínimo de contraste de WCAG AA:
 
 | Token | Prototipo | Contraste | Corregido |
 |---|---|---|---|
-| `--texto-mute` | `#A4A3A4` | 2,5:1 | `#6F6F6F` |
-| `--nivel-critico-texto` | `#FF2970` | 3,6:1 | `#E8004D` |
-| `--nivel-alto-texto` | `#F26B43` | 3,0:1 | `#D73D0F` |
-| `--nivel-bajo-texto` / `--g66-teal-texto` | `#009FA2` | 3,2:1 | `#008285` |
+| `--texto-mute` | `#A4A3A4` | 2,5:1 | `#6C6C6C` |
+| `--nivel-critico-texto` | `#FF2970` | 3,6:1 | `#D80048` |
+| `--nivel-alto-texto` | `#F26B43` | 3,0:1 | `#C7390E` |
+| `--nivel-bajo-texto` / `--g66-teal-texto` | `#009FA2` | 3,2:1 | `#00797C` |
+| `--estado-ok-texto` | `#15803D` | 4,4:1 | `#157D3C` |
 
 El gris es el más grave: el prototipo lo usa **112 veces**, a 10 px, en la
 pantalla que un analista mira ocho horas. Los colores de badge no cambian —
 sólo su versión como letra.
+
+**El test se corrigió dos veces, y la segunda importa más que la primera.**
+Al principio listaba los pares a mano y medía todo contra blanco. Pero el
+texto también cae sobre `--superficie-3`, el gris de las cabeceras y el fondo
+de las insignias, y ahí cinco colores que pasaban raspando reprobaban. Ahora
+el test **deriva sus propios pares**: todo token `-texto` contra todas las
+superficies, en los dos temas. Son 112 pares, y un token nuevo queda cubierto
+sin que nadie se acuerde de agregarlo.
 
 ---
 
@@ -108,14 +116,45 @@ navega, y respeta permisos.
    hacer no puede dejar al equipo sin poder publicar lo que está en
    producción. Si no hay build, v2 publica una página que lo dice.
 
-## Fase 2 — Bandeja de alertas y triage
+## Fase 2 — Bandeja de alertas y triage ✅
 
-`dashboard` + `alert` (nueva). La pantalla donde el equipo vive.
+`dashboard` + `alert` (nueva), como **Command desk**: indicadores arriba,
+tabla abajo, triage en su propia pantalla. Los datos se cargan al entrar y con
+un botón de refrescar; no hay feed en vivo (§Decisiones).
 
-Se construye como **Command desk**: la fila de indicadores arriba —abiertos,
-vencidos de SLA, por analista— y la tabla de alertas abajo, con el triage en
-su propia pantalla. Los datos se cargan al entrar y con un botón de refrescar;
-no hay feed en vivo (§Decisiones).
+**LO MÁS IMPORTANTE QUE SALIÓ DE ESTA FASE: hay dos puntajes distintos y los
+dos se llaman `risk_score`.**
+
+| | Análisis individual | Alertas transaccionales |
+|---|---|---|
+| Dónde | `lambda/aml_individual.py` | `row_data.risk_score`, del SQL de cada reporte |
+| Escala | 0–19 (suma de diez banderas) | 0–100 |
+| Cortes | ≥10 crítico · 6 alto · 3 medio | ≥75 P1 · ≥50 P2 · P3 (`handler.py:699`) |
+
+Medido sobre las 122 alertas activas, los puntajes van de 0 a 87. Aplicarles
+los cortes del análisis individual —que es lo que habría pasado usando el
+`nivelDe()` que ya existía— **pintaría 109 de 110 como CRÍTICO**, y el color
+dejaría de decir nada justo en la pantalla donde se decide a quién mirar
+primero. Ahora cada escala tiene su función y hay un test que las cruza.
+
+**El diseño dibuja tres columnas que los datos no pueden llenar.** El
+prototipo muestra monto en USD, país destino y las banderas F1–F10 de cada
+alerta. De esas: el país y las banderas **no existen** en los datos de
+alertas, y el monto existe con **un nombre distinto en cada reporte** —cuatro
+campos repartidos en seis reportes, y uno sin monto. La columna de monto usa
+un mapa explícito por reporte y muestra de qué campo salió; las otras dos no
+se dibujaron. Inventarlas habría quedado lindo y vacío.
+
+**Un indicador no puede mostrar cero cuando no sabe.** Se vio al probar con la
+carga fallando: la fila mostraba «0 alertas activas · 0 sin caso», que dice
+que no hay trabajo pendiente. En esta pantalla esa es la diferencia entre
+irse tranquilo a casa y no. Ahora muestra un guión mientras carga y si falla.
+
+**Qué se puede hacer desde el triage**: asignar (a uno mismo o a otro),
+dejar una nota, y marcar como revisada —con confirmación, porque saca la
+alerta de la bandeja de todos—. La fila cruda del reporte se muestra entera:
+es la evidencia de por qué la alerta existe, y elegir qué campos mostrar sería
+decidir por el analista qué es relevante en un reporte que todavía no existe.
 
 ## Fase 3 — Casos
 

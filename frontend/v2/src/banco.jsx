@@ -1,29 +1,43 @@
 /* ============================================================================
    Banco de pruebas
    ----------------------------------------------------------------------------
-   El shell y los componentes con datos inventados y sin autenticación.
+   El shell y las pantallas reales, sin pasar por el login de Google.
 
-   PARA QUÉ. Entrar a la app de verdad necesita Google, y eso deja el shell sin
-   forma de mirarse: ni en una revisión de PR, ni en una captura, ni de manera
-   automática. Acá se ve entero en dos segundos, y se puede cambiar de perfil
-   con un botón para comprobar de un vistazo qué ve cada rol — que es lo que
-   antes había que verificar interceptando `fetch` en producción.
+   PARA QUÉ. Entrar a la app necesita Google, y eso deja las pantallas sin
+   forma de mirarse: ni en una revisión, ni en una captura, ni de manera
+   automática. Acá se ven en dos segundos, y el selector de perfil muestra de
+   un vistazo qué ve cada rol — lo que antes había que comprobar
+   interceptando `fetch` en producción.
 
-   NO SE PUBLICA: el workflow lo borra del sitio antes de subirlo. Los datos
-   son fabricados y alguien que cayera acá podría creer que son reales.
+   DE DÓNDE SALEN LOS DATOS. De la API de verdad, leyendo `./config.json`
+   igual que la app. No hay ningún archivo de datos guardado en el repo, y no
+   puede haberlo: el repo es público y las alertas traen correos e
+   identificadores de clientes.
+
+   EL PERFIL ES SIEMPRE DE SÓLO LECTURA, incluso cuando el selector dice otra
+   cosa. El selector cambia lo que se VE —que es lo que se quiere revisar—
+   pero el cliente de API se arma con perfil de consulta, así que ninguna
+   escritura puede salir de acá hacia producción por un clic distraído.
+
+   NO SE PUBLICA: el workflow lo borra del sitio antes de subirlo.
    ========================================================================= */
 
-import { StrictMode, useState } from 'react';
+import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import './estilo/tokens.css';
 import './estilo/base.css';
 import './estilo/componentes.css';
 
+import { cargarConfig } from './config.js';
+import { crearApi } from './api.js';
 import { PANTALLAS } from './dominio.js';
 import { Sidebar } from './shell/Sidebar.jsx';
 import { Topbar } from './shell/Topbar.jsx';
-import { Tabla } from './comun/Tabla.jsx';
+import { Bandeja } from './pantallas/Bandeja.jsx';
+import { Pendiente } from './pantallas/Pendiente.jsx';
+import { Reportes } from './pantallas/Reportes.jsx';
+import { Triage } from './pantallas/Triage.jsx';
 
 const PERFILES = {
   'Super admin': { rol: 'superadmin', modulos: ['all'] },
@@ -31,34 +45,39 @@ const PERFILES = {
   'CX (sólo lectura)': { rol: 'lectura', modulos: ['casos'] },
 };
 
-/* Datos inventados, a propósito reconocibles como tales. Incluyen los casos
-   raros que importan: un score ausente (que NO es cero), un monto con puntos
-   de miles, un estado que el front no conoce. */
-const FILAS = [
-  { id: 'DEMO-1', cliente: 'Ejemplo Uno SpA', score: 12, monto: '1.234.567', estado: 'Abierto' },
-  { id: 'DEMO-2', cliente: 'Ejemplo Dos Ltda', score: null, monto: '89.000', estado: 'Cerrado' },
-  { id: 'DEMO-3', cliente: 'Ñandú Ejemplo', score: 0, monto: '4.500.000', estado: 'En investigación' },
-  { id: 'DEMO-4', cliente: 'Ejemplo Cuatro', score: 7, monto: '250', estado: 'estado_raro' },
-  { id: 'DEMO-5', cliente: 'Ejemplo Cinco', score: 9, monto: '1.000.000', estado: 'Abierto' },
-];
-
-const COLUMNAS = [
-  { clave: 'id', titulo: 'Caso', tipo: 'mono', ancho: '12%' },
-  { clave: 'cliente', titulo: 'Cliente', ancho: '30%' },
-  { clave: 'score', titulo: 'Score', tipo: 'numero', ancho: '10%' },
-  { clave: 'monto', titulo: 'Monto', tipo: 'numero', ancho: '18%' },
-  { clave: 'estado', titulo: 'Estado' },
-];
+const CONSTRUIDAS = { dashboard: Bandeja, alert: Triage, reports: Reportes };
 
 function Banco() {
   const [nombre, setNombre] = useState('Super admin');
   const [tema, setTema] = useState('claro');
-  const [ruta, setRuta] = useState('cases');
-  const perfil = PERFILES[nombre];
+  const [ruta, setRuta] = useState('dashboard');
+  const [resto, setResto] = useState([]);
+  const [api, setApi] = useState(null);
+  const [error, setError] = useState('');
 
+  const perfil = PERFILES[nombre];
   document.documentElement.setAttribute('data-tema', tema);
 
-  const pantalla = PANTALLAS.find((p) => p.id === ruta);
+  useEffect(() => {
+    cargarConfig()
+      .then((cfg) => setApi(crearApi({
+        base: cfg.apiUrl,
+        // A propósito, y pase lo que pase con el selector de arriba.
+        perfil: () => ({ rol: 'lectura', modulos: ['all'] }),
+        email: () => 'banco-de-pruebas@global66.com',
+      })))
+      .catch((e) => setError(
+        `Sin config.json no hay datos. Poné uno con {"apiUrl": "..."} junto al index. (${e.message})`,
+      ));
+  }, []);
+
+  function navegar(id, siguiente = []) {
+    setRuta(id);
+    setResto(siguiente);
+  }
+
+  const Pantalla = CONSTRUIDAS[ruta];
+  const def = PANTALLAS.find((p) => p.id === ruta);
 
   return (
     <div className="wt-app">
@@ -70,11 +89,11 @@ function Banco() {
         alSalir={() => {}}
       />
       <div className="wt-cuerpo">
-        <Sidebar perfil={perfil} actual={ruta} alNavegar={setRuta} />
+        <Sidebar perfil={perfil} actual={ruta} alNavegar={navegar} />
         <main className="wt-contenido">
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16 }}>
             <strong style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
-              BANCO DE PRUEBAS · datos inventados
+              BANCO · datos reales, escritura bloqueada
             </strong>
             {Object.keys(PERFILES).map((n) => (
               <button
@@ -87,13 +106,16 @@ function Banco() {
             ))}
           </div>
 
-          <Tabla
-            titulo={pantalla ? pantalla.titulo : ruta}
-            columnas={COLUMNAS}
-            filas={FILAS}
-            nombreExport="banco"
-            porPagina={3}
-          />
+          {error ? (
+            <div className="wt-estado-error">{error}</div>
+          ) : !api ? (
+            <p className="wt-estado">Conectando…</p>
+          ) : Pantalla ? (
+            <Pantalla api={api} perfil={perfil} email="banco-de-pruebas@global66.com"
+                      navegar={navegar} alertId={resto[0] || ''} />
+          ) : (
+            <Pendiente id={ruta} fase={def ? 'una fase posterior' : ''} />
+          )}
         </main>
       </div>
     </div>

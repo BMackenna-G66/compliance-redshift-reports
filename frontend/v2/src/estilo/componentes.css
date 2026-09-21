@@ -254,3 +254,134 @@
   border-radius: var(--r-sm);
   padding: 1px 5px;
 }
+
+/* ── Indicadores del tablero ────────────────────────────────────────────────
+   El Command desk: la fila de números arriba y la tabla abajo.
+
+   El prototipo dibuja este panel sobre un fondo azul muy oscuro incluso en
+   tema claro. No se copia: ese fondo venía atado al "feed en vivo", que se
+   descartó, y un bloque oscuro suelto dentro de una app clara obliga a
+   mantener una segunda paleta de texto para una sola pantalla. La estructura
+   —indicadores arriba, tabla abajo— es lo que se eligió, y eso sí está. */
+.wt-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--e-3);
+  margin-bottom: var(--e-4);
+}
+
+.wt-kpi {
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-lg);
+  padding: var(--e-3) var(--e-4);
+  box-shadow: var(--sombra-carta);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  font: inherit;
+}
+/* El primero es el que manda: el prototipo lo pinta en navy y tiene razón —
+   en una fila de cinco números iguales no hay ninguno primero. */
+.wt-kpi-principal {
+  background: var(--g66-navy-2);
+  border-color: var(--g66-navy-2);
+}
+.wt-kpi-etiqueta {
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-ancho);
+  text-transform: uppercase;
+  color: var(--texto-mute);
+}
+.wt-kpi-principal .wt-kpi-etiqueta { color: #FFFFFFB8; }
+.wt-kpi-valor {
+  font-size: var(--texto-xl);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-junto);
+  color: var(--g66-navy-texto);
+  font-variant-numeric: tabular-nums;
+}
+.wt-kpi-principal .wt-kpi-valor { color: var(--texto-sobre-oscuro); }
+.wt-kpi-pie { font-size: var(--texto-sm); color: var(--texto-mute); }
+.wt-kpi-principal .wt-kpi-pie { color: #FFFFFFB8; }
+
+/* Los que llevan a algún lado se comportan como botones. */
+button.wt-kpi { cursor: pointer; }
+button.wt-kpi:hover { border-color: var(--g66-azul); }
+button.wt-kpi[aria-pressed='true'] {
+  border-color: var(--g66-azul);
+  box-shadow: 0 0 0 2px var(--azul-tenue);
+}
+
+/* ── Insignias ──────────────────────────────────────────────────────────── */
+.wt-insignia {
+  display: inline-block;
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-ancho);
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+/* Lo que no se midió no se pinta de ningún color de riesgo: se pinta de
+   "no se sabe", que es lo que es. */
+.wt-insignia-sindato {
+  color: var(--texto-mute);
+  border: 1px dashed var(--borde-azul);
+}
+
+/* ── Filtros ────────────────────────────────────────────────────────────── */
+.wt-filtros { display: flex; gap: var(--e-2); flex-wrap: wrap; align-items: center; }
+.wt-filtro {
+  appearance: none;
+  font: inherit;
+  font-size: var(--texto-sm);
+  font-weight: var(--peso-medio);
+  border: 1px solid var(--borde);
+  background: var(--superficie);
+  color: var(--texto-2);
+  border-radius: var(--r-pill);
+  padding: 4px var(--e-3);
+  cursor: pointer;
+}
+.wt-filtro:hover { border-color: var(--borde-azul); color: var(--texto); }
+.wt-filtro[aria-pressed='true'] {
+  background: var(--g66-azul);
+  border-color: var(--g66-azul);
+  color: var(--texto-sobre-oscuro);
+}
+.wt-filtro-n { opacity: .75; margin-left: 4px; font-variant-numeric: tabular-nums; }
+
+/* ── Triage ─────────────────────────────────────────────────────────────── */
+.wt-migas {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  font-size: var(--texto-sm);
+  color: var(--texto-mute);
+  margin-bottom: var(--e-3);
+}
+.wt-migas button {
+  appearance: none; background: none; border: 0; font: inherit;
+  font-size: var(--texto-sm); font-weight: var(--peso-medio);
+  color: var(--g66-azul-texto); cursor: pointer; padding: 0;
+}
+.wt-migas button:hover { text-decoration: underline; }
+
+.wt-triage { display: grid; grid-template-columns: 1.6fr 1fr; gap: var(--e-4); align-items: start; }
+
+.wt-datos { display: grid; grid-template-columns: max-content 1fr; gap: var(--e-2) var(--e-4); }
+.wt-datos dt {
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-ancho);
+  text-transform: uppercase;
+  color: var(--texto-mute);
+  padding-top: 2px;
+}
+.wt-datos dd { margin: 0; font-size: var(--texto-base); color: var(--texto-2); }
+
+.wt-cuerpo-carta { padding: var(--e-4); }
+.wt-acciones { display: flex; flex-direction: column; gap: var(--e-2); }

@@ -20,11 +20,33 @@
    visuales), y los pesos y el catálogo se piden.
    ========================================================================= */
 
-/* ── Niveles de riesgo ──────────────────────────────────────────────────────
-   Los CORTES (≥10, 6-9, 3-5, <3) los decide el backend al calcular el score.
-   Acá está sólo cómo se pintan, y el rango se muestra como referencia para el
-   analista — si el backend cambia los cortes, esto se ajusta a mano y hay un
-   test que lo compara. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   ⚠️  HAY DOS PUNTAJES DISTINTOS Y LOS DOS SE LLAMAN `risk_score`.
+   ═══════════════════════════════════════════════════════════════════════════
+
+   1. EL DEL ANÁLISIS INDIVIDUAL — `NIVELES`, más abajo.
+      Escala 0–19: la suma de los pesos de las diez banderas de
+      `lambda/aml_individual.py`. Cortes ≥10 / 6 / 3.
+
+   2. EL DE LAS ALERTAS TRANSACCIONALES — `ESCALA_ALERTA`.
+      Escala 0–100, calculado por el SQL de cada reporte y guardado en
+      `row_data.risk_score`. Cortes ≥75 P1 / ≥50 P2 / P3
+      (`lambda/handler.py:699`).
+
+   NO SON INTERCAMBIABLES. Medido sobre las 122 alertas activas de producción,
+   los puntajes van de 0 a 87: aplicarles los cortes del análisis individual
+   pintaría 109 de 110 como CRÍTICO, y el color dejaría de decir nada justo en
+   la pantalla donde se decide a quién mirar primero.
+
+   Por eso cada escala tiene su propia función y ninguna acepta el puntaje de
+   la otra sin decirlo.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Niveles de riesgo · ANÁLISIS INDIVIDUAL (0–19) ─────────────────────────
+   Los CORTES los decide el backend al calcular el score. Acá está sólo cómo
+   se pintan, y el rango se muestra como referencia para el analista — si el
+   backend cambia los cortes, esto se ajusta a mano y hay un test que lo
+   compara. */
 export const NIVELES = {
   CRITICO: { etiqueta: 'Crítico', desde: 10, color: 'var(--nivel-critico)', fondo: 'var(--nivel-critico-tenue)', claro: 'var(--nivel-critico-claro)' },
   ALTO:    { etiqueta: 'Alto',    desde: 6,  color: 'var(--nivel-alto)',    fondo: 'var(--nivel-alto-tenue)',    claro: 'var(--nivel-alto-claro)' },
@@ -32,8 +54,19 @@ export const NIVELES = {
   BAJO:    { etiqueta: 'Bajo',    desde: 0,  color: 'var(--nivel-bajo)',    fondo: 'var(--nivel-bajo-tenue)',    claro: 'var(--nivel-bajo-claro)' },
 };
 
-/** El nivel de un score. Un score ausente no es "bajo": es desconocido, y
- *  pintarlo de verde tranquiliza sobre algo que no se midió. */
+/** Máximo posible del análisis individual: la suma de los diez pesos. Se usa
+ *  para mostrar "12/19", que es lo único que vuelve legible un 12. */
+export const NIVELES_MAXIMO = 19;
+
+/**
+ * El nivel de un score del ANÁLISIS INDIVIDUAL (0–19).
+ *
+ * No le pases el `risk_score` de una alerta: está en otra escala y te va a
+ * devolver CRÍTICO para casi todo. Para eso está `prioridadDeAlerta()`.
+ *
+ * Un score ausente no es "bajo": es desconocido, y pintarlo de verde
+ * tranquiliza sobre algo que no se midió.
+ */
 export function nivelDe(score) {
   if (score === null || score === undefined || score === '') return null;
   const n = Number(score);
@@ -42,6 +75,38 @@ export function nivelDe(score) {
   if (n >= NIVELES.ALTO.desde)    return 'ALTO';
   if (n >= NIVELES.MEDIO.desde)   return 'MEDIO';
   return 'BAJO';
+}
+
+/* ── Prioridad · ALERTAS TRANSACCIONALES (0–100) ────────────────────────────
+   Los cortes son los de `lambda/handler.py:699`. Verificados contra las 122
+   alertas activas: P1 86–87, P2 51–68, P3 0–50. */
+export const ESCALA_ALERTA = {
+  P1: { etiqueta: 'P1', desde: 75, descripcion: 'Atender primero',
+        color: 'var(--nivel-critico)', texto: 'var(--nivel-critico-texto)',
+        fondo: 'var(--nivel-critico-tenue)' },
+  P2: { etiqueta: 'P2', desde: 50, descripcion: 'Prioridad media',
+        color: 'var(--nivel-alto)', texto: 'var(--nivel-alto-texto)',
+        fondo: 'var(--nivel-alto-tenue)' },
+  P3: { etiqueta: 'P3', desde: 0, descripcion: 'Prioridad baja',
+        color: 'var(--nivel-bajo)', texto: 'var(--nivel-bajo-texto)',
+        fondo: 'var(--nivel-bajo-tenue)' },
+};
+export const ESCALA_ALERTA_MAXIMO = 100;
+
+/**
+ * La prioridad de una alerta a partir de su `risk_score` (0–100).
+ *
+ * Devuelve `null` si no hay puntaje. Doce de las 122 alertas activas no
+ * traen uno, y mostrarlas como P3 diría que ya se las evaluó y salieron
+ * bajas — cuando en realidad nunca se las midió.
+ */
+export function prioridadDeAlerta(score) {
+  if (score === null || score === undefined || score === '') return null;
+  const n = Number(score);
+  if (Number.isNaN(n)) return null;
+  if (n >= ESCALA_ALERTA.P1.desde) return 'P1';
+  if (n >= ESCALA_ALERTA.P2.desde) return 'P2';
+  return 'P3';
 }
 
 /* ── Categorías de reporte ──────────────────────────────────────────────────
@@ -58,14 +123,42 @@ export const COLOR_CATEGORIA = {
 };
 export const COLOR_CATEGORIA_POR_DEFECTO = 'var(--texto-mute)';
 
+/* ── El monto de una alerta ─────────────────────────────────────────────────
+   Cada reporte guarda su fila cruda en `row_data`, y NO hay un campo de monto
+   común: cada uno trae el suyo, con el nombre de lo que ese reporte mide.
+   Medido sobre las alertas activas de producción, son cuatro campos distintos
+   repartidos en seis reportes, y uno de los seis no trae monto en absoluto.
+
+   Por eso el mapa es explícito y no una lista de candidatos que adivine: un
+   "monto" que en una fila es el total girado en 7 días y en la siguiente el
+   acumulado de depósitos chicos no es un monto, es una cifra sin significado.
+   La columna muestra de qué campo salió.
+
+   CUANDO SE AGREGUE UN REPORTE hay que agregarlo acá, o su columna de monto
+   queda vacía. Vacía y no equivocada, que es la falla correcta. */
+export const MONTO_POR_REPORTE = {
+  payin_payout_accumulation:     { campo: 'total_payout_usd_7d',     etiqueta: 'Girado 7d' },
+  small_payin_structuring:       { campo: 'small_payin_total_usd_7d', etiqueta: 'Depósitos chicos 7d' },
+  structuring_detection:         { campo: 'total_usd_7d',            etiqueta: 'Total 7d' },
+  beneficiary_dispersion:        { campo: 'total_usd_7d',            etiqueta: 'Total 7d' },
+  top_customers_by_range_country:{ campo: 'total_amount_usd',        etiqueta: 'Total' },
+  // `operation-alert_-_psp_sum_30` no trae ningún campo de monto: es una
+  // alerta de estado de compliance, no transaccional.
+};
+
 /* ── Estados del caso ───────────────────────────────────────────────────────
    Los valores internos vienen del backend; acá su nombre en español y su
    color. Un estado que el backend agregue y acá no esté se muestra crudo en
-   vez de vacío: mejor un valor raro que una celda en blanco que parece un bug. */
+   vez de vacío: mejor un valor raro que una celda en blanco que parece un bug.
+
+   Los colores son las variantes `-texto`, no las de superficie: estos
+   estados se dibujan SIEMPRE como letra. Con `--nivel-alto` a secas, "En
+   investigación" daba 3,0:1 y no llegaba al mínimo — se vio recién al mirar
+   la bandeja con datos reales, porque en el diseño ese estado no aparecía. */
 export const ESTADOS_CASO = {
-  open:         { etiqueta: 'Abierto',          color: 'var(--g66-azul)' },
-  in_progress:  { etiqueta: 'En investigación', color: 'var(--nivel-alto)' },
-  under_review: { etiqueta: 'Bajo revisión',    color: 'var(--violeta)' },
+  open:         { etiqueta: 'Abierto',          color: 'var(--g66-azul-texto)' },
+  in_progress:  { etiqueta: 'En investigación', color: 'var(--nivel-alto-texto)' },
+  under_review: { etiqueta: 'Bajo revisión',    color: 'var(--violeta-texto)' },
   closed:       { etiqueta: 'Cerrado',          color: 'var(--texto-mute)' },
   archived:     { etiqueta: 'Archivado',        color: 'var(--texto-mute)' },
 };
