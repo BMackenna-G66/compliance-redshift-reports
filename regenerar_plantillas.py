@@ -54,7 +54,9 @@ def rellena(base, cuerpo, boton, trato="tu"):
         base = base.replace(marca, valor)
     return base
 BASE = (R / "templates" / "_base_global66.html").read_text(encoding="utf-8")
-CDN = "https://di7f123v3u2y5.cloudfront.net/formularios"
+# Los formularios los sirve GitHub Pages, publicados por el workflow desde
+# lambda/attachments/. Antes salían de CloudFront, que se dio de baja.
+CDN = "https://bmackenna-g66.github.io/compliance-redshift-reports/formularios"
 
 # La cláusula de respuesta, en los dos tratos. La formal va donde el
 # destinatario es una empresa: un correo que trata de usted en el cuerpo y de

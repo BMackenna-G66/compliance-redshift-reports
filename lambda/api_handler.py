@@ -2309,9 +2309,11 @@ def handler(event, context):  # noqa: ARG001
         if method == "OPTIONS":
             req_headers = event.get("headers", {}) or {}
             origin = req_headers.get("origin") or req_headers.get("Origin", "")
+            # El front vive sólo en GitHub Pages. CloudFront se dio de baja:
+            # servía lo mismo byte por byte y mantener dos destinos era una
+            # fuente de desfases sin nada a cambio.
             _allowed_origins = {
                 "https://bmackenna-g66.github.io",
-                "https://di7f123v3u2y5.cloudfront.net",
             }
             cors_origin = origin if origin in _allowed_origins else "https://bmackenna-g66.github.io"
             return {
