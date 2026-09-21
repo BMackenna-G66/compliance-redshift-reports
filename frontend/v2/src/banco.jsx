@@ -42,7 +42,9 @@ import { Ficha } from './pantallas/Ficha.jsx';
 import { Historial } from './pantallas/Historial.jsx';
 import { Individual } from './pantallas/Individual.jsx';
 import { Informe } from './pantallas/Informe.jsx';
+import { Embargos } from './pantallas/Embargos.jsx';
 import { Institucional } from './pantallas/Institucional.jsx';
+import { Relevo } from './pantallas/Relevo.jsx';
 import { Kanban } from './pantallas/Kanban.jsx';
 import { ListaBlanca } from './pantallas/ListaBlanca.jsx';
 import { Pendiente } from './pantallas/Pendiente.jsx';
@@ -64,6 +66,8 @@ const CONSTRUIDAS = {
   individual: Individual,
   informe: Informe,
   flags: Flags,
+  relevo: Relevo,
+  embargos: Embargos,
 };
 
 function Banco() {

@@ -535,3 +535,55 @@ button.wt-kpi[aria-pressed='true'] {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ── El circuito de relevo ──────────────────────────────────────────────────
+   Una fila de etapas con su cuenta y una barra proporcional. No es un gráfico
+   de torta a propósito: lo que importa es el ORDEN del circuito, y una torta
+   lo pierde. */
+.wt-circuito {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: var(--e-3);
+}
+.wt-paso {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-bottom: var(--e-2);
+  border-bottom: 2px solid var(--borde);
+  position: relative;
+}
+.wt-paso-n {
+  font-size: var(--texto-xl);
+  font-weight: var(--peso-fuerte);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.wt-paso-etiqueta {
+  font-size: var(--texto-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--track-ancho);
+  color: var(--texto-mute);
+  font-weight: var(--peso-fuerte);
+}
+/* La barra va sobre el borde inferior: muestra el peso de la etapa sin
+   robarle espacio al número, que es lo que se lee primero. */
+.wt-paso-barra {
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  height: 2px;
+  min-width: 2px;
+}
+
+/* ── Interruptores ──────────────────────────────────────────────────────── */
+.wt-interruptor {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--e-3);
+  padding: var(--e-2) 0;
+  border-bottom: 1px solid var(--borde-suave);
+}
+.wt-interruptor:last-child { border-bottom: 0; }
+.wt-interruptor .wt-insignia { flex: none; min-width: 34px; text-align: center; }
+.wt-interruptor .wt-btn { flex: none; }

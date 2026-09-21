@@ -23,7 +23,9 @@ import { Ficha } from './pantallas/Ficha.jsx';
 import { Historial } from './pantallas/Historial.jsx';
 import { Individual } from './pantallas/Individual.jsx';
 import { Informe } from './pantallas/Informe.jsx';
+import { Embargos } from './pantallas/Embargos.jsx';
 import { Institucional } from './pantallas/Institucional.jsx';
+import { Relevo } from './pantallas/Relevo.jsx';
 import { Kanban } from './pantallas/Kanban.jsx';
 import { ListaBlanca } from './pantallas/ListaBlanca.jsx';
 import { Pendiente } from './pantallas/Pendiente.jsx';
@@ -33,7 +35,6 @@ import { Triage } from './pantallas/Triage.jsx';
 /* Qué pantalla construye qué fase. Sirve para que el relleno diga algo útil
    y para que esta lista sea el inventario de lo que falta. */
 const FASE = {
-  relevo: 'Fase 5', embargos: 'Fase 5',
   admin_users: 'Fase 6', admin_auto: 'Fase 6', admin_cluster: 'Fase 6',
   audit: 'Fase 6', salud: 'Fase 6',
   ros: 'Fase 7',
@@ -54,6 +55,8 @@ const CONSTRUIDAS = {
   individual: Individual,
   informe: Informe,
   flags: Flags,
+  relevo: Relevo,
+  embargos: Embargos,
 };
 
 /* ── Tema ───────────────────────────────────────────────────────────────── */

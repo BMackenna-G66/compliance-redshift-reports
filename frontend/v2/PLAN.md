@@ -1,6 +1,6 @@
 # WatchTower v2 — plan de trabajo
 
-> **Estado**: Fases 0 a 4 terminadas. Sigue la Fase 5.
+> **Estado**: Fases 0 a 5 terminadas. Sigue la Fase 6.
 > **Regla que manda sobre todo lo demás**: v1 sigue en producción y no se toca.
 > v2 se construye en paralelo, en su propia URL, hasta que esté completo.
 
@@ -244,10 +244,59 @@ pantalla no renderiza ni una bandera.
 las banderas por código como texto, y `"F10" < "F6"`. F10 quedaba en el medio
 de la lista y hacía dudar de si faltaba alguna. Se ordena por el número.
 
-## Fase 5 — Relevo y embargos
+## Fase 5 — Relevo y embargos ✅
 
-`relevo`, `embargos`. Son los dos módulos con más lógica propia y los que menos
-se parecen a una tabla.
+Los dos módulos con más lógica propia, y los que menos se parecen a una tabla.
+
+**LO PRIMERO QUE SE VE EN RELEVO ES SI LOS ENVÍOS ESTÁN PRENDIDOS.** Hoy los
+ocho interruptores de salida están apagados. Una bandeja con 237 casos
+«listos para pedir» que en realidad no puede pedir nada es una trampa: el
+analista trabaja, no pasa nada, y ningún error lo explica. El aviso va arriba
+de todo y en rojo.
+
+Prender un envío manda correos a clientes reales, así que ese interruptor —y
+sólo ese— pide confirmación escrita con lo que va a pasar. Verificado: al
+cancelar no sale ninguna petición.
+
+**LAS ETAPAS NEGATIVAS NO SON PASOS ATRÁS.** El circuito va de −2 a 4, y los
+negativos son otra cosa: −1 es «falta un dato» (no se ubicó al cliente, no
+tiene correo, no se entendió el pedido) y −2 es «no hay nada que hacer».
+Medido: **113 de 392 casos están en −1**. Mezclarlos con el carril feliz los
+haría parecer atrasados cuando en realidad están trabados por una razón que
+no se arregla trabajando el caso, sino arreglando el dato. Por eso tienen su
+propio indicador y su propio filtro.
+
+**Los estados que se fijan a mano son nueve, no trece.** `casos.py` deja
+afuera los cuatro diagnósticos a propósito: ponerlos a mano tapa el
+diagnóstico en vez de arreglarlo. El front repite esa lista para armar el
+desplegable — y por eso existe el test de sincronía (abajo).
+
+**En embargos, la previsualización no es un adorno.** Un oficio mal leído
+—columnas corridas, un PDF sin capa de texto— produce una respuesta al
+juzgado con los documentos equivocados. Ver qué se entendió antes de ejecutar
+es el único control entre el archivo y la respuesta.
+
+Y una distinción que la pantalla insiste en marcar: **una fila descartada no
+es un «no cliente»**. Es una fila que no se pudo leer, así que a esa persona
+nunca se la buscó. Contarlas juntas haría creer que se revisó a alguien a
+quien no se revisó.
+
+El archivo sube **directo a S3** con una URL prefirmada: un oficio escaneado
+pesa varios MB y API Gateway corta el cuerpo en ~6 MB.
+
+### El test de sincronía entre los dos idiomas
+
+Hay tres cosas que el front repite del backend porque no hay endpoint que las
+dé: los estados manuales de relevo, los cortes de nivel y el plazo de
+respaldo. `tests/test_sincronia.py` lee los archivos de Python y los de
+JavaScript y los compara.
+
+No es un test de estilo. Si el backend agrega un estado y el front no lo
+tiene, la opción no aparece y nadie se entera; si el front tiene uno que el
+backend rechaza, el usuario lo elige y recibe un error que no entiende. Las
+dos fallas son silenciosas para quien las sufre.
+
+Se comprobó que puede fallar: **siete mutaciones, siete cazadas**.
 
 ## Fase 6 — Administración
 
