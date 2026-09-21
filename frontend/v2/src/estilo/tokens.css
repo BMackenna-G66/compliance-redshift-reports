@@ -1,0 +1,254 @@
+/* ============================================================================
+   WatchTower v2 — vocabulario visual
+   ----------------------------------------------------------------------------
+   Extraído de "Watchtower Hub v5.dc.html" (Claude Design, 2026-09-20). El
+   prototipo trae los estilos inline y usa 89 colores distintos; acá están
+   consolidados en la paleta que de verdad se repite, con el nombre de lo que
+   significan y no del color que son.
+
+   POR QUÉ NOMBRES SEMÁNTICOS. En el prototipo el rojo del nivel crítico y el
+   rojo de un error de sistema son el mismo `#FF2970` escrito dos veces. Al
+   separarlos se puede cambiar uno sin tocar el otro — que es todo el punto de
+   tener tokens en vez de hex sueltos.
+
+   REGLA: ningún componente de v2 escribe un color literal. Si hace falta uno
+   que no está acá, se agrega acá primero.
+   ========================================================================= */
+
+:root {
+  /* ── Marca ─────────────────────────────────────────────────────────────
+     Los cuatro azules NO son intercambiables: el navy profundo es para
+     superficies oscuras, el azul es la acción, y los dos del medio ordenan
+     jerarquía en títulos y cabeceras. */
+  --g66-azul:            #1F49B6;   /* acción primaria, enlaces, foco       */
+  --g66-azul-hover:      #124AA6;
+  --g66-navy:            #203478;   /* títulos, texto de marca              */
+  --g66-navy-2:          #243373;   /* cabeceras de sección                 */
+  --g66-navy-profundo:   #002960;   /* superficies oscuras (command desk)   */
+  --g66-teal:            #00ADA8;   /* acento, estados "en vivo"            */
+  --g66-teal-oscuro:     #009FA2;   /* el teal sobre fondo claro: contraste */
+
+  /* ── Niveles de riesgo ─────────────────────────────────────────────────
+     Los cortes vienen del backend (`aml_individual.py`), no del diseño:
+     CRÍTICO ≥ 10 · ALTO 6–9 · MEDIO 3–5 · BAJO < 3.
+     El sufijo `-tenue` es el mismo color al 8% para fondos de badge. */
+  --nivel-critico:       #FF2970;
+  --nivel-critico-tenue: #FF297014;
+  --nivel-alto:          #F26B43;
+  --nivel-alto-tenue:    #F26B4314;
+  --nivel-medio:         #FBAE40;
+  --nivel-medio-tenue:   #FBAE4018;
+  --nivel-bajo:          #00ADA8;
+  --nivel-bajo-tenue:    #00ADA814;
+
+  /* Sobre superficie oscura los mismos niveles necesitan más luz. */
+  --nivel-critico-claro: #FF5C8F;
+  --nivel-alto-claro:    #FF8A5C;
+  --nivel-medio-claro:   #FFD613;
+  --nivel-bajo-claro:    #3FD3CE;
+
+  /* ── Estado del sistema ────────────────────────────────────────────────
+     Separados de los niveles de riesgo a propósito: "la consulta falló" y
+     "este cliente es crítico" son cosas distintas y no deben confundirse de
+     un vistazo, aunque el prototipo use rojos parecidos. */
+  --estado-error:        #B91C1C;
+  --estado-error-fondo:  #FEF2F2;
+  --estado-aviso:        #B37400;
+  --estado-ok:           #15803D;
+
+  /* ── Categorías de reporte ─────────────────────────────────────────────
+     Las siete familias del catálogo de 31 reportes (`handler.py`). */
+  --cat-priorizacion:    #002960;
+  --cat-aml-trx:         #1F49B6;
+  --cat-patrones:        #FF2970;
+  --cat-comportamiento:  #F26B43;
+  --cat-kyc:             #00ADA8;
+  --cat-crypto:          #57AFE5;
+  --cat-institucional:   #243373;
+
+  /* ── Neutros ───────────────────────────────────────────────────────────
+     Tres niveles de texto y tres de superficie. Más que eso nadie los
+     distingue, y el prototipo ya tenía diez grises que hacían lo mismo. */
+  --texto:               #303030;
+  --texto-2:             #4D4D4D;   /* el más usado: cuerpo de tabla        */
+  /* El prototipo usa #A4A3A4 acá (112 veces). Sobre blanco da 2,5:1 de
+     contraste, muy por debajo del mínimo de 4,5:1 — y estas etiquetas van a
+     10 px en una pantalla que se mira ocho horas. Se oscurece a un gris que
+     cumple sin cambiar el carácter de la paleta.
+     El valor se calibra contra el LIENZO (`--fondo`), que es apenas gris y no
+     blanco: el gris que cumple sobre blanco todavía reprueba sobre él. */
+  --texto-mute:          #6C6C6C;
+  --texto-sobre-oscuro:  #FFFFFF;
+
+  --fondo:               #F5F6F8;   /* el lienzo de la app                  */
+  --superficie:          #FFFFFF;   /* tarjetas, tablas                     */
+  --superficie-2:        #FAFBFC;   /* filas alternas                       */
+  --superficie-3:        #F0F1F4;   /* cabeceras de tabla, chips apagados   */
+
+  --borde:               #E3E6EC;   /* el borde de todo                     */
+  --borde-suave:         #EAEAEA;
+  --borde-azul:          #C9D2E3;
+
+  --azul-tenue:          #EDF1FB;   /* fondo de badge azul                  */
+  --azul-tenue-2:        #F0F3F9;
+
+  --violeta:             #5B2AB5;   /* embargos / judicial                  */
+  --lila:                #5D65AC;   /* texto secundario de marca            */
+
+  /* ── Tipografía ────────────────────────────────────────────────────────
+     Montserrat para todo; IBM Plex Mono para lo que se compara carácter a
+     carácter: ids, RUT, montos, códigos de regla. Los tamaños del prototipo
+     bajan hasta 9 px; acá el piso es 10 px — abajo de eso, en una pantalla
+     que se mira ocho horas, no se lee. */
+  --fuente:      Montserrat, system-ui, -apple-system, sans-serif;
+  --fuente-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+
+  --texto-xs:    10px;    /* etiquetas de columna, badges                   */
+  --texto-sm:    11px;    /* metadatos                                      */
+  --texto-base:  12px;    /* cuerpo de tabla — la densidad de esta app      */
+  --texto-md:    13px;    /* cuerpo general                                 */
+  --texto-lg:    15px;
+  --texto-xl:    22px;    /* números de KPI                                 */
+
+  --peso-normal:   500;
+  --peso-medio:    600;
+  --peso-fuerte:   700;
+
+  --track-ancho:  .4px;   /* mayúsculas de etiqueta                         */
+  --track-junto: -.4px;   /* títulos grandes                                */
+
+  /* ── Espaciado ─────────────────────────────────────────────────────────
+     Escala de 4 px. El prototipo usa valores sueltos (13, 9, 11 px) que no
+     forman sistema; acá se redondean al múltiplo más cercano. */
+  --e-1:  4px;
+  --e-2:  8px;
+  --e-3: 12px;
+  --e-4: 16px;
+  --e-5: 20px;
+  --e-6: 24px;
+  --e-8: 32px;
+
+  /* ── Bordes y sombras ──────────────────────────────────────────────────
+     Tres radios y nada más: chico para chips, medio para controles, grande
+     para tarjetas. El `--r-pill` es para badges redondos. */
+  --r-sm:   5px;
+  --r-md:   9px;
+  --r-lg:  12px;
+  --r-pill: 99px;
+
+  --sombra-carta:  0 2px 10px rgba(31, 73, 182, .10);
+  --sombra-flota:  0 8px 28px rgba(0, 41, 96, .28);
+
+  /* ── Medidas del shell ─────────────────────────────────────────────────
+     El prototipo fija min-width 1440px: es una herramienta de escritorio y
+     colapsarla a móvil haría ilegible una tabla de 8 columnas. Se respeta,
+     con scroll horizontal en pantallas menores. */
+  --topbar-alto:    56px;
+  --sidebar-ancho: 210px;
+  --app-min-ancho: 1440px;
+  --app-min-alto:  760px;
+
+  /* ── Variantes de texto ────────────────────────────────────────────────
+     Un mismo color de marca no sirve igual como fondo de botón que como
+     texto de enlace: sobre fondo oscuro, el azul que funciona de superficie
+     es ilegible como letra. Por eso los colores que cumplen los dos papeles
+     tienen su par `-texto`.
+
+     Esto es lo que el prototipo resolvía con un truco: recorría el DOM
+     reescribiendo los estilos inline y decidía la sustitución mirando la
+     PROPIEDAD (`color` vs el resto), porque con un solo valor por color no
+     alcanzaba. Separando los dos papeles el truco sobra. */
+  --g66-azul-texto:      var(--g66-azul);
+  --g66-navy-texto:      var(--g66-navy);
+  /* El teal de marca es un color de superficie: como letra sobre blanco da
+     3,2:1. Esta es su versión legible — mismo tono, sólo más oscura. */
+  --g66-teal-texto:      #00797C;
+  /* Los tres niveles se oscurecen para usarse como LETRA. El color del badge
+     no cambia: sobre blanco, el rosa (3,6:1), el naranja (3,0:1) y el teal
+     (3,2:1) no llegan al mínimo de 4,5:1, y un "CRÍTICO" que no se lee es
+     peor que no marcarlo. Mismo tono y saturación, sólo más oscuros. */
+  --nivel-critico-texto: #D80048;
+  --nivel-alto-texto:    #C7390E;
+  /* El ámbar puro (#FBAE40) sobre blanco da 1,9:1 y ni #B37400 alcanza
+     (3,9:1). Este llega a 4,6:1 y sigue leyéndose como ámbar. */
+  --nivel-medio-texto:   #8F5E00;
+  --nivel-bajo-texto:    #00797C;
+  --estado-error-texto:  var(--estado-error);
+  /* El verde de superficie da 4,4:1 sobre el gris de las insignias: no
+     alcanza. Como letra va su propia versión, apenas más oscura. */
+  --estado-ok-texto:     #157D3C;
+  --violeta-texto:       var(--violeta);
+}
+
+/* ============================================================================
+   Tema oscuro
+   ----------------------------------------------------------------------------
+   Derivado de las tablas TXT/SURF del prototipo. Se activa con
+   `data-tema="oscuro"` en el elemento raíz; nada más cambia.
+   ========================================================================= */
+:root[data-tema="oscuro"] {
+  --g66-azul:            #2563EB;
+  --g66-azul-hover:      #1D4ED8;
+  --g66-azul-texto:      #60A5FA;
+  --g66-navy:            #1E3A8A;
+  --g66-navy-texto:      #FFFFFF;
+  --g66-navy-2:          #312E81;
+  --g66-navy-profundo:   #0B1F3A;
+  --g66-teal:            #0D9488;
+  --g66-teal-oscuro:     #0D9488;
+  --g66-teal-texto:      #2DD4BF;
+
+  --nivel-critico:       #BE123C;
+  --nivel-critico-texto: #FB7185;
+  --nivel-alto:          #EA580C;
+  --nivel-alto-texto:    #FB923C;
+  --nivel-medio:         #B45309;
+  --nivel-medio-texto:   #FBBF24;
+  --nivel-bajo:          #0D9488;
+  --nivel-bajo-texto:    #2DD4BF;
+
+  --estado-error:        #991B1B;
+  --estado-error-texto:  #F87171;
+  --estado-error-fondo:  #450A0A;
+  --estado-aviso:        #B45309;
+  --estado-ok:           #15803D;
+  --estado-ok-texto:     #4ADE80;
+
+  --cat-priorizacion:    #0B1F3A;
+  --cat-aml-trx:         #2563EB;
+  --cat-patrones:        #BE123C;
+  --cat-comportamiento:  #EA580C;
+  --cat-kyc:             #0D9488;
+  --cat-crypto:          #0369A1;
+  --cat-institucional:   #312E81;
+
+  --texto:               #E2E8F0;
+  --texto-2:             #CBD5E1;
+  --texto-mute:          #94A3B8;
+
+  --fondo:               #020617;
+  --superficie:          #0F172A;
+  --superficie-2:        #0B1220;
+  --superficie-3:        #1E293B;
+
+  --borde:               #334155;
+  --borde-suave:         #1E293B;
+  --borde-azul:          #475569;
+
+  --azul-tenue:          #172554;
+  --azul-tenue-2:        #1E293B;
+
+  --violeta:             #7C3AED;
+  --violeta-texto:       #C084FC;
+  --lila:                #4338CA;
+
+  /* Los fondos tenues de badge se recalculan: el mismo hex al 8% sobre un
+     lienzo casi negro no se ve. Van más opacos. */
+  --nivel-critico-tenue: #BE123C33;
+  --nivel-alto-tenue:    #EA580C33;
+  --nivel-medio-tenue:   #B4530933;
+  --nivel-bajo-tenue:    #0D948833;
+
+  --sombra-carta: 0 2px 10px rgba(0, 0, 0, .45);
+  --sombra-flota: 0 8px 28px rgba(0, 0, 0, .6);
+}

@@ -54,6 +54,15 @@ FLAG_WEIGHTS = {
     'flag_diversif':      1,
 }
 
+# Los cortes de nivel, en una sola definición.
+#
+# Estaban escritos como literales dentro del if de más abajo, que funciona
+# perfecto hasta que alguien los necesita en otro lado — que es lo que pasó al
+# exponer `GET /flags` para el front nuevo. Copiarlos allá habría dejado dos
+# definiciones del mismo corte, y el día que una cambie la otra seguiría
+# mostrando el número viejo sin que nadie se entere.
+CORTES_NIVEL = {"critico": 10, "alto": 6, "medio": 3}
+
 FLAG_LABELS = {
     'flag_structuring':   'F1 Estructuración',
     'flag_velocidad':     'F2 Velocidad',
@@ -332,11 +341,11 @@ def _calc_flags(rows: list[dict], total_por_cliente: dict) -> dict:
         # MEDIO    3-5:  1 indicador significativo activo (ej. estructuración o país riesgo)
         # ALTO     6-9:  2+ indicadores combinados (patrones más sólidos de sospecha)
         # CRÍTICO  ≥10:  múltiples banderas graves simultáneas
-        if risk_score >= 10:
+        if risk_score >= CORTES_NIVEL['critico']:
             nivel_riesgo = 'CRÍTICO'
-        elif risk_score >= 6:
+        elif risk_score >= CORTES_NIVEL['alto']:
             nivel_riesgo = 'ALTO'
-        elif risk_score >= 3:
+        elif risk_score >= CORTES_NIVEL['medio']:
             nivel_riesgo = 'MEDIO'
         else:
             nivel_riesgo = 'BAJO'

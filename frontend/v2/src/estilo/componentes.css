@@ -1,0 +1,600 @@
+/* ============================================================================
+   WatchTower v2 — componentes
+   Shell, tabla, controles y estados. Depende de tokens.css: ni un color
+   literal en todo el archivo.
+   ========================================================================= */
+
+/* ── Barra superior ─────────────────────────────────────────────────────── */
+.wt-marca {
+  font-size: var(--texto-lg);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-junto);
+  color: var(--g66-navy-texto);
+}
+.wt-topbar-derecha { margin-left: auto; display: flex; align-items: center; gap: var(--e-3); }
+.wt-usuario { font-size: var(--texto-sm); color: var(--texto-2); }
+.wt-usuario-rol {
+  font-size: var(--texto-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--track-ancho);
+  color: var(--texto-mute);
+}
+
+/* ── Menú lateral ───────────────────────────────────────────────────────── */
+.wt-nav { display: flex; flex-direction: column; }
+.wt-nav-item {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-left: 3px solid transparent;
+  text-align: left;
+  font: inherit;
+  font-size: var(--texto-base);
+  font-weight: var(--peso-normal);
+  color: var(--texto-2);
+  padding: var(--e-2) var(--e-4);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+}
+.wt-nav-item:hover { background: var(--superficie-3); color: var(--texto); }
+.wt-nav-item[aria-current='page'] {
+  background: var(--azul-tenue);
+  border-left-color: var(--g66-azul);
+  color: var(--g66-azul-texto);
+  font-weight: var(--peso-medio);
+}
+/* Lo que todavía no existe en el sistema, marcado para que nadie lo reporte
+   como roto. */
+.wt-nav-nuevo {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-ancho);
+  color: var(--g66-teal-texto);
+  border: 1px solid var(--g66-teal-texto);
+  border-radius: var(--r-pill);
+  padding: 0 5px;
+}
+
+/* ── Botones ────────────────────────────────────────────────────────────── */
+.wt-btn {
+  appearance: none;
+  font: inherit;
+  font-size: var(--texto-base);
+  font-weight: var(--peso-medio);
+  border-radius: var(--r-md);
+  border: 1px solid var(--borde);
+  background: var(--superficie);
+  color: var(--texto-2);
+  padding: 6px var(--e-3);
+  cursor: pointer;
+}
+.wt-btn:hover:not(:disabled) { background: var(--superficie-3); color: var(--texto); }
+.wt-btn:disabled { opacity: .5; cursor: not-allowed; }
+.wt-btn-primario {
+  background: var(--g66-azul);
+  border-color: var(--g66-azul);
+  color: var(--texto-sobre-oscuro);
+}
+.wt-btn-primario:hover:not(:disabled) {
+  background: var(--g66-azul-hover);
+  border-color: var(--g66-azul-hover);
+  color: var(--texto-sobre-oscuro);
+}
+
+/* El foco tiene que verse. Sin esto, quien navega con teclado no sabe dónde
+   está — y el reset de arriba ya le sacó el anillo del navegador. */
+:where(.wt-btn, .wt-nav-item, .wt-input, .wt-th-orden):focus-visible {
+  outline: 2px solid var(--g66-azul);
+  outline-offset: 2px;
+}
+
+/* ── Campos ─────────────────────────────────────────────────────────────── */
+.wt-input {
+  font: inherit;
+  font-size: var(--texto-base);
+  color: var(--texto);
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-md);
+  padding: 6px var(--e-3);
+}
+.wt-input::placeholder { color: var(--texto-mute); }
+
+/* ── Tarjeta ────────────────────────────────────────────────────────────── */
+.wt-carta {
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sombra-carta);
+}
+.wt-carta-cabecera {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+  padding: var(--e-3) var(--e-4);
+  border-bottom: 1px solid var(--borde);
+}
+.wt-carta-titulo {
+  font-size: var(--texto-md);
+  font-weight: var(--peso-fuerte);
+  color: var(--g66-navy-texto);
+  margin: 0;
+}
+.wt-carta-herramientas { margin-left: auto; display: flex; align-items: center; gap: var(--e-2); }
+
+/* ── Tabla densa ────────────────────────────────────────────────────────── */
+.wt-tabla-marco { overflow-x: auto; }
+.wt-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--texto-base);
+}
+.wt-tabla th, .wt-tabla td {
+  text-align: left;
+  padding: var(--e-2) var(--e-3);
+  border-bottom: 1px solid var(--borde);
+  white-space: nowrap;
+}
+.wt-tabla thead th {
+  position: sticky;   /* la cabecera se queda al hacer scroll: con 500 filas,
+                         a mitad de tabla nadie recuerda qué columna es cuál */
+  top: 0;
+  z-index: 1;
+  background: var(--superficie-3);
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  text-transform: uppercase;
+  letter-spacing: var(--track-ancho);
+  color: var(--texto-mute);
+}
+.wt-tabla tbody tr:nth-child(even) { background: var(--superficie-2); }
+.wt-tabla tbody tr:hover { background: var(--azul-tenue-2); }
+.wt-tabla td { color: var(--texto-2); }
+.wt-td-mono { font-family: var(--fuente-mono); font-size: var(--texto-sm); }
+.wt-td-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.wt-th-orden {
+  appearance: none;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.wt-th-orden:hover { color: var(--texto-2); }
+.wt-flecha { font-size: 9px; opacity: .85; }
+
+/* ── Estados ────────────────────────────────────────────────────────────── */
+.wt-estado {
+  padding: var(--e-8) var(--e-4);
+  text-align: center;
+  color: var(--texto-mute);
+  font-size: var(--texto-md);
+}
+.wt-estado-error {
+  color: var(--estado-error-texto);
+  background: var(--estado-error-fondo);
+  border-radius: var(--r-md);
+  padding: var(--e-3) var(--e-4);
+  font-size: var(--texto-base);
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+}
+.wt-estado-error .wt-btn { margin-left: auto; }
+
+/* Aviso de sólo lectura. Se muestra una vez arriba y no en cada botón: el
+   perfil de consulta no necesita que se lo recuerden quince veces. */
+.wt-aviso-lectura {
+  background: var(--nivel-medio-tenue);
+  color: var(--nivel-medio-texto);
+  border-radius: var(--r-md);
+  padding: var(--e-2) var(--e-3);
+  font-size: var(--texto-sm);
+  font-weight: var(--peso-medio);
+  margin-bottom: var(--e-4);
+}
+
+/* ── Paginado ───────────────────────────────────────────────────────────── */
+.wt-paginado {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+  padding: var(--e-2) var(--e-4);
+  border-top: 1px solid var(--borde);
+  font-size: var(--texto-sm);
+  color: var(--texto-mute);
+}
+.wt-paginado-botones { margin-left: auto; display: flex; gap: var(--e-2); }
+
+/* ── Login ──────────────────────────────────────────────────────────────── */
+.wt-login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--fondo);
+}
+.wt-login-caja {
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sombra-carta);
+  padding: var(--e-8);
+  width: 340px;
+  text-align: center;
+}
+
+/* ── Pantalla todavía sin construir ─────────────────────────────────────── */
+.wt-pendiente {
+  border: 1px dashed var(--borde-azul);
+  border-radius: var(--r-lg);
+  padding: var(--e-8);
+  text-align: center;
+  color: var(--texto-mute);
+  background: var(--superficie);
+}
+.wt-pendiente h2 {
+  margin: 0 0 var(--e-2);
+  font-size: var(--texto-lg);
+  color: var(--g66-navy-texto);
+}
+.wt-pendiente code {
+  font-family: var(--fuente-mono);
+  font-size: var(--texto-sm);
+  background: var(--superficie-3);
+  border-radius: var(--r-sm);
+  padding: 1px 5px;
+}
+
+/* ── Indicadores del tablero ────────────────────────────────────────────────
+   El Command desk: la fila de números arriba y la tabla abajo.
+
+   El prototipo dibuja este panel sobre un fondo azul muy oscuro incluso en
+   tema claro. No se copia: ese fondo venía atado al "feed en vivo", que se
+   descartó, y un bloque oscuro suelto dentro de una app clara obliga a
+   mantener una segunda paleta de texto para una sola pantalla. La estructura
+   —indicadores arriba, tabla abajo— es lo que se eligió, y eso sí está. */
+.wt-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--e-3);
+  margin-bottom: var(--e-4);
+}
+
+.wt-kpi {
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-lg);
+  padding: var(--e-3) var(--e-4);
+  box-shadow: var(--sombra-carta);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  font: inherit;
+}
+/* El primero es el que manda: el prototipo lo pinta en navy y tiene razón —
+   en una fila de cinco números iguales no hay ninguno primero. */
+.wt-kpi-principal {
+  background: var(--g66-navy-2);
+  border-color: var(--g66-navy-2);
+}
+.wt-kpi-etiqueta {
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-ancho);
+  text-transform: uppercase;
+  color: var(--texto-mute);
+}
+.wt-kpi-principal .wt-kpi-etiqueta { color: #FFFFFFB8; }
+.wt-kpi-valor {
+  font-size: var(--texto-xl);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-junto);
+  color: var(--g66-navy-texto);
+  font-variant-numeric: tabular-nums;
+}
+.wt-kpi-principal .wt-kpi-valor { color: var(--texto-sobre-oscuro); }
+.wt-kpi-pie { font-size: var(--texto-sm); color: var(--texto-mute); }
+.wt-kpi-principal .wt-kpi-pie { color: #FFFFFFB8; }
+
+/* Los que llevan a algún lado se comportan como botones. */
+button.wt-kpi { cursor: pointer; }
+button.wt-kpi:hover { border-color: var(--g66-azul); }
+button.wt-kpi[aria-pressed='true'] {
+  border-color: var(--g66-azul);
+  box-shadow: 0 0 0 2px var(--azul-tenue);
+}
+
+/* ── Insignias ──────────────────────────────────────────────────────────── */
+.wt-insignia {
+  display: inline-block;
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-ancho);
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+/* Lo que no se midió no se pinta de ningún color de riesgo: se pinta de
+   "no se sabe", que es lo que es. */
+.wt-insignia-sindato {
+  color: var(--texto-mute);
+  border: 1px dashed var(--borde-azul);
+}
+
+/* ── Filtros ────────────────────────────────────────────────────────────── */
+.wt-filtros { display: flex; gap: var(--e-2); flex-wrap: wrap; align-items: center; }
+.wt-filtro {
+  appearance: none;
+  font: inherit;
+  font-size: var(--texto-sm);
+  font-weight: var(--peso-medio);
+  border: 1px solid var(--borde);
+  background: var(--superficie);
+  color: var(--texto-2);
+  border-radius: var(--r-pill);
+  padding: 4px var(--e-3);
+  cursor: pointer;
+}
+.wt-filtro:hover { border-color: var(--borde-azul); color: var(--texto); }
+.wt-filtro[aria-pressed='true'] {
+  background: var(--g66-azul);
+  border-color: var(--g66-azul);
+  color: var(--texto-sobre-oscuro);
+}
+.wt-filtro-n { opacity: .75; margin-left: 4px; font-variant-numeric: tabular-nums; }
+
+/* ── Triage ─────────────────────────────────────────────────────────────── */
+.wt-migas {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  font-size: var(--texto-sm);
+  color: var(--texto-mute);
+  margin-bottom: var(--e-3);
+}
+.wt-migas button {
+  appearance: none; background: none; border: 0; font: inherit;
+  font-size: var(--texto-sm); font-weight: var(--peso-medio);
+  color: var(--g66-azul-texto); cursor: pointer; padding: 0;
+}
+.wt-migas button:hover { text-decoration: underline; }
+
+.wt-triage { display: grid; grid-template-columns: 1.6fr 1fr; gap: var(--e-4); align-items: start; }
+
+.wt-datos { display: grid; grid-template-columns: max-content 1fr; gap: var(--e-2) var(--e-4); }
+.wt-datos dt {
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-ancho);
+  text-transform: uppercase;
+  color: var(--texto-mute);
+  padding-top: 2px;
+}
+.wt-datos dd { margin: 0; font-size: var(--texto-base); color: var(--texto-2); }
+
+.wt-cuerpo-carta { padding: var(--e-4); }
+.wt-acciones { display: flex; flex-direction: column; gap: var(--e-2); }
+
+/* ── Kanban ─────────────────────────────────────────────────────────────────
+   Columnas de ancho fijo y scroll horizontal: con el ancho repartido a
+   partes iguales, la columna con 61 casos y la que tiene 2 se ven igual de
+   importantes, y el tablero deja de contar lo que pasa. */
+.wt-kanban {
+  display: flex;
+  gap: var(--e-3);
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: var(--e-3);
+}
+.wt-columna {
+  flex: none;
+  width: 290px;
+  background: var(--superficie-2);
+  border: 1px solid var(--borde);
+  border-top: 3px solid var(--borde);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 230px);
+}
+.wt-columna-cabecera {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  padding: var(--e-3);
+  font-size: var(--texto-base);
+  font-weight: var(--peso-fuerte);
+  color: var(--g66-navy-texto);
+}
+.wt-columna-n {
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  color: var(--texto-mute);
+  background: var(--superficie-3);
+  border-radius: var(--r-pill);
+  padding: 1px 7px;
+}
+.wt-columna-lista {
+  overflow-y: auto;
+  padding: 0 var(--e-2) var(--e-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-2);
+  min-height: 60px;
+}
+/* Se marca la columna donde caería la tarjeta que se está arrastrando. Sin
+   esto, arrastrar es adivinar. */
+.wt-columna-lista.wt-recibe {
+  background: var(--azul-tenue);
+  outline: 2px dashed var(--g66-azul);
+  outline-offset: -4px;
+  border-radius: var(--r-md);
+}
+
+.wt-tarjeta {
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-md);
+  padding: var(--e-2) var(--e-3);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: left;
+  font: inherit;
+  width: 100%;
+}
+.wt-tarjeta:hover { border-color: var(--g66-azul); box-shadow: var(--sombra-carta); }
+.wt-tarjeta[aria-grabbed='true'] { opacity: .45; }
+.wt-tarjeta-titulo {
+  font-size: var(--texto-base);
+  font-weight: var(--peso-medio);
+  color: var(--texto);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wt-tarjeta-pie {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  font-size: var(--texto-xs);
+  color: var(--texto-mute);
+}
+.wt-tarjeta-pie .mono { font-size: var(--texto-xs); }
+
+/* ── Aviso destacado ────────────────────────────────────────────────────────
+   Para cuando un número dice algo que la tabla sola no grita. */
+.wt-nota {
+  border-radius: var(--r-md);
+  padding: var(--e-3) var(--e-4);
+  font-size: var(--texto-base);
+  margin-bottom: var(--e-4);
+  border: 1px solid var(--borde);
+  background: var(--superficie);
+  color: var(--texto-2);
+}
+.wt-nota strong { color: var(--texto); }
+.wt-nota-alarma {
+  border-color: var(--nivel-critico-texto);
+  background: var(--nivel-critico-tenue);
+}
+
+/* ── Ficha ──────────────────────────────────────────────────────────────── */
+.wt-ficha-grilla {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--e-4);
+  align-items: start;
+}
+.wt-cifras {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--e-3);
+}
+.wt-cifra { display: flex; flex-direction: column; gap: 1px; }
+.wt-cifra-etiqueta {
+  font-size: var(--texto-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--track-ancho);
+  color: var(--texto-mute);
+  font-weight: var(--peso-fuerte);
+}
+.wt-cifra-valor {
+  font-size: var(--texto-lg);
+  font-weight: var(--peso-fuerte);
+  color: var(--g66-navy-texto);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Notas del caso ─────────────────────────────────────────────────────── */
+.wt-nota-caso {
+  border-left: 3px solid var(--borde-azul);
+  padding: var(--e-2) var(--e-3);
+  margin-bottom: var(--e-3);
+}
+.wt-nota-caso-meta {
+  font-size: var(--texto-xs);
+  color: var(--texto-mute);
+  margin-bottom: 3px;
+}
+.wt-nota-caso-texto {
+  font-size: var(--texto-base);
+  color: var(--texto-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── El circuito de relevo ──────────────────────────────────────────────────
+   Una fila de etapas con su cuenta y una barra proporcional. No es un gráfico
+   de torta a propósito: lo que importa es el ORDEN del circuito, y una torta
+   lo pierde. */
+.wt-circuito {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: var(--e-3);
+}
+.wt-paso {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-bottom: var(--e-2);
+  border-bottom: 2px solid var(--borde);
+  position: relative;
+}
+.wt-paso-n {
+  font-size: var(--texto-xl);
+  font-weight: var(--peso-fuerte);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.wt-paso-etiqueta {
+  font-size: var(--texto-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--track-ancho);
+  color: var(--texto-mute);
+  font-weight: var(--peso-fuerte);
+}
+/* La barra va sobre el borde inferior: muestra el peso de la etapa sin
+   robarle espacio al número, que es lo que se lee primero. */
+.wt-paso-barra {
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  height: 2px;
+  min-width: 2px;
+}
+
+/* ── Interruptores ──────────────────────────────────────────────────────── */
+.wt-interruptor {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--e-3);
+  padding: var(--e-2) 0;
+  border-bottom: 1px solid var(--borde-suave);
+}
+.wt-interruptor:last-child { border-bottom: 0; }
+.wt-interruptor .wt-insignia { flex: none; min-width: 34px; text-align: center; }
+.wt-interruptor .wt-btn { flex: none; }
+
+/* ── Comprobaciones de salud ───────────────────────────────────────────── */
+.wt-chequeo {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--e-3);
+  padding: var(--e-3) 0;
+  border-bottom: 1px solid var(--borde-suave);
+}
+.wt-chequeo:last-child { border-bottom: 0; }
+.wt-chequeo .wt-insignia { flex: none; min-width: 62px; text-align: center; }

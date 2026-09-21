@@ -87,6 +87,16 @@ except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
     sla_casos = None
     print(f"[api] sla_casos no disponible, los casos van sin plazo: {_e}")
 
+# La matriz de banderas del análisis individual. Se importa sólo por sus dos
+# constantes: el front necesita mostrarlas y hasta ahora no tenía de dónde
+# sacarlas, así que las habría copiado — y una pantalla titulada "Flags y
+# pesos" con una copia desactualizada es peor que no tenerla.
+try:
+    from aml_individual import CORTES_NIVEL, FLAG_LABELS, FLAG_WEIGHTS
+except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
+    CORTES_NIVEL = FLAG_LABELS = FLAG_WEIGHTS = None
+    print(f"[api] aml_individual no disponible, GET /flags va a devolver 503: {_e}")
+
 # La API externa de casos (`/v1/*`). Import defensivo como los de arriba, pero
 # con una diferencia que importa: si el módulo no viaja, las rutas `/v1` no se
 # registran y devuelven 404. NO se degradan a "sin autenticación" — un endpoint
@@ -2339,6 +2349,10 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["execute"]:
             return execute_report(body)
 
+        # GET /flags — la matriz de banderas y sus pesos.
+        if method == "GET" and parts == ["flags"]:
+            return get_flags()
+
         # GET /runs
         if method == "GET" and parts == ["runs"]:
             qs = event.get("queryStringParameters") or {}
@@ -3010,6 +3024,55 @@ def execute_report(body: dict):
     )
 
     return resp(202, {"run_id": run_id, "status": "RUNNING"})
+
+
+def get_flags():
+    """Las diez banderas del análisis individual, con su peso y su etiqueta.
+
+    Existe para que el front NO las copie. Hoy `aml_individual.py` es la única
+    definición y el front las necesita para explicar un score: sin este
+    endpoint tendría que repetirlas, y el día que alguien cambie un peso la
+    pantalla seguiría mostrando el viejo sin que nadie se entere — hasta que
+    un analista defienda un caso con un número que no es.
+
+    El `maximo` se calcula, no se escribe: es la suma de los pesos, y un
+    score sólo se entiende contra él ("12" no dice nada, "12 de 19" sí).
+    """
+    if not (FLAG_WEIGHTS and FLAG_LABELS):
+        return resp(503, {"error": "La matriz de banderas no está disponible en este despliegue."})
+
+    banderas = []
+    for clave, peso in FLAG_WEIGHTS.items():
+        etiqueta = FLAG_LABELS.get(clave, clave)
+        # La etiqueta viene como "F1 Estructuración": se parte en código y
+        # nombre para que el front pueda ordenarlas y mostrarlas por separado
+        # sin recortar cadenas a mano.
+        codigo, _, nombre = etiqueta.partition(" ")
+        banderas.append({
+            "clave": clave,
+            "codigo": codigo,
+            "nombre": nombre or etiqueta,
+            "etiqueta": etiqueta,
+            "peso": peso,
+        })
+
+    def _orden(b):
+        """Por peso y, a igual peso, por número de bandera.
+
+        El número va aparte porque ordenar "F10" como texto lo pone antes que
+        "F6": '1' < '6'. Con diez banderas eso deja F10 en el medio de la
+        lista y hace dudar de si falta alguna.
+        """
+        digitos = "".join(c for c in b["codigo"] if c.isdigit())
+        return (-b["peso"], int(digitos) if digitos else 99)
+
+    banderas.sort(key=_orden)
+    return resp(200, {
+        "flags": banderas,
+        "maximo": sum(FLAG_WEIGHTS.values()),
+        # Los cortes salen de `aml_individual`, no se repiten acá.
+        "cortes": dict(CORTES_NIVEL),
+    })
 
 
 def get_runs(user_email: str = ""):

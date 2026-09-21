@@ -8337,7 +8337,12 @@
             grantedBy: this.currentUserEmail,
             grantedAt: firebase.firestore.FieldValue.serverTimestamp(),
           };
-          await _db.collection('wt_roles').doc(this.newAdminUser.email).set(data);
+          // `merge: true` NO es opcional: el documento de cada persona guarda
+          // además su lista de `pendientes` —las alertas que alguien le asignó
+          // y todavía no resolvió—. Un `set` sin merge reemplaza el documento
+          // entero y se las borra, sin error y sin aviso: al entrar tiene la
+          // bandeja vacía y nadie sabe por qué.
+          await _db.collection('wt_roles').doc(this.newAdminUser.email).set(data, { merge: true });
           // Update local list
           const idx = this.adminUsersData.findIndex(u => u.email === this.newAdminUser.email);
           const entry = { email: this.newAdminUser.email, ...data };
@@ -8362,7 +8367,8 @@
             grantedBy: this.currentUserEmail,
             grantedAt: firebase.firestore.FieldValue.serverTimestamp(),
           };
-          await _db.collection('wt_roles').doc(this.adminEditUser.email).set(data);
+          // Mismo motivo que arriba: sin merge se le borran los pendientes.
+          await _db.collection('wt_roles').doc(this.adminEditUser.email).set(data, { merge: true });
           const idx = this.adminUsersData.findIndex(u => u.email === this.adminEditUser.email);
           if (idx >= 0) this.adminUsersData[idx] = { email: this.adminEditUser.email, ...data };
           this.adminEditUser = null;
