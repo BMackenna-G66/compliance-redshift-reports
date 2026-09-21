@@ -26,20 +26,18 @@ a:hover { color: var(--g66-azul-hover); }
 .mono { font-family: var(--fuente-mono); }
 
 /* ── Animaciones ────────────────────────────────────────────────────────────
-   Tres, y cada una tiene un motivo:
-   · pulso   — el indicador de "en vivo" late para que se note detenido si el
-               feed se cuelga. Un punto verde quieto no distingue "conectado"
-               de "congelado".
-   · entrada — una alerta nueva entra con un destello rosa que se apaga. Sin
-               eso, en una tabla que se actualiza sola, la fila nueva aparece
-               sin que nadie la vea.
-   · toast   — avisos al pie.                                              */
+   Dos, y cada una tiene un motivo:
+   · entrada — una fila nueva entra con un destello rosa que se apaga. Sin
+               eso, en una tabla que se acaba de refrescar, lo que cambió
+               aparece sin que nadie lo vea.
+   · toast   — avisos al pie.
 
-@keyframes wt-pulso {
-  0%   { box-shadow: 0 0 0 0   rgba(0, 173, 168, .55); }
-  70%  { box-shadow: 0 0 0 7px rgba(0, 173, 168, 0); }
-  100% { box-shadow: 0 0 0 0   rgba(0, 173, 168, 0); }
-}
+   El prototipo traía una tercera, `wt-pulso`: el punto de "en vivo" latiendo.
+   Se sacó al decidir que los datos se refrescan al entrar y no solos. Un
+   punto que late diciendo «en vivo» sobre datos de hace veinte minutos no es
+   decoración inofensiva: es una afirmación falsa sobre la frescura de los
+   datos, justo en la pantalla donde se decide a quién investigar.
+   Si algún día el feed es real, vuelve — está en el historial de git.       */
 
 @keyframes wt-entrada {
   from { opacity: 0; transform: translateY(-6px); background: rgba(255, 41, 112, .09); }

@@ -21,7 +21,7 @@ import re
 import unittest
 from pathlib import Path
 
-CSS = Path(__file__).resolve().parent.parent / "estilo" / "tokens.css"
+CSS = Path(__file__).resolve().parent.parent / "src" / "estilo" / "tokens.css"
 MINIMO = 4.5
 
 

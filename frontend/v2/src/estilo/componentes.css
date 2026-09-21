@@ -1,0 +1,256 @@
+/* ============================================================================
+   WatchTower v2 — componentes
+   Shell, tabla, controles y estados. Depende de tokens.css: ni un color
+   literal en todo el archivo.
+   ========================================================================= */
+
+/* ── Barra superior ─────────────────────────────────────────────────────── */
+.wt-marca {
+  font-size: var(--texto-lg);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-junto);
+  color: var(--g66-navy-texto);
+}
+.wt-topbar-derecha { margin-left: auto; display: flex; align-items: center; gap: var(--e-3); }
+.wt-usuario { font-size: var(--texto-sm); color: var(--texto-2); }
+.wt-usuario-rol {
+  font-size: var(--texto-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--track-ancho);
+  color: var(--texto-mute);
+}
+
+/* ── Menú lateral ───────────────────────────────────────────────────────── */
+.wt-nav { display: flex; flex-direction: column; }
+.wt-nav-item {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-left: 3px solid transparent;
+  text-align: left;
+  font: inherit;
+  font-size: var(--texto-base);
+  font-weight: var(--peso-normal);
+  color: var(--texto-2);
+  padding: var(--e-2) var(--e-4);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+}
+.wt-nav-item:hover { background: var(--superficie-3); color: var(--texto); }
+.wt-nav-item[aria-current='page'] {
+  background: var(--azul-tenue);
+  border-left-color: var(--g66-azul);
+  color: var(--g66-azul-texto);
+  font-weight: var(--peso-medio);
+}
+/* Lo que todavía no existe en el sistema, marcado para que nadie lo reporte
+   como roto. */
+.wt-nav-nuevo {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-ancho);
+  color: var(--g66-teal-texto);
+  border: 1px solid var(--g66-teal-texto);
+  border-radius: var(--r-pill);
+  padding: 0 5px;
+}
+
+/* ── Botones ────────────────────────────────────────────────────────────── */
+.wt-btn {
+  appearance: none;
+  font: inherit;
+  font-size: var(--texto-base);
+  font-weight: var(--peso-medio);
+  border-radius: var(--r-md);
+  border: 1px solid var(--borde);
+  background: var(--superficie);
+  color: var(--texto-2);
+  padding: 6px var(--e-3);
+  cursor: pointer;
+}
+.wt-btn:hover:not(:disabled) { background: var(--superficie-3); color: var(--texto); }
+.wt-btn:disabled { opacity: .5; cursor: not-allowed; }
+.wt-btn-primario {
+  background: var(--g66-azul);
+  border-color: var(--g66-azul);
+  color: var(--texto-sobre-oscuro);
+}
+.wt-btn-primario:hover:not(:disabled) {
+  background: var(--g66-azul-hover);
+  border-color: var(--g66-azul-hover);
+  color: var(--texto-sobre-oscuro);
+}
+
+/* El foco tiene que verse. Sin esto, quien navega con teclado no sabe dónde
+   está — y el reset de arriba ya le sacó el anillo del navegador. */
+:where(.wt-btn, .wt-nav-item, .wt-input, .wt-th-orden):focus-visible {
+  outline: 2px solid var(--g66-azul);
+  outline-offset: 2px;
+}
+
+/* ── Campos ─────────────────────────────────────────────────────────────── */
+.wt-input {
+  font: inherit;
+  font-size: var(--texto-base);
+  color: var(--texto);
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-md);
+  padding: 6px var(--e-3);
+}
+.wt-input::placeholder { color: var(--texto-mute); }
+
+/* ── Tarjeta ────────────────────────────────────────────────────────────── */
+.wt-carta {
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sombra-carta);
+}
+.wt-carta-cabecera {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+  padding: var(--e-3) var(--e-4);
+  border-bottom: 1px solid var(--borde);
+}
+.wt-carta-titulo {
+  font-size: var(--texto-md);
+  font-weight: var(--peso-fuerte);
+  color: var(--g66-navy-texto);
+  margin: 0;
+}
+.wt-carta-herramientas { margin-left: auto; display: flex; align-items: center; gap: var(--e-2); }
+
+/* ── Tabla densa ────────────────────────────────────────────────────────── */
+.wt-tabla-marco { overflow-x: auto; }
+.wt-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--texto-base);
+}
+.wt-tabla th, .wt-tabla td {
+  text-align: left;
+  padding: var(--e-2) var(--e-3);
+  border-bottom: 1px solid var(--borde);
+  white-space: nowrap;
+}
+.wt-tabla thead th {
+  position: sticky;   /* la cabecera se queda al hacer scroll: con 500 filas,
+                         a mitad de tabla nadie recuerda qué columna es cuál */
+  top: 0;
+  z-index: 1;
+  background: var(--superficie-3);
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  text-transform: uppercase;
+  letter-spacing: var(--track-ancho);
+  color: var(--texto-mute);
+}
+.wt-tabla tbody tr:nth-child(even) { background: var(--superficie-2); }
+.wt-tabla tbody tr:hover { background: var(--azul-tenue-2); }
+.wt-tabla td { color: var(--texto-2); }
+.wt-td-mono { font-family: var(--fuente-mono); font-size: var(--texto-sm); }
+.wt-td-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.wt-th-orden {
+  appearance: none;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.wt-th-orden:hover { color: var(--texto-2); }
+.wt-flecha { font-size: 9px; opacity: .85; }
+
+/* ── Estados ────────────────────────────────────────────────────────────── */
+.wt-estado {
+  padding: var(--e-8) var(--e-4);
+  text-align: center;
+  color: var(--texto-mute);
+  font-size: var(--texto-md);
+}
+.wt-estado-error {
+  color: var(--estado-error-texto);
+  background: var(--estado-error-fondo);
+  border-radius: var(--r-md);
+  padding: var(--e-3) var(--e-4);
+  font-size: var(--texto-base);
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+}
+.wt-estado-error .wt-btn { margin-left: auto; }
+
+/* Aviso de sólo lectura. Se muestra una vez arriba y no en cada botón: el
+   perfil de consulta no necesita que se lo recuerden quince veces. */
+.wt-aviso-lectura {
+  background: var(--nivel-medio-tenue);
+  color: var(--nivel-medio-texto);
+  border-radius: var(--r-md);
+  padding: var(--e-2) var(--e-3);
+  font-size: var(--texto-sm);
+  font-weight: var(--peso-medio);
+  margin-bottom: var(--e-4);
+}
+
+/* ── Paginado ───────────────────────────────────────────────────────────── */
+.wt-paginado {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+  padding: var(--e-2) var(--e-4);
+  border-top: 1px solid var(--borde);
+  font-size: var(--texto-sm);
+  color: var(--texto-mute);
+}
+.wt-paginado-botones { margin-left: auto; display: flex; gap: var(--e-2); }
+
+/* ── Login ──────────────────────────────────────────────────────────────── */
+.wt-login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--fondo);
+}
+.wt-login-caja {
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sombra-carta);
+  padding: var(--e-8);
+  width: 340px;
+  text-align: center;
+}
+
+/* ── Pantalla todavía sin construir ─────────────────────────────────────── */
+.wt-pendiente {
+  border: 1px dashed var(--borde-azul);
+  border-radius: var(--r-lg);
+  padding: var(--e-8);
+  text-align: center;
+  color: var(--texto-mute);
+  background: var(--superficie);
+}
+.wt-pendiente h2 {
+  margin: 0 0 var(--e-2);
+  font-size: var(--texto-lg);
+  color: var(--g66-navy-texto);
+}
+.wt-pendiente code {
+  font-family: var(--fuente-mono);
+  font-size: var(--texto-sm);
+  background: var(--superficie-3);
+  border-radius: var(--r-sm);
+  padding: 1px 5px;
+}

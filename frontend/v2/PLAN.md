@@ -1,6 +1,7 @@
 # WatchTower v2 — plan de trabajo
 
-> **Estado**: Fase 0 terminada. Las fases 1 a 8 esperan tres decisiones (§Decisiones).
+> **Estado**: Fases 0 y 1 terminadas. Las tres decisiones que las bloqueaban
+> están tomadas (§Decisiones). Sigue la Fase 2.
 > **Regla que manda sobre todo lo demás**: v1 sigue en producción y no se toca.
 > v2 se construye en paralelo, en su propia URL, hasta que esté completo.
 
@@ -36,9 +37,9 @@ dejar afuera todo lo que es andamio.
 
 | Archivo | Qué contiene |
 |---|---|
-| `estilo/tokens.css` | 33 tokens semánticos, de los 89 colores sueltos del prototipo. Tema claro y oscuro. |
-| `estilo/base.css` | Reset, tipografía, las tres animaciones y el shell. Cero colores literales. |
-| `dominio.js` | Niveles de riesgo, categorías, estados de caso, las 20 pantallas con su llave de permiso. |
+| `src/estilo/tokens.css` | 33 tokens semánticos, de los 89 colores sueltos del prototipo. Tema claro y oscuro. |
+| `src/estilo/base.css` | Reset, tipografía, animaciones y el shell. Cero colores literales. |
+| `src/dominio.js` | Niveles de riesgo, categorías, estados de caso, las 20 pantallas con su llave de permiso. |
 | `tests/test_tokens.py` | 38 pares de contraste medidos en los dos temas. |
 
 **Lo que se verificó contra el repo, no contra el diseño.**
@@ -75,27 +76,46 @@ sólo su versión como letra.
 
 ---
 
-## Fase 1 — El armazón
+## Fase 1 — El armazón ✅
 
 Nada visible para el usuario; todo lo que las 20 pantallas van a dar por hecho.
 
-- Shell: topbar, sidebar con los tres grupos, área de contenido, ruteo.
-- Sesión y permisos: `verModulo()` con la misma semántica que v1, para que un
-  perfil signifique lo mismo en los dos fronts mientras convivan.
-- Capa de API: un solo punto de entrada, con el manejo de error y el
-  `actor_email` en un lugar y no en 75.
-- Tabla densa como componente: orden, filtro, paginado y export. Es el 70% de
-  esta aplicación; si sale bien, catorce pantallas salen casi solas.
+| Pieza | Dónde | Qué resuelve |
+|---|---|---|
+| Shell | `src/shell/`, `src/App.jsx` | Topbar, sidebar con los tres grupos, contenido, tema claro/oscuro. |
+| Ruteo | `src/ruta.js` | Por hash. GitHub Pages no sabe devolver `index.html` para una ruta que no existe como archivo: con rutas de verdad, recargar en cualquier pantalla daría 404. |
+| Sesión | `src/sesion.js` | Firebase Auth + `wt_roles`, el mismo backend de identidad que v1. |
+| Permisos | `src/permisos.js` | `verModulo()` con la semántica exacta de v1, para que un perfil signifique lo mismo en los dos fronts mientras convivan. |
+| API | `src/api.js` | Un punto de entrada. El corte de sólo lectura y el `actor_email` en un lugar y no en 75. |
+| Tabla densa | `src/comun/` | Orden, filtro, paginado y export. Catorce de las veinte pantallas son esto. |
+| Banco de pruebas | `src/banco.jsx` | El shell con datos inventados y sin login, para ver qué ve cada perfil sin entrar a producción. No se publica. |
 
-**Criterio de salida**: una pantalla vacía que navega, respeta permisos y trae
-datos reales de un endpoint.
+**Criterio de salida**: cumplido. `#/reports` trae el catálogo real de la API,
+navega, y respeta permisos.
+
+**Tres cosas que salieron de construirlo, no de planificarlo.**
+
+1. **El perfil no puede viajar como valor al cliente de API.** Llega de
+   Firestore *después* del primer render; congelándolo, el cliente se queda
+   con el perfil mínimo —que es de lectura— y bloquea todo lo que el usuario
+   escriba en el resto de la sesión. Va como función. Hay un test que lo fija.
+2. **`comoNumero('$ 1.234.567')` devolvía `null`**, o sea que una columna de
+   montos se habría ordenado como texto sin que nadie lo notara. Lo cazó un
+   test. De paso quedó documentada una ambigüedad que no se puede resolver
+   mirando el texto: `"1.234"` puede ser mil doscientos o uno coma doscientos.
+3. **El build de v2 no puede hacer fallar el despliegue de v1.** Va en su
+   propio paso con `continue-on-error`: un error en una pantalla a medio
+   hacer no puede dejar al equipo sin poder publicar lo que está en
+   producción. Si no hay build, v2 publica una página que lo dice.
 
 ## Fase 2 — Bandeja de alertas y triage
 
 `dashboard` + `alert` (nueva). La pantalla donde el equipo vive.
 
-Acá se resuelve la decisión del feed en vivo (§Decisiones) y se decide cuál de
-las tres variantes de tablero del diseño se construye.
+Se construye como **Command desk**: la fila de indicadores arriba —abiertos,
+vencidos de SLA, por analista— y la tabla de alertas abajo, con el triage en
+su propia pantalla. Los datos se cargan al entrar y con un botón de refrescar;
+no hay feed en vivo (§Decisiones).
 
 ## Fase 3 — Casos
 
@@ -139,25 +159,23 @@ gratis.
 
 ---
 
-## Decisiones abiertas
+## Decisiones tomadas
 
-Las tres bloquean la Fase 1. Ninguna se puede contestar desde el código.
+**1. El stack: React con build.** v1 es un `index.html` de 13.606 líneas y
+751 KB con 324 funciones en un solo archivo, y ese archivo produjo dos bugs
+este mes — cinco pestañas en blanco por un `<div>` de más, y un selector de
+equipo vacío. Veinte pantallas no entran ahí. Vite + React 19, sin TypeScript
+por ahora.
 
-**1. El stack.** React con build, o Alpine como v1.
-Recomiendo **React**. El motivo no es preferencia: v1 es un `index.html` de
-13.606 líneas y 751 KB con 324 funciones en un solo archivo, y ese archivo ya
-produjo dos bugs este mes — cinco pestañas en blanco por un `<div>` de más, y
-un selector de equipo vacío. Veinte pantallas no entran ahí. Alpine evita el
-paso de build, pero el paso de build no es el problema que tenemos.
+**2. El tablero: Command desk.** Indicadores arriba, tabla abajo. De las tres
+variantes del diseño es la que supone que lo primero que hace falta es el
+estado general y después bajar al detalle.
 
-**2. Cuál de las tres variantes de tablero.** El diseño propone Live feed,
-Command desk y Triage lanes. Son tres modelos de trabajo distintos, no tres
-estéticas. Hay que elegir mirando cómo trabaja el equipo hoy.
-
-**3. El feed en vivo: ¿es real?** Si es real hace falta polling o websocket y
-el backend tiene que soportarlo. Si se refresca al entrar, la animación de
-"latido" es decorativa y conviene sacarla — un punto que late diciendo "en
-vivo" sobre datos de hace veinte minutos es peor que no tenerlo.
+**3. El feed se refresca al entrar, no solo.** Sin polling y sin websocket. Se
+sacó la animación `wt-pulso` del prototipo, que era el punto de "en vivo"
+latiendo: sobre datos de hace veinte minutos no es decoración inofensiva sino
+una afirmación falsa sobre su frescura, justo en la pantalla donde se decide
+a quién investigar. Está en el historial de git por si el feed se vuelve real.
 
 ---
 

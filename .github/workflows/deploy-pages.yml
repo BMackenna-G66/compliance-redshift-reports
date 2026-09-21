@@ -20,7 +20,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build site
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/v2/package-lock.json
+
+      # El front nuevo se construye en su propio paso y CON continue-on-error
+      # a propósito.
+      #
+      # v1 es el que está en producción y lo usa el equipo todos los días. Si
+      # el build de v2 —que todavía se está armando— hiciera fallar el job,
+      # un error en una pantalla a medio hacer dejaría al equipo sin poder
+      # desplegar v1. El paso falla visible en la corrida, pero no arrastra a
+      # v1: si no hay dist, v2 publica una página que dice que el build falló.
+      - name: Construir el front nuevo (v2)
+        id: v2
+        continue-on-error: true
+        working-directory: frontend/v2
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Armar el sitio
         env:
           API_URL: ${{ secrets.API_URL }}
           COGNITO_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID }}
@@ -42,18 +65,16 @@ jobs:
           # la API tiene una lista blanca de orígenes y un dominio nuevo no
           # podría hablarle hasta que alguien con permisos de API Gateway lo
           # agregue. Como subcarpeta, el origen es el mismo y funciona hoy.
-          #
-          # Se copia el árbol COMPLETO, no sólo el index: la página carga
-          # `estilo/tokens.css` y `dominio.js` por ruta relativa, y copiando
-          # sólo el index se publicaría una pantalla sin estilos con un 404
-          # que no aparece en ningún log.
-          cp -R frontend/v2/. _site/v2/
-          rm -rf _site/v2/tests _site/v2/PLAN.md
-          find _site/v2 -name '__pycache__' -type d -prune -exec rm -rf {} +
-
-          if [ ! -f _site/v2/index.html ]; then
-            echo '<!doctype html><meta charset="utf-8"><title>WatchTower v2</title><p style="font:14px system-ui;padding:2rem">Acá va el front nuevo. Todavía no hay nada publicado.</p>' > _site/v2/index.html
+          if [ -d frontend/v2/dist ]; then
+            cp -R frontend/v2/dist/. _site/v2/
+            # El banco de pruebas no se publica: muestra datos inventados y
+            # quien cayera ahí podría creer que son reales.
+            rm -f _site/v2/banco.html
+            find _site/v2/assets -name 'banco-*' -delete 2>/dev/null || true
+          else
+            echo '<!doctype html><meta charset="utf-8"><title>WatchTower v2</title><p style="font:14px system-ui;padding:2rem">El build del front nuevo falló en la última publicación. Revisá la corrida del workflow. El WatchTower actual no está afectado.</p>' > _site/v2/index.html
           fi
+
           python3 -c "
           import json, os
           cfg = {
@@ -66,8 +87,10 @@ jobs:
           }
           open('_site/config.json','w').write(json.dumps(cfg, indent=2))
           # El front nuevo lee su config con ruta relativa, así que necesita
-          # la suya en su carpeta.
-          open('_site/v2/config.json','w').write(json.dumps(cfg, indent=2))
+          # la suya en su carpeta. Sólo la URL de la API: v2 no usa Cognito
+          # (la identidad la da Firebase) ni Gemini, y publicar una clave que
+          # no se usa es regalarla.
+          open('_site/v2/config.json','w').write(json.dumps({'apiUrl': cfg['apiUrl']}, indent=2))
           "
 
       - uses: actions/configure-pages@v4

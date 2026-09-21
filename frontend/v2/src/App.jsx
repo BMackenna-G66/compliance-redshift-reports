@@ -1,0 +1,179 @@
+/* ============================================================================
+   El armazón
+   ----------------------------------------------------------------------------
+   Login, tema, ruteo y el control de acceso por pantalla. Nada de negocio.
+   ========================================================================= */
+
+import { useEffect, useMemo, useState } from 'react';
+
+import { cargarConfig } from './config.js';
+import { crearApi } from './api.js';
+import { PANTALLAS } from './dominio.js';
+import { soloLectura, verModulo } from './permisos.js';
+import { entrar, salir, useSesion } from './sesion.js';
+import { useRuta } from './ruta.js';
+
+import { Sidebar } from './shell/Sidebar.jsx';
+import { Topbar } from './shell/Topbar.jsx';
+import { Pendiente } from './pantallas/Pendiente.jsx';
+import { Reportes } from './pantallas/Reportes.jsx';
+
+/* Qué pantalla construye qué fase. Sirve para que el relleno diga algo útil
+   y para que esta lista sea el inventario de lo que falta. */
+const FASE = {
+  dashboard: 'Fase 2', alert: 'Fase 2',
+  cases: 'Fase 3', kanban: 'Fase 3', ficha: 'Fase 3',
+  informe: 'Fase 4', individual: 'Fase 4', institucional: 'Fase 4',
+  history: 'Fase 4', whitelist: 'Fase 4', flags: 'Fase 4',
+  relevo: 'Fase 5', embargos: 'Fase 5',
+  admin_users: 'Fase 6', admin_auto: 'Fase 6', admin_cluster: 'Fase 6',
+  audit: 'Fase 6', salud: 'Fase 6',
+  ros: 'Fase 7',
+};
+
+/* Las pantallas ya construidas. Todo lo demás cae en Pendiente. */
+const CONSTRUIDAS = {
+  reports: Reportes,
+};
+
+/* ── Tema ───────────────────────────────────────────────────────────────── */
+
+function useTema() {
+  const [tema, setTema] = useState(() => {
+    try {
+      const guardado = localStorage.getItem('wt_tema_v2');
+      if (guardado === 'claro' || guardado === 'oscuro') return guardado;
+    } catch { /* almacenamiento bloqueado */ }
+    return 'claro';
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-tema', tema);
+    try { localStorage.setItem('wt_tema_v2', tema); } catch { /* idem */ }
+  }, [tema]);
+
+  return [tema, () => setTema((t) => (t === 'oscuro' ? 'claro' : 'oscuro'))];
+}
+
+/* ── Pantallas ──────────────────────────────────────────────────────────── */
+
+function Contenido({ ruta, perfil, api }) {
+  const pantalla = PANTALLAS.find((p) => p.id === ruta);
+
+  if (!pantalla) {
+    return (
+      <div className="wt-pendiente">
+        <h2>No existe esa pantalla</h2>
+        <p>La dirección <code>#/{ruta}</code> no corresponde a ninguna sección.</p>
+      </div>
+    );
+  }
+
+  // El menú ya esconde lo que este perfil no ve, pero alguien puede escribir
+  // la dirección a mano o tener un marcador viejo. Esconder no es controlar.
+  if (!verModulo(perfil, pantalla.modulo)) {
+    return (
+      <div className="wt-pendiente">
+        <h2>Sin acceso</h2>
+        <p>
+          Tu perfil no tiene habilitada la sección «{pantalla.titulo}».
+          Si la necesitás, pedila al equipo de Compliance.
+        </p>
+      </div>
+    );
+  }
+
+  const Construida = CONSTRUIDAS[ruta];
+  if (Construida) return <Construida api={api} perfil={perfil} />;
+  return <Pendiente id={ruta} fase={FASE[ruta]} />;
+}
+
+/* ── La aplicación ──────────────────────────────────────────────────────── */
+
+export default function App() {
+  const sesion = useSesion();
+  const [tema, alternarTema] = useTema();
+  const { ruta, navegar } = useRuta('reports');
+
+  const [config, setConfig] = useState(null);
+  const [errorConfig, setErrorConfig] = useState('');
+  const [errorLogin, setErrorLogin] = useState('');
+
+  useEffect(() => {
+    cargarConfig().then(setConfig).catch((e) =>
+      setErrorConfig(e?.message || 'No se pudo leer config.json'));
+  }, []);
+
+  // El cliente se arma UNA vez y recibe el perfil como función, no como
+  // valor: el perfil llega después (Firestore tarda) y si quedara congelado
+  // el que había al montar —el mínimo— bloquearía como sólo-lectura todo lo
+  // que el usuario escriba después. Ver api.js.
+  const api = useMemo(() => {
+    if (!config) return null;
+    return crearApi({
+      base: config.apiUrl,
+      perfil: sesion.leerPerfilActual,
+      email: sesion.leerEmailActual,
+    });
+  }, [config, sesion.leerPerfilActual, sesion.leerEmailActual]);
+
+  if (sesion.cargando) {
+    return <div className="wt-login"><p className="wt-estado">Cargando…</p></div>;
+  }
+
+  if (!sesion.autenticado) {
+    return (
+      <div className="wt-login">
+        <div className="wt-login-caja">
+          <h1 className="wt-marca" style={{ display: 'block', marginBottom: 8 }}>
+            WatchTower
+          </h1>
+          <p style={{ color: 'var(--texto-mute)', fontSize: 'var(--texto-sm)', marginTop: 0 }}>
+            Compliance · Global66
+          </p>
+          <button
+            className="wt-btn wt-btn-primario"
+            style={{ width: '100%', marginTop: 16 }}
+            onClick={() => entrar().catch((e) => setErrorLogin(e?.message || 'No se pudo entrar.'))}
+          >
+            Entrar con Google
+          </button>
+          {errorLogin && (
+            <p className="wt-estado-error" style={{ marginTop: 16 }}>{errorLogin}</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="wt-app">
+      <Topbar
+        email={sesion.email}
+        perfil={sesion.perfil}
+        tema={tema}
+        alCambiarTema={alternarTema}
+        alSalir={() => salir()}
+      />
+      <div className="wt-cuerpo">
+        <Sidebar perfil={sesion.perfil} actual={ruta} alNavegar={navegar} />
+        <main className="wt-contenido">
+          {soloLectura(sesion.perfil) && (
+            <p className="wt-aviso-lectura">
+              Tu perfil es de consulta: podés ver todo lo habilitado, pero no modificarlo.
+            </p>
+          )}
+          {errorConfig ? (
+            <div className="wt-estado-error">
+              No se pudo cargar la configuración ({errorConfig}). Recargá la página.
+            </div>
+          ) : !api ? (
+            <p className="wt-estado">Conectando…</p>
+          ) : (
+            <Contenido ruta={ruta} perfil={sesion.perfil} api={api} />
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
