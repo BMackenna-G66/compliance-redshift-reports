@@ -222,13 +222,18 @@ sueltos dentro del `if`** que clasifica el score. Ahora son
 una sola definición, con un test que comprueba que cambiarla cambia lo que ve
 el front.
 
-⚠️ **El endpoint todavía no está desplegado.** El código está en
-`lambda/api_handler.py` con 14 tests, pero actualizar la Lambda es un
-despliegue a la API que el equipo usa a diario, y esa decisión no es del
-front. Mientras tanto la pantalla **dice que falta desplegarlo y no muestra
-los pesos de memoria** — una copia que se desincroniza en silencio es
-exactamente lo que tenía que evitar. Verificado: con el endpoint en 404 la
-pantalla no renderiza ni una bandera.
+✅ **Desplegado el 2026-09-21.** `GET /flags` responde en producción con las
+10 banderas, máximo 19 y los cortes leídos del módulo de scoring.
+
+Antes de desplegar se comprobó que producción era **idéntica a `main` byte
+por byte**, que el paquete nuevo cambiaba **sólo dos de sus 5.053 archivos**,
+y que esos dos diffs eran los revisados. Después: los 13 endpoints que ya
+andaban siguen respondiendo igual, el código desplegado coincide con el
+construido, y no hay errores en los logs de ninguna de las dos Lambdas.
+
+La pantalla igual conserva su degradación —si el endpoint dejara de estar,
+avisa en vez de mostrar pesos de memoria—, porque el problema que evita no
+desaparece por estar desplegado hoy.
 
 **Qué hace cada pantalla y qué decidió.**
 
@@ -452,11 +457,6 @@ a quién investigar. Está en el historial de git por si el feed se vuelve real.
 ---
 
 ## Pendientes que no son de v2 pero lo bloquean
-
-**Desplegar la Lambda de la API** — `GET /flags` ya está escrito y probado
-(14 tests) pero no desplegado: es `./deploy.sh`. Hasta que corra, la pantalla
-de banderas muestra el aviso en vez de la matriz. La decisión de desplegar no
-es del front: actualiza la API que el equipo usa a diario.
 
 **`GET /cases/{id}` sin los `sla_*`** — el detalle del caso tiene que pedir
 además la lista completa sólo para saber en qué punto del plazo está. Que el
