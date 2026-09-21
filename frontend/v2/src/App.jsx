@@ -16,6 +16,10 @@ import { useRuta } from './ruta.js';
 import { Sidebar } from './shell/Sidebar.jsx';
 import { Topbar } from './shell/Topbar.jsx';
 import { Bandeja } from './pantallas/Bandeja.jsx';
+import { Caso } from './pantallas/Caso.jsx';
+import { Casos } from './pantallas/Casos.jsx';
+import { Ficha } from './pantallas/Ficha.jsx';
+import { Kanban } from './pantallas/Kanban.jsx';
 import { Pendiente } from './pantallas/Pendiente.jsx';
 import { Reportes } from './pantallas/Reportes.jsx';
 import { Triage } from './pantallas/Triage.jsx';
@@ -23,7 +27,6 @@ import { Triage } from './pantallas/Triage.jsx';
 /* Qué pantalla construye qué fase. Sirve para que el relleno diga algo útil
    y para que esta lista sea el inventario de lo que falta. */
 const FASE = {
-  cases: 'Fase 3', kanban: 'Fase 3', ficha: 'Fase 3',
   informe: 'Fase 4', individual: 'Fase 4', institucional: 'Fase 4',
   history: 'Fase 4', whitelist: 'Fase 4', flags: 'Fase 4',
   relevo: 'Fase 5', embargos: 'Fase 5',
@@ -36,6 +39,10 @@ const FASE = {
 const CONSTRUIDAS = {
   dashboard: Bandeja,
   alert: Triage,
+  cases: Casos,
+  kanban: Kanban,
+  caso: Caso,
+  ficha: Ficha,
   reports: Reportes,
 };
 
@@ -88,9 +95,12 @@ function Contenido({ ruta, resto, perfil, api, email, navegar }) {
 
   const Construida = CONSTRUIDAS[ruta];
   if (Construida) {
+    // `id` es el segmento que sigue a la pantalla en la dirección: en
+    // `#/caso/abc` es el caso, en `#/ficha/123` el cliente. Cada pantalla le
+    // pone su nombre; acá no se sabe ni hace falta saber de qué es.
     return (
       <Construida api={api} perfil={perfil} email={email} navegar={navegar}
-                  alertId={resto?.[0] || ''} />
+                  id={resto?.[0] || ''} />
     );
   }
   return <Pendiente id={ruta} fase={FASE[ruta]} />;

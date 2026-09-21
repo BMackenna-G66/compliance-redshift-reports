@@ -385,3 +385,153 @@ button.wt-kpi[aria-pressed='true'] {
 
 .wt-cuerpo-carta { padding: var(--e-4); }
 .wt-acciones { display: flex; flex-direction: column; gap: var(--e-2); }
+
+/* ── Kanban ─────────────────────────────────────────────────────────────────
+   Columnas de ancho fijo y scroll horizontal: con el ancho repartido a
+   partes iguales, la columna con 61 casos y la que tiene 2 se ven igual de
+   importantes, y el tablero deja de contar lo que pasa. */
+.wt-kanban {
+  display: flex;
+  gap: var(--e-3);
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: var(--e-3);
+}
+.wt-columna {
+  flex: none;
+  width: 290px;
+  background: var(--superficie-2);
+  border: 1px solid var(--borde);
+  border-top: 3px solid var(--borde);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 230px);
+}
+.wt-columna-cabecera {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  padding: var(--e-3);
+  font-size: var(--texto-base);
+  font-weight: var(--peso-fuerte);
+  color: var(--g66-navy-texto);
+}
+.wt-columna-n {
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  color: var(--texto-mute);
+  background: var(--superficie-3);
+  border-radius: var(--r-pill);
+  padding: 1px 7px;
+}
+.wt-columna-lista {
+  overflow-y: auto;
+  padding: 0 var(--e-2) var(--e-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--e-2);
+  min-height: 60px;
+}
+/* Se marca la columna donde caería la tarjeta que se está arrastrando. Sin
+   esto, arrastrar es adivinar. */
+.wt-columna-lista.wt-recibe {
+  background: var(--azul-tenue);
+  outline: 2px dashed var(--g66-azul);
+  outline-offset: -4px;
+  border-radius: var(--r-md);
+}
+
+.wt-tarjeta {
+  background: var(--superficie);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-md);
+  padding: var(--e-2) var(--e-3);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: left;
+  font: inherit;
+  width: 100%;
+}
+.wt-tarjeta:hover { border-color: var(--g66-azul); box-shadow: var(--sombra-carta); }
+.wt-tarjeta[aria-grabbed='true'] { opacity: .45; }
+.wt-tarjeta-titulo {
+  font-size: var(--texto-base);
+  font-weight: var(--peso-medio);
+  color: var(--texto);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wt-tarjeta-pie {
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  font-size: var(--texto-xs);
+  color: var(--texto-mute);
+}
+.wt-tarjeta-pie .mono { font-size: var(--texto-xs); }
+
+/* ── Aviso destacado ────────────────────────────────────────────────────────
+   Para cuando un número dice algo que la tabla sola no grita. */
+.wt-nota {
+  border-radius: var(--r-md);
+  padding: var(--e-3) var(--e-4);
+  font-size: var(--texto-base);
+  margin-bottom: var(--e-4);
+  border: 1px solid var(--borde);
+  background: var(--superficie);
+  color: var(--texto-2);
+}
+.wt-nota strong { color: var(--texto); }
+.wt-nota-alarma {
+  border-color: var(--nivel-critico-texto);
+  background: var(--nivel-critico-tenue);
+}
+
+/* ── Ficha ──────────────────────────────────────────────────────────────── */
+.wt-ficha-grilla {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--e-4);
+  align-items: start;
+}
+.wt-cifras {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--e-3);
+}
+.wt-cifra { display: flex; flex-direction: column; gap: 1px; }
+.wt-cifra-etiqueta {
+  font-size: var(--texto-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--track-ancho);
+  color: var(--texto-mute);
+  font-weight: var(--peso-fuerte);
+}
+.wt-cifra-valor {
+  font-size: var(--texto-lg);
+  font-weight: var(--peso-fuerte);
+  color: var(--g66-navy-texto);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Notas del caso ─────────────────────────────────────────────────────── */
+.wt-nota-caso {
+  border-left: 3px solid var(--borde-azul);
+  padding: var(--e-2) var(--e-3);
+  margin-bottom: var(--e-3);
+}
+.wt-nota-caso-meta {
+  font-size: var(--texto-xs);
+  color: var(--texto-mute);
+  margin-bottom: 3px;
+}
+.wt-nota-caso-texto {
+  font-size: var(--texto-base);
+  color: var(--texto-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

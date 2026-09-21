@@ -35,6 +35,10 @@ import { PANTALLAS } from './dominio.js';
 import { Sidebar } from './shell/Sidebar.jsx';
 import { Topbar } from './shell/Topbar.jsx';
 import { Bandeja } from './pantallas/Bandeja.jsx';
+import { Caso } from './pantallas/Caso.jsx';
+import { Casos } from './pantallas/Casos.jsx';
+import { Ficha } from './pantallas/Ficha.jsx';
+import { Kanban } from './pantallas/Kanban.jsx';
 import { Pendiente } from './pantallas/Pendiente.jsx';
 import { Reportes } from './pantallas/Reportes.jsx';
 import { Triage } from './pantallas/Triage.jsx';
@@ -45,7 +49,10 @@ const PERFILES = {
   'CX (sólo lectura)': { rol: 'lectura', modulos: ['casos'] },
 };
 
-const CONSTRUIDAS = { dashboard: Bandeja, alert: Triage, reports: Reportes };
+const CONSTRUIDAS = {
+  dashboard: Bandeja, alert: Triage, cases: Casos, kanban: Kanban,
+  caso: Caso, ficha: Ficha, reports: Reportes,
+};
 
 function Banco() {
   const [nombre, setNombre] = useState('Super admin');
@@ -112,7 +119,7 @@ function Banco() {
             <p className="wt-estado">Conectando…</p>
           ) : Pantalla ? (
             <Pantalla api={api} perfil={perfil} email="banco-de-pruebas@global66.com"
-                      navegar={navegar} alertId={resto[0] || ''} />
+                      navegar={navegar} id={resto[0] || ''} />
           ) : (
             <Pendiente id={ruta} fase={def ? 'una fase posterior' : ''} />
           )}

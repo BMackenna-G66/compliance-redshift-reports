@@ -163,6 +163,28 @@ export const ESTADOS_CASO = {
   archived:     { etiqueta: 'Archivado',        color: 'var(--texto-mute)' },
 };
 
+/* ── El semáforo del plazo ──────────────────────────────────────────────────
+   Los estados los decide `lambda/sla_casos.py` y vienen en `sla_estado`; la
+   etiqueta legible viene en `sla_etiqueta`. Acá está sólo el color y el
+   orden de urgencia — la etiqueta de abajo es un respaldo por si el backend
+   mandara un estado sin texto.
+
+   `por_contactar` y `por_recontactar` son el mismo amarillo a propósito:
+   los dos significan "hay algo pendiente con este cliente". Lo que cambia es
+   el texto, y ese lo pone el backend. */
+export const ESTADOS_SLA = {
+  vencido:         { etiqueta: 'Vencido',      orden: 1, color: 'var(--nivel-critico-texto)', fondo: 'var(--nivel-critico-tenue)' },
+  por_contactar:   { etiqueta: 'Sin contactar', orden: 2, color: 'var(--nivel-alto-texto)',   fondo: 'var(--nivel-alto-tenue)' },
+  por_recontactar: { etiqueta: 'Recontactar',  orden: 3, color: 'var(--nivel-alto-texto)',    fondo: 'var(--nivel-alto-tenue)' },
+  en_plazo:        { etiqueta: 'En plazo',     orden: 4, color: 'var(--nivel-bajo-texto)',    fondo: 'var(--nivel-bajo-tenue)' },
+  cerrado:         { etiqueta: 'Cerrado',      orden: 5, color: 'var(--texto-mute)',          fondo: 'var(--superficie-3)' },
+};
+
+/** El estado sin reloj: el caso no nació de una alerta transaccional. Se
+ *  distingue del resto porque no es un punto del plazo, es la ausencia de
+ *  plazo — y pintarlo de verde diría que va bien de tiempo. */
+export const SLA_SIN_RELOJ = { etiqueta: 'Sin plazo', orden: 6 };
+
 /* ── El plazo de los casos de alerta ────────────────────────────────────────
    Estos números son de compliance, no de diseño: los define `sla_casos.py` y
    los devuelve `GET /cases` en `sla_config`. NO se escriben acá — estas
@@ -190,12 +212,18 @@ export const SE_PIDE_AL_BACKEND = {
 /* ── Las 20 pantallas del diseño ────────────────────────────────────────────
    El `modulo` es la llave de permisos: la misma que usa `verModulo()` en el
    front actual, para que un perfil de sólo lectura signifique lo mismo en los
-   dos. `nuevo: true` marca lo que no existe hoy en el sistema. */
+   dos. `nuevo: true` marca lo que no existe hoy en el sistema.
+
+   `enMenu: false` son las pantallas de DETALLE: existen como ruta y tienen su
+   permiso, pero no van en el menú porque sin un id no tienen nada que
+   mostrar. Un ítem de menú que siempre lleva a un error no es un atajo, es
+   una trampa. */
 export const PANTALLAS = [
   { grupo: 'Operación', id: 'dashboard',     titulo: 'Bandeja de Alertas',  modulo: 'alertados' },
-  { grupo: 'Operación', id: 'alert',         titulo: 'Triage de alerta',    modulo: 'alertados', nuevo: true },
+  { grupo: 'Operación', id: 'alert',         titulo: 'Triage de alerta',    modulo: 'alertados', nuevo: true, enMenu: false },
   { grupo: 'Operación', id: 'cases',         titulo: 'Casos',               modulo: 'casos' },
   { grupo: 'Operación', id: 'kanban',        titulo: 'Kanban',              modulo: 'casos' },
+  { grupo: 'Operación', id: 'caso',          titulo: 'Detalle del caso',    modulo: 'casos', enMenu: false },
   { grupo: 'Operación', id: 'ficha',         titulo: 'Ficha del cliente',   modulo: 'casos' },
   { grupo: 'Operación', id: 'relevo',        titulo: 'Relevo · partners',   modulo: 'relevo' },
 

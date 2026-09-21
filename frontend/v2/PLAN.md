@@ -1,6 +1,6 @@
 # WatchTower v2 — plan de trabajo
 
-> **Estado**: Fases 0, 1 y 2 terminadas. Sigue la Fase 3.
+> **Estado**: Fases 0 a 3 terminadas. Sigue la Fase 4.
 > **Regla que manda sobre todo lo demás**: v1 sigue en producción y no se toca.
 > v2 se construye en paralelo, en su propia URL, hasta que esté completo.
 
@@ -156,11 +156,55 @@ alerta de la bandeja de todos—. La fila cruda del reporte se muestra entera:
 es la evidencia de por qué la alerta existe, y elegir qué campos mostrar sería
 decidir por el analista qué es relevante en un reporte que todavía no existe.
 
-## Fase 3 — Casos
+## Fase 3 — Casos ✅
 
-`cases`, `kanban`, `ficha`, y el semáforo de SLA que ya existe en v1
-(`lambda/sla_casos.py`: 36 h para recontactar, 72 h para cerrar). Los plazos se
-piden en `sla_config`, no se escriben en el front.
+Cuatro pantallas: `cases` (lista con semáforo), `kanban` (tablero con
+arrastre), `caso` (detalle) y `ficha` (el consolidado del cliente).
+
+**EL PLAZO NO SE CALCULA EN EL FRONT.** Lo calcula `lambda/sla_casos.py` y
+llega hecho en los campos `sla_*`, con los umbrales en `sla_config`. Si el
+front lo recalculara habría dos definiciones del mismo plazo, y un día la
+pantalla diría «en plazo» sobre un caso que el sistema considera vencido.
+
+**EL SEMÁFORO ESTÁ ENTERO EN ROJO, Y ESO ES UN DATO.** Medido sobre los 89
+casos: de 69 con el reloj corriendo, **los 69 están vencidos**. Ninguno verde,
+ninguno amarillo — el más nuevo tiene 6,8 días y el plazo es 3. La mediana de
+días abierto es 13,9 y el máximo 47. De los 15 cerrados, **1 cerró dentro del
+plazo**; la mediana de cierre es 14,9 días.
+
+Una lista donde las 69 filas son rojas se lee igual que una lista sin colores,
+así que la pantalla lo dice arriba en vez de fingir un gradiente que no
+existe. Lo que sí ordena hoy es *hace cuánto* venció cada uno, y por eso la
+insignia muestra eso y no sólo «Vencido».
+
+**Tres cosas que aparecieron al mirar los datos, no el diseño.**
+
+1. **La columna «Cliente» mostraba el título del caso.** Sólo 41 de 89 casos
+   traen `entity_name`, así que caía al `title` — que en 72 de 89 es
+   «Caso: Alerta: \<reporte\>», 22 textos distintos para 89 casos. Se veía
+   como un nombre de cliente sin identificar a nadie. Ahora manda el id, que
+   está siempre, y el nombre va debajo cuando existe.
+
+2. **`GET /cases/{id}` no devuelve los campos `sla_*`.** Los calcula
+   `GET /cases`, sobre la lista. El detalle pide las dos cosas y las junta —
+   76 KB de más, barato al lado de duplicar la regla del plazo. *Mejora de
+   backend pendiente: que el detalle devuelva los `sla_*` como la lista.*
+
+3. **«Triage de alerta» estaba en el menú y siempre daba error.** Las
+   pantallas de detalle necesitan un id; llegar desde el menú no les da uno.
+   Ahora llevan `enMenu: false`: siguen siendo rutas con su permiso, pero no
+   aparecen en el menú. Un ítem que siempre lleva a un error no es un atajo.
+
+**La ficha del cliente tarda 11 segundos** (consulta Redshift en vivo; el
+techo de API Gateway son 30). Un «Cargando…» sin más se lee como que se
+colgó, y la gente recarga — lo que dispara otra consulta. El aviso dice
+cuánto tarda y pide no recargar.
+
+**El arrastre del kanban mueve la tarjeta antes de que el servidor conteste,
+y la devuelve si falla.** Esperar por tarjeta haría el tablero inservible
+para ordenar 89 casos; dejarla movida cuando el guardado falló sería peor,
+porque diría que se hizo algo que no se hizo. Cerrar pregunta: es la única
+de las cuatro columnas que cambia el sentido del caso y deja `closed_at`.
 
 ## Fase 4 — Análisis
 
@@ -224,6 +268,10 @@ a quién investigar. Está en el historial de git por si el feed se vuelve real.
 `lambda/aml_individual.py` (`FLAG_WEIGHTS` / `FLAG_LABELS`). Sin el endpoint,
 la pantalla "Flags y pesos" de la Fase 4 los tendría que hardcodear. Es una
 tarea chica de backend: exponer esas dos constantes.
+
+**`GET /cases/{id}` sin los `sla_*`** — el detalle del caso tiene que pedir
+además la lista completa sólo para saber en qué punto del plazo está. Que el
+detalle devuelva los mismos campos que la lista lo ahorraría.
 
 **La línea de CORS** — la API sólo permite el header `content-type` y los
 métodos GET/POST/DELETE/OPTIONS. Sin `authorization` no hay auth real en v2, y

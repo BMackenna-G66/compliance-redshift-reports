@@ -86,12 +86,17 @@ export function recordarPerfil(perfil, almacen = globalThis.localStorage) {
   }
 }
 
-/** Las pantallas que este perfil ve, agrupadas para el menú. */
+/** Las pantallas que este perfil ve, agrupadas para el menú.
+ *
+ *  Deja fuera las de detalle (`enMenu: false`): existen como ruta y tienen su
+ *  permiso, pero sin un id no tienen nada que mostrar. */
 export function menuPara(perfil, pantallas, grupos) {
   return grupos
     .map((grupo) => ({
       grupo,
-      pantallas: pantallas.filter((p) => p.grupo === grupo && verModulo(perfil, p.modulo)),
+      pantallas: pantallas.filter(
+        (p) => p.grupo === grupo && p.enMenu !== false && verModulo(perfil, p.modulo),
+      ),
     }))
     .filter((g) => g.pantallas.length > 0);
 }

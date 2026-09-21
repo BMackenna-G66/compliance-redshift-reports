@@ -36,7 +36,7 @@ function valorCrudo(v) {
   return String(v);
 }
 
-export function Triage({ api, perfil, email, alertId, navegar }) {
+export function Triage({ api, perfil, email, id: alertId, navegar }) {
   const [alerta, setAlerta] = useState(null);
   const [usuarios, setUsuarios] = useState([]);
   const [cargando, setCargando] = useState(true);
