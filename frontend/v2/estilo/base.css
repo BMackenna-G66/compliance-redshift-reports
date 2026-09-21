@@ -1,0 +1,112 @@
+/* ============================================================================
+   WatchTower v2 — base
+   Reset, tipografía y las tres animaciones del prototipo. Depende de
+   tokens.css: acá no hay un solo color literal.
+   ========================================================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--fondo);
+  color: var(--texto);
+  font-family: var(--fuente);
+  font-size: var(--texto-md);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--g66-azul); text-decoration: none; }
+a:hover { color: var(--g66-azul-hover); }
+
+/* Los ids, RUT, montos y códigos de regla van en monoespaciada: son valores
+   que se comparan carácter a carácter, y en proporcional un 0 y una O a 11 px
+   se confunden. */
+.mono { font-family: var(--fuente-mono); }
+
+/* ── Animaciones ────────────────────────────────────────────────────────────
+   Tres, y cada una tiene un motivo:
+   · pulso   — el indicador de "en vivo" late para que se note detenido si el
+               feed se cuelga. Un punto verde quieto no distingue "conectado"
+               de "congelado".
+   · entrada — una alerta nueva entra con un destello rosa que se apaga. Sin
+               eso, en una tabla que se actualiza sola, la fila nueva aparece
+               sin que nadie la vea.
+   · toast   — avisos al pie.                                              */
+
+@keyframes wt-pulso {
+  0%   { box-shadow: 0 0 0 0   rgba(0, 173, 168, .55); }
+  70%  { box-shadow: 0 0 0 7px rgba(0, 173, 168, 0); }
+  100% { box-shadow: 0 0 0 0   rgba(0, 173, 168, 0); }
+}
+
+@keyframes wt-entrada {
+  from { opacity: 0; transform: translateY(-6px); background: rgba(255, 41, 112, .09); }
+  to   { opacity: 1; transform: none;             background: transparent; }
+}
+
+@keyframes wt-toast {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Quien pidió menos movimiento no debería recibir una tabla que parpadea. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: rgba(48, 48, 48, .22); border-radius: var(--r-md); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ── El shell ───────────────────────────────────────────────────────────────
+   Herramienta de escritorio: por debajo del ancho mínimo aparece scroll
+   horizontal en vez de colapsar. Una tabla de ocho columnas apilada en un
+   teléfono no se lee, y fingir que sí se puede es peor que no ofrecerlo. */
+.wt-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: var(--app-min-alto);
+  min-width: var(--app-min-ancho);
+}
+
+.wt-topbar {
+  flex: none;
+  height: var(--topbar-alto);
+  background: var(--superficie);
+  border-bottom: 1px solid var(--borde);
+  display: flex;
+  align-items: center;
+  gap: var(--e-4);
+  padding: 0 var(--e-5);
+}
+
+.wt-cuerpo { flex: 1; display: flex; min-height: 0; }
+
+.wt-sidebar {
+  flex: none;
+  width: var(--sidebar-ancho);
+  background: var(--superficie);
+  border-right: 1px solid var(--borde);
+  overflow-y: auto;
+  padding: var(--e-3) 0;
+}
+
+.wt-contenido { flex: 1; overflow: auto; padding: var(--e-5); min-width: 0; }
+
+/* El título de cada grupo del menú (OPERACIÓN / ANÁLISIS / ADMINISTRACIÓN). */
+.wt-grupo {
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-fuerte);
+  letter-spacing: var(--track-ancho);
+  color: var(--texto-mute);
+  text-transform: uppercase;
+  padding: var(--e-3) var(--e-4) var(--e-2);
+}

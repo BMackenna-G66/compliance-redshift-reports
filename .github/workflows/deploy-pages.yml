@@ -42,9 +42,16 @@ jobs:
           # la API tiene una lista blanca de orígenes y un dominio nuevo no
           # podría hablarle hasta que alguien con permisos de API Gateway lo
           # agregue. Como subcarpeta, el origen es el mismo y funciona hoy.
-          if [ -f frontend/v2/index.html ]; then
-            cp frontend/v2/index.html _site/v2/index.html
-          else
+          #
+          # Se copia el árbol COMPLETO, no sólo el index: la página carga
+          # `estilo/tokens.css` y `dominio.js` por ruta relativa, y copiando
+          # sólo el index se publicaría una pantalla sin estilos con un 404
+          # que no aparece en ningún log.
+          cp -R frontend/v2/. _site/v2/
+          rm -rf _site/v2/tests _site/v2/PLAN.md
+          find _site/v2 -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+          if [ ! -f _site/v2/index.html ]; then
             echo '<!doctype html><meta charset="utf-8"><title>WatchTower v2</title><p style="font:14px system-ui;padding:2rem">Acá va el front nuevo. Todavía no hay nada publicado.</p>' > _site/v2/index.html
           fi
           python3 -c "
