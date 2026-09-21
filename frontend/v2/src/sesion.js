@@ -17,10 +17,13 @@ import { initializeApp } from 'firebase/app';
 import {
   GoogleAuthProvider, getAuth, onAuthStateChanged, signInWithPopup, signOut,
 } from 'firebase/auth';
-import { doc, getDoc, getFirestore, setDoc } from 'firebase/firestore';
+import {
+  collection, deleteDoc, doc, getDoc, getDocs, getFirestore, setDoc,
+} from 'firebase/firestore';
 
 import {
-  PERFIL_MINIMO, PERFIL_NUEVO, SUPER_ADMIN, perfilRecordado, recordarPerfil,
+  PERFIL_MINIMO, PERFIL_NUEVO, SUPER_ADMIN, esAdmin, perfilRecordado,
+  recordarPerfil,
 } from './permisos.js';
 
 const app = initializeApp({
@@ -131,4 +134,62 @@ export function useSesion() {
     }),
     [cargando, email, perfil, error],
   );
+}
+
+/* ── Los perfiles, para la pantalla de administración ───────────────────────
+   Viven en Firestore y NO en la API: es el mismo lugar que lee v1, y tiene
+   que serlo — los dos fronts van a convivir y un permiso quitado en uno
+   tiene que valer en el otro.
+
+   Estas tres funciones son las únicas que escriben permisos. La capa de API
+   no las ve, así que su corte de sólo lectura no las cubre: cada una revisa
+   el perfil de quien llama.
+
+   ESA REVISIÓN ES CORTESÍA, NO SEGURIDAD. Corre en el navegador y cualquiera
+   con las herramientas de desarrollo la saltea. Lo que de verdad protege
+   `wt_roles` son las reglas de Firestore, del lado del servidor. Acá está
+   para que la pantalla no ofrezca algo que va a fallar, y para que un
+   descuido de programación no escriba permisos desde un perfil que no debe. */
+
+const COLECCION = 'wt_roles';
+
+/* Documentos de la colección que NO son personas. v1 guarda acá la lista de
+   destinatarios de notificaciones, aprovechando que la colección ya está
+   permitida. Si se mostraran como usuarios, aparecería un «usuario» llamado
+   `__notif__` que nadie sabe qué es — y borrarlo rompería las notificaciones. */
+const NO_SON_PERSONAS = (id) => id.startsWith('__') && id.endsWith('__');
+
+export async function listarPerfiles() {
+  const snap = await getDocs(collection(db, COLECCION));
+  const salida = [];
+  snap.forEach((d) => {
+    if (NO_SON_PERSONAS(d.id)) return;
+    const v = d.data() || {};
+    salida.push({ email: d.id, role: v.role || '', modules: v.modules || [],
+                  grantedBy: v.grantedBy || '', grantedAt: v.grantedAt || '' });
+  });
+  return salida;
+}
+
+export async function guardarPerfil(perfilDeQuienGuarda, correo, datos) {
+  if (!esAdmin(perfilDeQuienGuarda)) {
+    throw new Error('Sólo un administrador puede cambiar permisos.');
+  }
+  const id = String(correo || '').trim().toLowerCase();
+  if (!id) throw new Error('Falta el correo.');
+  await setDoc(doc(db, COLECCION, id), {
+    role: datos.role,
+    modules: datos.modules,
+    grantedBy: datos.grantedBy || '',
+    grantedAt: new Date().toISOString(),
+  });
+}
+
+export async function borrarPerfil(perfilDeQuienGuarda, correo) {
+  if (!esAdmin(perfilDeQuienGuarda)) {
+    throw new Error('Sólo un administrador puede quitar permisos.');
+  }
+  const id = String(correo || '').trim().toLowerCase();
+  if (NO_SON_PERSONAS(id)) throw new Error('Ese documento no es un usuario.');
+  await deleteDoc(doc(db, COLECCION, id));
 }

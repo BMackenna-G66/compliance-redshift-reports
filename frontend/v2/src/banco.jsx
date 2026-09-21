@@ -22,7 +22,7 @@
    NO SE PUBLICA: el workflow lo borra del sitio antes de subirlo.
    ========================================================================= */
 
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode, Suspense, lazy, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import './estilo/tokens.css';
@@ -34,22 +34,7 @@ import { crearApi } from './api.js';
 import { PANTALLAS } from './dominio.js';
 import { Sidebar } from './shell/Sidebar.jsx';
 import { Topbar } from './shell/Topbar.jsx';
-import { Bandeja } from './pantallas/Bandeja.jsx';
-import { Caso } from './pantallas/Caso.jsx';
-import { Casos } from './pantallas/Casos.jsx';
-import { Flags } from './pantallas/Flags.jsx';
-import { Ficha } from './pantallas/Ficha.jsx';
-import { Historial } from './pantallas/Historial.jsx';
-import { Individual } from './pantallas/Individual.jsx';
-import { Informe } from './pantallas/Informe.jsx';
-import { Embargos } from './pantallas/Embargos.jsx';
-import { Institucional } from './pantallas/Institucional.jsx';
-import { Relevo } from './pantallas/Relevo.jsx';
-import { Kanban } from './pantallas/Kanban.jsx';
-import { ListaBlanca } from './pantallas/ListaBlanca.jsx';
 import { Pendiente } from './pantallas/Pendiente.jsx';
-import { Reportes } from './pantallas/Reportes.jsx';
-import { Triage } from './pantallas/Triage.jsx';
 
 const PERFILES = {
   'Super admin': { rol: 'superadmin', modulos: ['all'] },
@@ -57,17 +42,36 @@ const PERFILES = {
   'CX (sólo lectura)': { rol: 'lectura', modulos: ['casos'] },
 };
 
+/* Las pantallas se cargan a demanda.
+ *
+ * Son veinte y cada persona usa tres o cuatro. Importándolas todas por
+ * adelantado, entrar a ver una alerta descargaba también el tablero de
+ * embargos, la ficha del cliente y la auditoría: 907 kB en un solo trozo.
+ * Con `lazy`, cada una viaja cuando se abre y queda en caché.
+ *
+ * La lista sigue siendo el inventario de lo construido — lo que no está acá
+ * cae en `Pendiente`. */
 const CONSTRUIDAS = {
-  dashboard: Bandeja, alert: Triage, cases: Casos, kanban: Kanban,
-  caso: Caso, ficha: Ficha, reports: Reportes,
-  history: Historial,
-  whitelist: ListaBlanca,
-  institucional: Institucional,
-  individual: Individual,
-  informe: Informe,
-  flags: Flags,
-  relevo: Relevo,
-  embargos: Embargos,
+  dashboard: lazy(() => import('./pantallas/Bandeja.jsx').then((m) => ({ default: m.Bandeja }))),
+  alert: lazy(() => import('./pantallas/Triage.jsx').then((m) => ({ default: m.Triage }))),
+  cases: lazy(() => import('./pantallas/Casos.jsx').then((m) => ({ default: m.Casos }))),
+  kanban: lazy(() => import('./pantallas/Kanban.jsx').then((m) => ({ default: m.Kanban }))),
+  caso: lazy(() => import('./pantallas/Caso.jsx').then((m) => ({ default: m.Caso }))),
+  ficha: lazy(() => import('./pantallas/Ficha.jsx').then((m) => ({ default: m.Ficha }))),
+  reports: lazy(() => import('./pantallas/Reportes.jsx').then((m) => ({ default: m.Reportes }))),
+  history: lazy(() => import('./pantallas/Historial.jsx').then((m) => ({ default: m.Historial }))),
+  whitelist: lazy(() => import('./pantallas/ListaBlanca.jsx').then((m) => ({ default: m.ListaBlanca }))),
+  institucional: lazy(() => import('./pantallas/Institucional.jsx').then((m) => ({ default: m.Institucional }))),
+  individual: lazy(() => import('./pantallas/Individual.jsx').then((m) => ({ default: m.Individual }))),
+  informe: lazy(() => import('./pantallas/Informe.jsx').then((m) => ({ default: m.Informe }))),
+  flags: lazy(() => import('./pantallas/Flags.jsx').then((m) => ({ default: m.Flags }))),
+  relevo: lazy(() => import('./pantallas/Relevo.jsx').then((m) => ({ default: m.Relevo }))),
+  embargos: lazy(() => import('./pantallas/Embargos.jsx').then((m) => ({ default: m.Embargos }))),
+  admin_users: lazy(() => import('./pantallas/Usuarios.jsx').then((m) => ({ default: m.Usuarios }))),
+  admin_auto: lazy(() => import('./pantallas/Automatizacion.jsx').then((m) => ({ default: m.Automatizacion }))),
+  admin_cluster: lazy(() => import('./pantallas/Cluster.jsx').then((m) => ({ default: m.Cluster }))),
+  audit: lazy(() => import('./pantallas/Auditoria.jsx').then((m) => ({ default: m.Auditoria }))),
+  salud: lazy(() => import('./pantallas/Salud.jsx').then((m) => ({ default: m.Salud }))),
 };
 
 function Banco() {
@@ -134,8 +138,10 @@ function Banco() {
           ) : !api ? (
             <p className="wt-estado">Conectando…</p>
           ) : Pantalla ? (
-            <Pantalla api={api} perfil={perfil} email="banco-de-pruebas@global66.com"
-                      navegar={navegar} id={resto[0] || ''} />
+            <Suspense fallback={<p className="wt-estado">Cargando…</p>}>
+              <Pantalla api={api} perfil={perfil} email="banco-de-pruebas@global66.com"
+                        navegar={navegar} id={resto[0] || ''} />
+            </Suspense>
           ) : (
             <Pendiente id={ruta} fase={def ? 'una fase posterior' : ''} />
           )}

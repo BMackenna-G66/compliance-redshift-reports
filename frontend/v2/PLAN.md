@@ -1,6 +1,6 @@
 # WatchTower v2 — plan de trabajo
 
-> **Estado**: Fases 0 a 5 terminadas. Sigue la Fase 6.
+> **Estado**: Fases 0 a 6 terminadas. Sigue la Fase 7.
 > **Regla que manda sobre todo lo demás**: v1 sigue en producción y no se toca.
 > v2 se construye en paralelo, en su propia URL, hasta que esté completo.
 
@@ -298,9 +298,54 @@ dos fallas son silenciosas para quien las sufre.
 
 Se comprobó que puede fallar: **siete mutaciones, siete cazadas**.
 
-## Fase 6 — Administración
+## Fase 6 — Administración ✅
 
-`admin_users`, `admin_auto`, `admin_cluster`, `audit`, y `salud` (nueva).
+Cinco pantallas: usuarios y permisos, automatización, cluster, auditoría y
+salud del módulo (nueva).
+
+**HAY DOS LISTAS DE USUARIOS Y NO SON LA MISMA.** `GET /users` es el CRM
+—quién existe, su equipo— y Firestore `wt_roles` es el perfil —rol y
+módulos—. Alguien puede estar en una y no en la otra, y las dos ausencias
+duelen distinto: sin perfil entra y no ve nada; sin usuario de CRM nadie le
+puede asignar un caso. La pantalla las cruza y marca las dos.
+
+**AL GUARDAR UN PERFIL NO SE PISAN LOS MÓDULOS DE v1.** Los dos fronts
+escriben en la MISMA colección y manejan listas distintas: v1 tiene
+`pendientes`, `queries`, `busqueda` y `dashboard`, que en v2 no existen como
+pantallas. Si v2 guardara sólo lo que conoce, editarle el equipo a alguien
+desde acá le sacaría en silencio accesos que usa a diario. Se conservan las
+claves desconocidas, y hay tests que lo fijan.
+
+De paso, la lista de módulos de v2 **se deriva de `PANTALLAS`** en vez de ser
+una lista aparte. v1 mantiene su propio `ALL_MODULES` y ya se desfasó.
+
+**La pantalla de salud es nueva y responde a un problema concreto.** Media
+docena de cosas pueden estar apagadas o caídas sin que ninguna pantalla lo
+diga —el cluster pausado, los envíos de relevo en OFF, la ingesta detenida,
+la priorización automática apagada, `GET /flags` sin desplegar— y cada una se
+nota tarde y en otro lado: «no me llegan casos nuevos», «el reporte no
+corre», «le escribí al cliente y no le llegó».
+
+Están todas juntas y **cada una dice qué se rompe si está así**. Un tablero
+de luces que no lo explica no sirve. Y no arregla nada: cada cosa se cambia
+en su pantalla, porque el objetivo es entender antes de tocar.
+
+**Un defecto que salió al verificar, y del mismo tipo que el de la bandeja.**
+Con Firestore caído, la pantalla de usuarios afirmaba «12 personas del CRM
+sin perfil: si entran, no ven nada». Era falso —sí tienen perfil, lo que
+falló fue la lectura— y era una acusación sobre doce personas concretas.
+Ahora dice que no pudo leerlos y no afirma nada.
+
+### Las pantallas se cargan a demanda
+
+Son veinte y cada persona usa tres o cuatro. Importándolas todas por
+adelantado, entrar a ver una alerta descargaba también el tablero de
+embargos y la auditoría: **907 kB en un solo trozo**, y el build avisaba en
+cada corrida. Con `lazy` cada pantalla viaja cuando se abre.
+
+La carga inicial bajó de 263 a **228 kB comprimidos**, y ahí se queda: las
+fases que vienen ya no la engordan. El piso son los 152 kB de Firebase, que
+hace falta para el login.
 
 ## Fase 7 — ROS / UAF
 

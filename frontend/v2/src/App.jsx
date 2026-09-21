@@ -4,7 +4,7 @@
    Login, tema, ruteo y el control de acceso por pantalla. Nada de negocio.
    ========================================================================= */
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 
 import { cargarConfig } from './config.js';
 import { crearApi } from './api.js';
@@ -15,48 +15,44 @@ import { useRuta } from './ruta.js';
 
 import { Sidebar } from './shell/Sidebar.jsx';
 import { Topbar } from './shell/Topbar.jsx';
-import { Bandeja } from './pantallas/Bandeja.jsx';
-import { Caso } from './pantallas/Caso.jsx';
-import { Casos } from './pantallas/Casos.jsx';
-import { Flags } from './pantallas/Flags.jsx';
-import { Ficha } from './pantallas/Ficha.jsx';
-import { Historial } from './pantallas/Historial.jsx';
-import { Individual } from './pantallas/Individual.jsx';
-import { Informe } from './pantallas/Informe.jsx';
-import { Embargos } from './pantallas/Embargos.jsx';
-import { Institucional } from './pantallas/Institucional.jsx';
-import { Relevo } from './pantallas/Relevo.jsx';
-import { Kanban } from './pantallas/Kanban.jsx';
-import { ListaBlanca } from './pantallas/ListaBlanca.jsx';
 import { Pendiente } from './pantallas/Pendiente.jsx';
-import { Reportes } from './pantallas/Reportes.jsx';
-import { Triage } from './pantallas/Triage.jsx';
 
 /* Qué pantalla construye qué fase. Sirve para que el relleno diga algo útil
    y para que esta lista sea el inventario de lo que falta. */
 const FASE = {
-  admin_users: 'Fase 6', admin_auto: 'Fase 6', admin_cluster: 'Fase 6',
-  audit: 'Fase 6', salud: 'Fase 6',
   ros: 'Fase 7',
 };
 
-/* Las pantallas ya construidas. Todo lo demás cae en Pendiente. */
+/* Las pantallas se cargan a demanda.
+ *
+ * Son veinte y cada persona usa tres o cuatro. Importándolas todas por
+ * adelantado, entrar a ver una alerta descargaba también el tablero de
+ * embargos, la ficha del cliente y la auditoría: 907 kB en un solo trozo.
+ * Con `lazy`, cada una viaja cuando se abre y queda en caché.
+ *
+ * La lista sigue siendo el inventario de lo construido — lo que no está acá
+ * cae en `Pendiente`. */
 const CONSTRUIDAS = {
-  dashboard: Bandeja,
-  alert: Triage,
-  cases: Casos,
-  kanban: Kanban,
-  caso: Caso,
-  ficha: Ficha,
-  reports: Reportes,
-  history: Historial,
-  whitelist: ListaBlanca,
-  institucional: Institucional,
-  individual: Individual,
-  informe: Informe,
-  flags: Flags,
-  relevo: Relevo,
-  embargos: Embargos,
+  dashboard: lazy(() => import('./pantallas/Bandeja.jsx').then((m) => ({ default: m.Bandeja }))),
+  alert: lazy(() => import('./pantallas/Triage.jsx').then((m) => ({ default: m.Triage }))),
+  cases: lazy(() => import('./pantallas/Casos.jsx').then((m) => ({ default: m.Casos }))),
+  kanban: lazy(() => import('./pantallas/Kanban.jsx').then((m) => ({ default: m.Kanban }))),
+  caso: lazy(() => import('./pantallas/Caso.jsx').then((m) => ({ default: m.Caso }))),
+  ficha: lazy(() => import('./pantallas/Ficha.jsx').then((m) => ({ default: m.Ficha }))),
+  reports: lazy(() => import('./pantallas/Reportes.jsx').then((m) => ({ default: m.Reportes }))),
+  history: lazy(() => import('./pantallas/Historial.jsx').then((m) => ({ default: m.Historial }))),
+  whitelist: lazy(() => import('./pantallas/ListaBlanca.jsx').then((m) => ({ default: m.ListaBlanca }))),
+  institucional: lazy(() => import('./pantallas/Institucional.jsx').then((m) => ({ default: m.Institucional }))),
+  individual: lazy(() => import('./pantallas/Individual.jsx').then((m) => ({ default: m.Individual }))),
+  informe: lazy(() => import('./pantallas/Informe.jsx').then((m) => ({ default: m.Informe }))),
+  flags: lazy(() => import('./pantallas/Flags.jsx').then((m) => ({ default: m.Flags }))),
+  relevo: lazy(() => import('./pantallas/Relevo.jsx').then((m) => ({ default: m.Relevo }))),
+  embargos: lazy(() => import('./pantallas/Embargos.jsx').then((m) => ({ default: m.Embargos }))),
+  admin_users: lazy(() => import('./pantallas/Usuarios.jsx').then((m) => ({ default: m.Usuarios }))),
+  admin_auto: lazy(() => import('./pantallas/Automatizacion.jsx').then((m) => ({ default: m.Automatizacion }))),
+  admin_cluster: lazy(() => import('./pantallas/Cluster.jsx').then((m) => ({ default: m.Cluster }))),
+  audit: lazy(() => import('./pantallas/Auditoria.jsx').then((m) => ({ default: m.Auditoria }))),
+  salud: lazy(() => import('./pantallas/Salud.jsx').then((m) => ({ default: m.Salud }))),
 };
 
 /* ── Tema ───────────────────────────────────────────────────────────────── */
@@ -108,12 +104,17 @@ function Contenido({ ruta, resto, perfil, api, email, navegar }) {
 
   const Construida = CONSTRUIDAS[ruta];
   if (Construida) {
+    // El `Suspense` es por la carga a demanda. El texto es el mismo que usan
+    // las pantallas mientras piden datos, así que el salto entre "bajando la
+    // pantalla" y "pidiendo los datos" no se nota como dos esperas.
     // `id` es el segmento que sigue a la pantalla en la dirección: en
     // `#/caso/abc` es el caso, en `#/ficha/123` el cliente. Cada pantalla le
     // pone su nombre; acá no se sabe ni hace falta saber de qué es.
     return (
-      <Construida api={api} perfil={perfil} email={email} navegar={navegar}
-                  id={resto?.[0] || ''} />
+      <Suspense fallback={<p className="wt-estado">Cargando…</p>}>
+        <Construida api={api} perfil={perfil} email={email} navegar={navegar}
+                    id={resto?.[0] || ''} />
+      </Suspense>
     );
   }
   return <Pendiente id={ruta} fase={FASE[ruta]} />;

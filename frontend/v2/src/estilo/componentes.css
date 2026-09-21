@@ -587,3 +587,14 @@ button.wt-kpi[aria-pressed='true'] {
 .wt-interruptor:last-child { border-bottom: 0; }
 .wt-interruptor .wt-insignia { flex: none; min-width: 34px; text-align: center; }
 .wt-interruptor .wt-btn { flex: none; }
+
+/* ── Comprobaciones de salud ───────────────────────────────────────────── */
+.wt-chequeo {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--e-3);
+  padding: var(--e-3) 0;
+  border-bottom: 1px solid var(--borde-suave);
+}
+.wt-chequeo:last-child { border-bottom: 0; }
+.wt-chequeo .wt-insignia { flex: none; min-width: 62px; text-align: center; }
