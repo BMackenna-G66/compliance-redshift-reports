@@ -1,6 +1,6 @@
 # WatchTower v2 — plan de trabajo
 
-> **Estado**: Fases 0 a 3 terminadas. Sigue la Fase 4.
+> **Estado**: Fases 0 a 4 terminadas. Sigue la Fase 5.
 > **Regla que manda sobre todo lo demás**: v1 sigue en producción y no se toca.
 > v2 se construye en paralelo, en su propia URL, hasta que esté completo.
 
@@ -206,11 +206,43 @@ para ordenar 89 casos; dejarla movida cuando el guardado falló sería peor,
 porque diría que se hizo algo que no se hizo. Cerrar pregunta: es la única
 de las cuatro columnas que cambia el sentido del caso y deja `closed_at`.
 
-## Fase 4 — Análisis
+## Fase 4 — Análisis ✅
 
-`reports`, `individual`, `institucional`, `history`, `whitelist`, `informe`,
-y `flags` (nueva). **`flags` depende de `GET /flags`, que no existe** — ver
-Pendientes.
+Seis pantallas nuevas más `reports`, que ya estaba: `history`, `whitelist`,
+`institucional`, `individual`, `informe` y `flags`.
+
+**SE AGREGÓ `GET /flags` AL BACKEND, Y ESO DESTAPÓ ALGO.** La pantalla de
+banderas necesitaba la matriz F1–F10 con sus pesos, que sólo vivía en
+`aml_individual.py`. Al escribir el endpoint era tentador devolver los cortes
+de nivel escritos a mano (10 / 6 / 3) — y eso habría creado el mismo problema
+que el endpoint venía a resolver, porque esos cortes estaban como **literales
+sueltos dentro del `if`** que clasifica el score. Ahora son
+`CORTES_NIVEL` en `aml_individual.py`, el `if` los usa y el endpoint los lee:
+una sola definición, con un test que comprueba que cambiarla cambia lo que ve
+el front.
+
+⚠️ **El endpoint todavía no está desplegado.** El código está en
+`lambda/api_handler.py` con 14 tests, pero actualizar la Lambda es un
+despliegue a la API que el equipo usa a diario, y esa decisión no es del
+front. Mientras tanto la pantalla **dice que falta desplegarlo y no muestra
+los pesos de memoria** — una copia que se desincroniza en silencio es
+exactamente lo que tenía que evitar. Verificado: con el endpoint en 404 la
+pantalla no renderiza ni una bandera.
+
+**Qué hace cada pantalla y qué decidió.**
+
+| Pantalla | Qué resuelve |
+|---|---|
+| `history` | Las últimas 50 corridas con estado, duración y descarga. Los parámetros se resumen: una corrida del análisis individual trae **891 ids en un solo campo** y mostrarlos crudos revienta la fila. |
+| `whitelist` | La vigencia es el dato, no un adorno: una entrada vencida significa que el cliente volvió a la bandeja sin que nadie lo anuncie. Se calcula contra la hora real y avisa la semana antes. |
+| `institucional` | Empresas, reglas y alertas en pestañas, las tres cargadas en paralelo. Si una falla se dice **cuál**: con tres llamadas, «hubo un error» no dice qué pestaña muestra datos viejos. |
+| `individual` | Es asíncrono y se nota: lanza una corrida y pregunta cada 6 s. Avisa cuando el estado es `RESUMING`, que es el cluster de Redshift despertando. |
+| `informe` | Filtros y PDF. **No calcula nada**: el informe se imprime y se manda, y dos versiones del mismo número —una en pantalla, otra en el PDF— es lo que no puede pasar. |
+| `flags` | La matriz, los cortes, y el aviso de que esta escala (0–19) no es la de las alertas (0–100). |
+
+**Un defecto propio que salió al mirar la pantalla**: el endpoint ordenaba
+las banderas por código como texto, y `"F10" < "F6"`. F10 quedaba en el medio
+de la lista y hacía dudar de si faltaba alguna. Se ordena por el número.
 
 ## Fase 5 — Relevo y embargos
 
@@ -264,10 +296,10 @@ a quién investigar. Está en el historial de git por si el feed se vuelve real.
 
 ## Pendientes que no son de v2 pero lo bloquean
 
-**`GET /flags`** — no existe. Los pesos F1–F10 viven sólo en
-`lambda/aml_individual.py` (`FLAG_WEIGHTS` / `FLAG_LABELS`). Sin el endpoint,
-la pantalla "Flags y pesos" de la Fase 4 los tendría que hardcodear. Es una
-tarea chica de backend: exponer esas dos constantes.
+**Desplegar la Lambda de la API** — `GET /flags` ya está escrito y probado
+(14 tests) pero no desplegado: es `./deploy.sh`. Hasta que corra, la pantalla
+de banderas muestra el aviso en vez de la matriz. La decisión de desplegar no
+es del front: actualiza la API que el equipo usa a diario.
 
 **`GET /cases/{id}` sin los `sla_*`** — el detalle del caso tiene que pedir
 además la lista completa sólo para saber en qué punto del plazo está. Que el

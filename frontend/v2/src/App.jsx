@@ -18,8 +18,14 @@ import { Topbar } from './shell/Topbar.jsx';
 import { Bandeja } from './pantallas/Bandeja.jsx';
 import { Caso } from './pantallas/Caso.jsx';
 import { Casos } from './pantallas/Casos.jsx';
+import { Flags } from './pantallas/Flags.jsx';
 import { Ficha } from './pantallas/Ficha.jsx';
+import { Historial } from './pantallas/Historial.jsx';
+import { Individual } from './pantallas/Individual.jsx';
+import { Informe } from './pantallas/Informe.jsx';
+import { Institucional } from './pantallas/Institucional.jsx';
 import { Kanban } from './pantallas/Kanban.jsx';
+import { ListaBlanca } from './pantallas/ListaBlanca.jsx';
 import { Pendiente } from './pantallas/Pendiente.jsx';
 import { Reportes } from './pantallas/Reportes.jsx';
 import { Triage } from './pantallas/Triage.jsx';
@@ -27,8 +33,6 @@ import { Triage } from './pantallas/Triage.jsx';
 /* Qué pantalla construye qué fase. Sirve para que el relleno diga algo útil
    y para que esta lista sea el inventario de lo que falta. */
 const FASE = {
-  informe: 'Fase 4', individual: 'Fase 4', institucional: 'Fase 4',
-  history: 'Fase 4', whitelist: 'Fase 4', flags: 'Fase 4',
   relevo: 'Fase 5', embargos: 'Fase 5',
   admin_users: 'Fase 6', admin_auto: 'Fase 6', admin_cluster: 'Fase 6',
   audit: 'Fase 6', salud: 'Fase 6',
@@ -44,6 +48,12 @@ const CONSTRUIDAS = {
   caso: Caso,
   ficha: Ficha,
   reports: Reportes,
+  history: Historial,
+  whitelist: ListaBlanca,
+  institucional: Institucional,
+  individual: Individual,
+  informe: Informe,
+  flags: Flags,
 };
 
 /* ── Tema ───────────────────────────────────────────────────────────────── */

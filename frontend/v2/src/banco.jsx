@@ -37,8 +37,14 @@ import { Topbar } from './shell/Topbar.jsx';
 import { Bandeja } from './pantallas/Bandeja.jsx';
 import { Caso } from './pantallas/Caso.jsx';
 import { Casos } from './pantallas/Casos.jsx';
+import { Flags } from './pantallas/Flags.jsx';
 import { Ficha } from './pantallas/Ficha.jsx';
+import { Historial } from './pantallas/Historial.jsx';
+import { Individual } from './pantallas/Individual.jsx';
+import { Informe } from './pantallas/Informe.jsx';
+import { Institucional } from './pantallas/Institucional.jsx';
 import { Kanban } from './pantallas/Kanban.jsx';
+import { ListaBlanca } from './pantallas/ListaBlanca.jsx';
 import { Pendiente } from './pantallas/Pendiente.jsx';
 import { Reportes } from './pantallas/Reportes.jsx';
 import { Triage } from './pantallas/Triage.jsx';
@@ -52,6 +58,12 @@ const PERFILES = {
 const CONSTRUIDAS = {
   dashboard: Bandeja, alert: Triage, cases: Casos, kanban: Kanban,
   caso: Caso, ficha: Ficha, reports: Reportes,
+  history: Historial,
+  whitelist: ListaBlanca,
+  institucional: Institucional,
+  individual: Individual,
+  informe: Informe,
+  flags: Flags,
 };
 
 function Banco() {
