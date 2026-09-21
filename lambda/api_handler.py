@@ -92,6 +92,12 @@ except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
 # sacarlas, así que las habría copiado — y una pantalla titulada "Flags y
 # pesos" con una copia desactualizada es peor que no tenerla.
 try:
+    import ros as ros_mod
+except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
+    ros_mod = None
+    print(f"[api] ros no disponible, las rutas /ros devuelven 503: {_e}")
+
+try:
     from aml_individual import CORTES_NIVEL, FLAG_LABELS, FLAG_WEIGHTS
 except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
     CORTES_NIVEL = FLAG_LABELS = FLAG_WEIGHTS = None
@@ -2349,6 +2355,21 @@ def handler(event, context):  # noqa: ARG001
         if method == "POST" and parts == ["execute"]:
             return execute_report(body)
 
+        # ── ROS / UAF ────────────────────────────────────────────────────
+        if parts and parts[0] == "ros":
+            if not ros_mod:
+                return resp(503, {"error": "El registro de ROS no está disponible en este despliegue."})
+            if method == "GET" and parts == ["ros"]:
+                return listar_ros()
+            if method == "POST" and parts == ["ros"]:
+                return crear_ros(body)
+            if method == "GET" and len(parts) == 2:
+                return detalle_ros(parts[1])
+            if method == "POST" and len(parts) == 3 and parts[2] == "estado":
+                return cambiar_estado_ros(parts[1], body)
+            if method == "POST" and len(parts) == 3 and parts[2] == "narrativa":
+                return editar_ros(parts[1], body)
+
         # GET /flags — la matriz de banderas y sus pesos.
         if method == "GET" and parts == ["flags"]:
             return get_flags()
@@ -3024,6 +3045,112 @@ def execute_report(body: dict):
     )
 
     return resp(202, {"run_id": run_id, "status": "RUNNING"})
+
+
+def _ros_publico(r):
+    """El ROS como lo ve el front. El historial completo sólo va en el
+    detalle: en un listado de cincuenta, cincuenta historiales son megabytes
+    que nadie mira."""
+    return {k: v for k, v in r.items() if k != "historial"}
+
+
+def listar_ros():
+    """El registro completo, del más nuevo al más viejo."""
+    try:
+        out = [_ros_publico(r) for r in _crm_list("ros")]
+        out.sort(key=lambda r: r.get("creado_at", ""), reverse=True)
+        return resp(200, {
+            "ros": out,
+            "indicadores": ros_mod.indicadores(out),
+            # El vocabulario viaja con la respuesta para que el front no lo
+            # repita: reguladores, estados y a dónde puede ir cada uno.
+            "reguladores": ros_mod.REGULADORES,
+            "estados": ros_mod.ESTADOS,
+            "transiciones": ros_mod.TRANSICIONES,
+        })
+    except Exception as e:
+        return resp(200, {"ros": [], "warning": str(e)})
+
+
+def detalle_ros(folio_o_id: str):
+    r = _crm_get("ros", folio_o_id)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte '{folio_o_id}'."})
+    return resp(200, {"ros": r})
+
+
+def crear_ros(body: dict):
+    """Arma un ROS en borrador a partir de un caso.
+
+    La evidencia la junta el backend y no el front: son los mismos datos que
+    ya tiene el caso, y dejar que el navegador los arme abriría la puerta a
+    que un reporte regulatorio lleve lo que el navegador quiso mandar.
+    """
+    case_id = str(body.get("case_id") or "").strip()
+    caso = _crm_get("cases", case_id) if case_id else None
+    if caso is None:
+        return resp(400, {"error": f"No existe el caso '{case_id}'."})
+
+    alertas = [a for a in _crm_list("alerts") if a.get("case_id") == case_id]
+
+    def _fila(a):
+        crudo = a.get("row_data")
+        if isinstance(crudo, dict):
+            return crudo
+        try:
+            d = json.loads(crudo or "{}")
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            return {}
+
+    existentes = [r.get("folio", "") for r in _crm_list("ros")]
+    datos = dict(body)
+    datos["creado_por"] = (body.get("creado_por") or body.get("actor_email") or "").strip()
+    try:
+        reporte = ros_mod.crear(datos, caso, alertas, existentes, leer_fila=_fila)
+    except ValueError as e:
+        return resp(400, {"error": str(e)})
+
+    # El folio es la clave: es como se cita el reporte, y así el detalle se
+    # pide por el número que la gente tiene anotado.
+    _crm_put("ros", reporte["folio"], reporte)
+    _safe_audit(user_email=reporte["creado_por"], action="ros.create",
+                entity_type="ros", entity_id=reporte["folio"],
+                new_value={"case_id": case_id, "regulador": reporte["regulador"]})
+    return resp(201, {"ros": reporte})
+
+
+def editar_ros(folio: str, body: dict):
+    """La narrativa y la tipología, que las escribe una persona."""
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte '{folio}'."})
+    if not ros_mod.editable(r):
+        return resp(409, {"error": "Un reporte enviado no se edita. Para corregirlo se emite otro."})
+    cambios = {"actualizado_at": _now_str()}
+    for campo in ("narrativa", "tipologia"):
+        if campo in body:
+            cambios[campo] = str(body.get(campo) or "").strip()
+    _crm_update("ros", folio, cambios)
+    _safe_audit(user_email=body.get("actor_email", "unknown"), action="ros.edit",
+                entity_type="ros", entity_id=folio)
+    return resp(200, {"ros": _crm_get("ros", folio)})
+
+
+def cambiar_estado_ros(folio: str, body: dict):
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte '{folio}'."})
+    quien = (body.get("quien") or body.get("actor_email") or "").strip()
+    try:
+        nuevo = ros_mod.cambiar_estado(r, body.get("estado"), quien,
+                                       body.get("nota") or "")
+    except ValueError as e:
+        return resp(400, {"error": str(e)})
+    _crm_put("ros", folio, nuevo)
+    _safe_audit(user_email=quien, action="ros.estado", entity_type="ros",
+                entity_id=folio, new_value={"estado": nuevo["estado"]})
+    return resp(200, {"ros": nuevo})
 
 
 def get_flags():
