@@ -200,27 +200,27 @@
 
         <!-- Navigation tabs -->
         <nav class="flex items-center gap-1 ml-4">
-          <button @click="switchTab('dashboard')"
+          <button x-show="verModulo('dashboard')" @click="switchTab('dashboard')"
             :class="activeTab==='dashboard' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             Dashboard
           </button>
-          <button @click="switchTab('alertas')"
+          <button x-show="verModulo('alertas')" @click="switchTab('alertas')"
             :class="activeTab==='alertas' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             Alertas
           </button>
-          <button @click="switchTab('whitelist'); loadWhitelist()"
+          <button x-show="verModulo('whitelist')" @click="switchTab('whitelist'); loadWhitelist()"
             :class="activeTab==='whitelist' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             Whitelist
           </button>
-          <button @click="switchTab('historial'); loadRuns()"
+          <button x-show="verModulo('historial')" @click="switchTab('historial'); loadRuns()"
             :class="activeTab==='historial' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             Historial
           </button>
-          <button @click="switchTab('alertados')"
+          <button x-show="verModulo('alertados')" @click="switchTab('alertados')"
             :class="activeTab==='alertados' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
             <span>⚠️</span> Alertados
@@ -228,7 +228,7 @@
               class="text-xs bg-red-600 text-white rounded-full px-1.5 py-0.5 leading-none"
               x-text="alerts.length"></span>
           </button>
-          <button @click="switchTab('casos'); loadCases()"
+          <button x-show="verModulo('casos')" @click="switchTab('casos'); loadCases()"
             :class="activeTab==='casos' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
             <span>📁</span> Casos
@@ -244,7 +244,7 @@
               class="text-xs bg-blue-600 text-white rounded-full px-1.5 py-0.5 leading-none"
               x-text="pendientes.length"></span>
           </button>
-          <button @click="switchTab('relevo'); relevoCargar()"
+          <button x-show="verModulo('relevo')" @click="switchTab('relevo'); relevoCargar()"
             :class="activeTab==='relevo' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
             <span>🤝</span> Relevo
@@ -252,7 +252,7 @@
               class="text-xs bg-red-600 text-white rounded-full px-1.5 py-0.5 leading-none"
               x-text="relevoVencidos"></span>
           </button>
-          <button @click="switchTab('embargos'); embCargarHistorial()"
+          <button x-show="verModulo('embargos')" @click="switchTab('embargos'); embCargarHistorial()"
             :class="activeTab==='embargos' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
             <span>⚖️</span> Embargos
@@ -260,22 +260,22 @@
               class="text-xs bg-blue-600 text-white rounded-full px-1.5 py-0.5 leading-none"
               x-text="embCorriendo"></span>
           </button>
-          <button @click="switchTab('queries')"
+          <button x-show="verModulo('queries')" @click="switchTab('queries')"
             :class="activeTab==='queries' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             Queries
           </button>
-          <button @click="switchTab('aml_individual')"
+          <button x-show="verModulo('aml_individual')" @click="switchTab('aml_individual')"
             :class="activeTab==='aml_individual' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             🔬 Análisis Individual
           </button>
-          <button @click="switchTab('busqueda')"
+          <button x-show="verModulo('busqueda')" @click="switchTab('busqueda')"
             :class="activeTab==='busqueda' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap">
             🔎 Búsqueda
           </button>
-          <button @click="switchTab('institucional'); loadInstitutionalClients(); loadInstitutionalRules(); loadInstitutionalAlerts()"
+          <button x-show="verModulo('institucional')" @click="switchTab('institucional'); loadInstitutionalClients(); loadInstitutionalRules(); loadInstitutionalAlerts()"
             :class="activeTab==='institucional' ? 'tab-active text-orange-400' : 'text-slate-400 hover:text-white'"
             class="px-4 py-4 text-sm font-medium transition border-b-2 border-transparent whitespace-nowrap flex items-center gap-1.5">
             🏛️ Institucional
@@ -2953,7 +2953,13 @@
       <div x-show="activeTab==='casos'" x-cloak>
         <!-- Header -->
         <div class="flex items-center justify-between mb-4">
-          <h1 class="text-xl font-bold text-white flex items-center gap-2">📁 Casos de Investigación</h1>
+          <h1 class="text-xl font-bold text-white flex items-center gap-2">
+            📁 Casos de Investigación
+            <span x-show="soloLectura()" x-cloak
+              class="text-xs font-medium px-2 py-0.5 rounded-full bg-slate-700 text-slate-300 border border-slate-600">
+              👁 Sólo lectura
+            </span>
+          </h1>
           <div class="flex items-center gap-3">
             <button @click="loadCases()" class="text-sm text-slate-400 hover:text-white transition">↺ Actualizar</button>
             <!-- View toggle -->
@@ -6754,17 +6760,28 @@
               </div>
 
               <div>
-                <label class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-2 block">Rol</label>
-                <div class="flex gap-3">
-                  <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" x-model="newAdminUser.role" value="analyst" class="accent-orange-500">
-                    <span class="text-sm text-slate-300">👤 Analista</span>
-                  </label>
-                  <label class="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" x-model="newAdminUser.role" value="admin" class="accent-orange-500">
-                    <span class="text-sm text-slate-300">🔑 Admin</span>
-                  </label>
+                <label class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-2 block">Perfil</label>
+                <div class="space-y-2">
+                  <template x-for="perf in PERFILES" :key="perf.key">
+                    <label class="flex items-start gap-2.5 cursor-pointer p-2 rounded-lg hover:bg-slate-700/40">
+                      <input type="radio" x-model="newAdminUser.role" :value="perf.key"
+                        class="accent-orange-500 mt-0.5">
+                      <span>
+                        <span class="text-sm text-slate-200 block" x-text="perf.label"></span>
+                        <span class="text-xs text-slate-500" x-text="perf.desc"></span>
+                      </span>
+                    </label>
+                  </template>
                 </div>
+                <!-- Qué compra y qué no. Va escrito acá porque quien asigna el
+                     perfil tiene que saberlo antes de dar el acceso, no
+                     después. -->
+                <p x-show="newAdminUser.role === 'lectura'" x-cloak
+                  class="mt-2 text-xs text-amber-300/90 bg-amber-950/30 border border-amber-800 rounded-lg px-3 py-2">
+                  El perfil de lectura bloquea toda escritura desde la aplicación y limita los
+                  módulos a los que marques. <b>Todavía no es una barrera del servidor</b>: la API
+                  no verifica quién llama, así que protege del accidente, no de la intención.
+                </p>
               </div>
 
               <div>
@@ -7743,15 +7760,31 @@
       SUPER_ADMIN_EMAIL: 'benjamin.mackenna@global66.com',
       userRole:     'analyst',   // 'superadmin' | 'admin' | 'analyst'
       userModules:  [],
+      // Una entrada por pestaña de la barra. Antes faltaban seis —casos,
+      // relevo, embargos, institucional, búsqueda y admin—, así que no se
+      // podían asignar ni restringir aunque el perfil las nombrara.
       ALL_MODULES: [
         { key: 'dashboard',      label: 'Dashboard' },
         { key: 'alertas',        label: '🔍 Alertas' },
         { key: 'whitelist',      label: 'Whitelist' },
         { key: 'historial',      label: '📋 Historial' },
         { key: 'alertados',      label: '⚠️ Alertados' },
+        { key: 'casos',          label: '📁 Casos' },
+        { key: 'pendientes',     label: '📬 Pendientes' },
+        { key: 'relevo',         label: '🤝 Relevo' },
+        { key: 'embargos',       label: '🏛 Embargos' },
+        { key: 'institucional',  label: '🏢 Institucional' },
         { key: 'queries',        label: '✏️ Queries' },
         { key: 'aml_individual', label: '🔬 Análisis Individual' },
-        { key: 'pendientes',     label: '📬 Pendientes' },
+        { key: 'busqueda',       label: '🔎 Búsqueda' },
+      ],
+
+      // Los perfiles. `lectura` es el de CX: ve lo que se le habilite, pero
+      // no puede modificar nada.
+      PERFILES: [
+        { key: 'lectura',    label: '👁 Sólo lectura', desc: 'Consulta. No puede modificar nada.' },
+        { key: 'analyst',    label: '👤 Analista',     desc: 'Trabaja los casos que se le asignen.' },
+        { key: 'admin',      label: '🔑 Admin',        desc: 'Acceso completo, incluida configuración.' },
       ],
 
       // Audit log
@@ -8167,6 +8200,29 @@
       isAdmin() {
         return this.userRole === 'superadmin' || this.userRole === 'admin';
       },
+      // El perfil de consulta. Se pregunta en un solo lugar de verdad —`api()`,
+      // que bloquea todo lo que no sea GET— y además se usa para esconder los
+      // botones, que es cortesía: el control está en api(), no en el botón.
+      soloLectura() {
+        return this.userRole === 'lectura';
+      },
+
+      // Qué pestañas se ven.
+      //
+      // **Sólo restringe al perfil de lectura.** Hasta ahora 13 de las 14
+      // pestañas no miraban los permisos de módulo, así que los perfiles que
+      // ya existen tienen listas que no las nombran: aplicarles la
+      // restricción de golpe les sacaría accesos que hoy usan todos los días.
+      // Eso se aprieta cuando la autenticación sea real y se pueda revisar
+      // perfil por perfil; hoy sería romper el trabajo del equipo para
+      // habilitar a CX.
+      verModulo(tab) {
+        if (this.userRole === 'superadmin') return true;
+        if (this.soloLectura()) {
+          return this.userModules.includes('all') || this.userModules.includes(tab);
+        }
+        return true;
+      },
       hasModule(mod) {
         if (this.userRole === 'superadmin') return true;
         return this.userModules.includes('all') || this.userModules.includes(mod);
@@ -8202,10 +8258,41 @@
             }).catch(() => {});
           }
         } catch(_) {
-          // Firestore unavailable — fallback: full access so nothing breaks
-          this.userRole    = 'analyst';
-          this.userModules = ['all'];
+          // Firestore caído. Antes esto daba acceso TOTAL "para que nada se
+          // rompa", que con un perfil de sólo lectura es exactamente lo
+          // contrario de lo que se quiere: un hipo de Firestore le abría el
+          // sistema entero a quien sólo puede consultar.
+          //
+          // Ahora se usa lo último que se supo de este usuario, guardado en su
+          // navegador. Si nunca se supo nada, se cae al perfil más restrictivo
+          // en vez del más amplio.
+          const recordado = this._perfilRecordado();
+          this.userRole    = recordado.role;
+          this.userModules = recordado.modules;
         }
+        this._recordarPerfil();
+      },
+
+      // El último perfil conocido, por si Firestore no contesta. Es una
+      // comodidad para no dejar a nadie afuera por una caída, no un control:
+      // el control de verdad va del lado del servidor.
+      _perfilRecordado() {
+        try {
+          const crudo = localStorage.getItem('wt_perfil');
+          if (crudo) {
+            const d = JSON.parse(crudo);
+            if (d && d.role) return { role: d.role, modules: d.modules || ['dashboard'] };
+          }
+        } catch (_) {}
+        return { role: 'lectura', modules: ['dashboard'] };
+      },
+
+      _recordarPerfil() {
+        try {
+          localStorage.setItem('wt_perfil', JSON.stringify({
+            role: this.userRole, modules: this.userModules,
+          }));
+        } catch (_) {}
       },
 
       // -----------------------------------------------
@@ -8229,6 +8316,15 @@
           this.globalError = 'Error cargando usuarios: ' + (e.message || e);
         }
         this.adminUsersLoading = false;
+      },
+
+      // Al pasar a sólo lectura se propone el mínimo: consultar casos. Es una
+      // sugerencia, no una imposición — se puede marcar más.
+      perfilElegido(valor) {
+        this.newAdminUser.role = valor;
+        if (valor === 'lectura' && this.newAdminUser.modules.length > 2) {
+          this.newAdminUser.modules = ['casos'];
+        }
       },
 
       async createUserAccess() {
@@ -8308,6 +8404,17 @@
       // TAB SWITCHING
       // -----------------------------------------------
       switchTab(tab) {
+        // Esconder el botón no alcanza: a `switchTab` se llega también desde
+        // enlaces internos —las tarjetas del dashboard, por ejemplo— y desde
+        // la consola. El módulo se verifica acá, que es por donde pasan todos.
+        if (tab !== 'admin' && !this.verModulo(tab) && !this.hasModule(tab)) {
+          this.globalError = 'No tenés acceso a ese módulo.';
+          return;
+        }
+        if (tab === 'admin' && !this.isAdmin()) {
+          this.globalError = 'El panel de administración es sólo para administradores.';
+          return;
+        }
         this.activeTab = tab;
         if (tab === 'dashboard') {
           this.$nextTick(() => this.initDashboard(false));
@@ -9101,6 +9208,15 @@
       },
 
       async api(method, path, body = null) {
+        // Un perfil de sólo lectura no escribe. Se corta acá y no botón por
+        // botón: son 72 endpoints que escriben y esconder los controles uno a
+        // uno garantiza que tarde o temprano se escape alguno. Acá no hay
+        // forma de pasar de largo desde la aplicación.
+        if (this.soloLectura() && String(method).toUpperCase() !== 'GET') {
+          this.globalError = 'Tu perfil es de sólo lectura: no podés modificar información.';
+          console.warn('[solo-lectura] bloqueado', method, path);
+          return null;
+        }
         try {
           // Note: API Gateway auth is NONE (Firebase handles auth on the frontend).
           // We intentionally omit the Authorization header because API Gateway's CORS
@@ -9126,6 +9242,14 @@
       // errores — necesario cuando el caller quiere reaccionar a un status
       // puntual (ej. 409 "el caso ya está tomado") en vez de solo mostrarlo.
       async apiRaw(method, path, body = null) {
+        // Mismo corte que en api(). Las subidas directas a S3 no necesitan
+        // guarda propia: la URL prefirmada se pide antes por acá, así que sin
+        // este permiso nunca llegan a tener a dónde subir.
+        if (this.soloLectura() && String(method).toUpperCase() !== 'GET') {
+          this.globalError = 'Tu perfil es de sólo lectura: no podés modificar información.';
+          console.warn('[solo-lectura] bloqueado', method, path);
+          return { ok: false, status: 403, data: { error: 'solo_lectura' } };
+        }
         try {
           const opts = { method, credentials: 'omit', headers: { 'Content-Type': 'application/json' } };
           if (body) opts.body = JSON.stringify(body);
