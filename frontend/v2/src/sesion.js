@@ -177,12 +177,19 @@ export async function guardarPerfil(perfilDeQuienGuarda, correo, datos) {
   }
   const id = String(correo || '').trim().toLowerCase();
   if (!id) throw new Error('Falta el correo.');
+  /* `merge: true` NO es opcional.
+     El documento de cada persona guarda además su lista de `pendientes` —las
+     alertas que alguien le asignó y todavía no resolvió—. Un `setDoc` sin
+     merge reemplaza el documento entero, así que cambiarle el perfil a
+     alguien le BORRARÍA sus pendientes sin que nadie se entere: no hay error,
+     no hay aviso, simplemente al entrar tiene la bandeja vacía.
+     Con merge sólo se tocan los cuatro campos de acá. */
   await setDoc(doc(db, COLECCION, id), {
     role: datos.role,
     modules: datos.modules,
     grantedBy: datos.grantedBy || '',
     grantedAt: new Date().toISOString(),
-  });
+  }, { merge: true });
 }
 
 export async function borrarPerfil(perfilDeQuienGuarda, correo) {
@@ -192,4 +199,46 @@ export async function borrarPerfil(perfilDeQuienGuarda, correo) {
   const id = String(correo || '').trim().toLowerCase();
   if (NO_SON_PERSONAS(id)) throw new Error('Ese documento no es un usuario.');
   await deleteDoc(doc(db, COLECCION, id));
+}
+
+/* ── Pendientes ─────────────────────────────────────────────────────────────
+   Las alertas que una persona le asignó a otra. Viven DENTRO del documento
+   de perfil de quien las recibe (`wt_roles/{correo}.pendientes`), que es una
+   decisión de v1: aprovecha que esa colección ya está permitida por las
+   reglas de Firestore, sin abrir una nueva.
+
+   Tiene una consecuencia que hay que respetar: cualquier escritura sobre ese
+   documento DEBE ir con `merge`, o se los lleva puestos. */
+
+export async function listarPendientes(correo) {
+  if (!correo) return [];
+  const snap = await getDoc(doc(db, COLECCION, correo));
+  const todos = snap.exists() ? (snap.data().pendientes || []) : [];
+  return todos.filter((p) => !p.resolved);
+}
+
+export async function resolverPendiente(correo, id) {
+  const ref = doc(db, COLECCION, correo);
+  const snap = await getDoc(ref);
+  const todos = snap.exists() ? (snap.data().pendientes || []) : [];
+  // Se marca como resuelto en vez de sacarlo del arreglo: el historial de
+  // quién asignó qué y cuándo es parte del registro, y borrarlo lo pierde.
+  const actualizado = todos.map((p) => (p.id === id
+    ? { ...p, resolved: true, resolvedAt: new Date().toISOString() } : p));
+  await setDoc(ref, { pendientes: actualizado }, { merge: true });
+}
+
+export async function asignarPendiente(paraCorreo, pendiente) {
+  if (!paraCorreo) throw new Error('Falta a quién asignársela.');
+  const ref = doc(db, COLECCION, paraCorreo);
+  const snap = await getDoc(ref);
+  const todos = snap.exists() ? (snap.data().pendientes || []) : [];
+  await setDoc(ref, {
+    pendientes: [...todos, {
+      id: `p-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      ...pendiente,
+      resolved: false,
+      createdAt: new Date().toISOString(),
+    }],
+  }, { merge: true });
 }

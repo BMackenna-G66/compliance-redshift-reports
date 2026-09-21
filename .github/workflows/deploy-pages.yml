@@ -10,6 +10,27 @@ permissions:
   pages: write
   id-token: write
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  EL CORTE
+# ═══════════════════════════════════════════════════════════════════════════
+#  `FRENTE_PRINCIPAL` decide cuál de los dos fronts vive en la raíz del sitio.
+#
+#      v1  →  la raíz es el WatchTower actual · v2 queda en /v2/
+#      v2  →  la raíz es el front nuevo       · v1 queda en /v1/
+#
+#  LOS DOS SE PUBLICAN SIEMPRE, pase lo que pase con esta variable. Lo único
+#  que cambia es cuál atiende la dirección que la gente tiene en el marcador.
+#  El que no es principal queda en su carpeta, y la carpeta del principal
+#  redirige a la raíz — así ningún enlace viejo se rompe en ninguna dirección.
+#
+#  VOLVER ATRÁS ES CAMBIAR ESTA LÍNEA. No hay migración, no hay datos que
+#  mover: los dos fronts hablan con la misma API y leen la misma identidad.
+#  Si algo sale mal después del corte, se pone `v1` y en un push está de
+#  vuelta el de siempre.
+# ═══════════════════════════════════════════════════════════════════════════
+env:
+  FRENTE_PRINCIPAL: v1
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -29,11 +50,13 @@ jobs:
       # El front nuevo se construye en su propio paso y CON continue-on-error
       # a propósito.
       #
-      # v1 es el que está en producción y lo usa el equipo todos los días. Si
-      # el build de v2 —que todavía se está armando— hiciera fallar el job,
-      # un error en una pantalla a medio hacer dejaría al equipo sin poder
-      # desplegar v1. El paso falla visible en la corrida, pero no arrastra a
-      # v1: si no hay dist, v2 publica una página que dice que el build falló.
+      # Mientras v1 sea el principal, un error en v2 no puede dejar al equipo
+      # sin poder desplegar lo que está en producción. El paso falla visible
+      # en la corrida, pero no arrastra al resto.
+      #
+      # CUANDO v2 SEA EL PRINCIPAL esto se invierte: el paso «Verificar el
+      # corte» de más abajo corta el despliegue si v2 no compiló, porque
+      # publicar la raíz sin el front principal sería peor que no publicar.
       - name: Construir el front nuevo (v2)
         id: v2
         continue-on-error: true
@@ -42,6 +65,16 @@ jobs:
           npm ci
           npm test
           npm run build
+
+      - name: Verificar el corte
+        run: |
+          if [ "$FRENTE_PRINCIPAL" = "v2" ] && [ ! -f frontend/v2/dist/index.html ]; then
+            echo "::error::FRENTE_PRINCIPAL=v2 pero el build de v2 falló."
+            echo "No se publica: la raíz quedaría sin el front principal."
+            echo "Poné FRENTE_PRINCIPAL=v1 para volver al anterior mientras se arregla."
+            exit 1
+          fi
+          echo "Front principal: $FRENTE_PRINCIPAL"
 
       - name: Armar el sitio
         env:
@@ -52,32 +85,52 @@ jobs:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
         run: |
-          mkdir -p _site _site/formularios _site/v2
-
-          cp frontend/index.html _site/index.html
+          mkdir -p _site _site/formularios _site/v1 _site/v2
 
           # Los formularios que el botón de los correos ofrece descargar.
           # Vivían en CloudFront; si no viajan acá, ese botón se rompe en cada
           # correo que le mandamos a un cliente.
           cp lambda/attachments/*.pdf _site/formularios/
 
-          # El front nuevo, mientras se construye. Misma URL base a propósito:
-          # la API tiene una lista blanca de orígenes y un dominio nuevo no
-          # podría hablarle hasta que alguien con permisos de API Gateway lo
-          # agregue. Como subcarpeta, el origen es el mismo y funciona hoy.
+          # ── v2 ──
+          # Se copia siempre que haya build, sea principal o no. El banco de
+          # pruebas no se publica: muestra datos inventados y quien cayera ahí
+          # podría creer que son reales.
           if [ -d frontend/v2/dist ]; then
             cp -R frontend/v2/dist/. _site/v2/
-            # El banco de pruebas no se publica: muestra datos inventados y
-            # quien cayera ahí podría creer que son reales.
             rm -f _site/v2/banco.html
             find _site/v2/assets -name 'banco-*' -delete 2>/dev/null || true
           else
             echo '<!doctype html><meta charset="utf-8"><title>WatchTower v2</title><p style="font:14px system-ui;padding:2rem">El build del front nuevo falló en la última publicación. Revisá la corrida del workflow. El WatchTower actual no está afectado.</p>' > _site/v2/index.html
           fi
 
+          # ── v1 ──
+          cp frontend/index.html _site/v1/index.html
+
+          # ── Quién atiende la raíz ──
+          redirigir() {
+            # Una redirección que conserva el hash: v2 rutea con `#/casos` y
+            # perderlo dejaría a la gente siempre en la pantalla de inicio.
+            cat > "$1" <<HTML
+          <!doctype html><meta charset="utf-8"><title>WatchTower</title>
+          <script>location.replace('$2' + location.hash);</script>
+          <p style="font:14px system-ui;padding:2rem">
+            El WatchTower se mudó. <a href="$2">Entrá acá</a>.
+          </p>
+          HTML
+          }
+
+          if [ "$FRENTE_PRINCIPAL" = "v2" ]; then
+            cp -R _site/v2/. _site/
+            redirigir _site/v2/index.html "../"
+          else
+            cp frontend/index.html _site/index.html
+            redirigir _site/v1/index.html "../"
+          fi
+
           python3 -c "
           import json, os
-          cfg = {
+          completa = {
             'apiUrl':        os.environ['API_URL'],
             'userPoolId':    os.environ['COGNITO_USER_POOL_ID'],
             'clientId':      os.environ['COGNITO_CLIENT_ID'],
@@ -85,13 +138,27 @@ jobs:
             'region':        os.environ['AWS_REGION'],
             'geminiKey':     os.environ.get('GEMINI_KEY', ''),
           }
-          open('_site/config.json','w').write(json.dumps(cfg, indent=2))
-          # El front nuevo lee su config con ruta relativa, así que necesita
-          # la suya en su carpeta. Sólo la URL de la API: v2 no usa Cognito
-          # (la identidad la da Firebase) ni Gemini, y publicar una clave que
-          # no se usa es regalarla.
-          open('_site/v2/config.json','w').write(json.dumps({'apiUrl': cfg['apiUrl']}, indent=2))
+          # v2 lleva SÓLO la URL de la API: no usa Cognito —la identidad la da
+          # Firebase— ni Gemini. Publicar una clave que la aplicación no usa es
+          # regalarla, así que la config que acompaña a v2 no la lleva.
+          minima = {'apiUrl': completa['apiUrl']}
+          principal = os.environ['FRENTE_PRINCIPAL']
+          escribir = lambda ruta, d: open(ruta, 'w').write(json.dumps(d, indent=2))
+          escribir('_site/v1/config.json', completa)
+          escribir('_site/v2/config.json', minima)
+          # La raíz lleva la del front que la atiende, no siempre la completa:
+          # si no, al pasar la raíz a v2 la clave de Gemini quedaría publicada
+          # en la dirección principal sin que nadie la use.
+          escribir('_site/config.json', minima if principal == 'v2' else completa)
           "
+
+      - name: Qué quedó publicado
+        run: |
+          echo "Front principal: $FRENTE_PRINCIPAL"
+          echo "  /      → $FRENTE_PRINCIPAL"
+          echo "  /v1/   → $([ "$FRENTE_PRINCIPAL" = v1 ] && echo 'redirección a /' || echo 'WatchTower actual')"
+          echo "  /v2/   → $([ "$FRENTE_PRINCIPAL" = v2 ] && echo 'redirección a /' || echo 'front nuevo')"
+          find _site -maxdepth 2 -name '*.html' | sort
 
       - uses: actions/configure-pages@v4
         with:

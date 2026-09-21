@@ -46,11 +46,13 @@ describe('guardar los módulos sin pisar a v1', () => {
   /* LA REGLA: lo que esta pantalla no muestra, no lo toca. */
 
   it('conserva las claves que v2 no conoce', () => {
-    // `pendientes`, `queries` y `busqueda` son de v1 y no existen como
-    // pantallas en v2. Si desaparecieran, la persona perdería esos accesos.
-    const antes = ['casos', 'pendientes', 'queries', 'busqueda'];
+    // Hoy v2 cubre todos los módulos de v1 (hay un test de sincronía que lo
+    // vigila), así que la clave ajena de este caso es inventada. La regla
+    // sigue importando: protege de que v1 agregue un módulo, o de una clave
+    // vieja que quedó en el documento de alguien.
+    const antes = ['casos', 'modulo_viejo', 'algo_de_v1'];
     const guardado = modulosParaGuardar(['casos', 'relevo'], antes);
-    for (const m of ['pendientes', 'queries', 'busqueda']) {
+    for (const m of ['modulo_viejo', 'algo_de_v1']) {
       assert.ok(guardado.includes(m), `se perdió ${m}`);
     }
   });
@@ -62,8 +64,14 @@ describe('guardar los módulos sin pisar a v1', () => {
   });
 
   it('no duplica si una clave está en los dos lados', () => {
-    const g = modulosParaGuardar(['casos'], ['casos', 'pendientes']);
+    const g = modulosParaGuardar(['casos'], ['casos', 'modulo_viejo']);
     assert.equal(g.filter((x) => x === 'casos').length, 1);
+  });
+
+  it('un módulo que v2 SÍ maneja se puede desmarcar de verdad', () => {
+    // El complemento del test de arriba: conservar lo desconocido no puede
+    // volverse "conservar todo", o quitar un permiso no tendría efecto.
+    assert.ok(!modulosParaGuardar(['casos'], ['casos', 'pendientes']).includes('pendientes'));
   });
 
   it('`all` no se arrastra solo: si se desmarca, se va', () => {
@@ -79,7 +87,7 @@ describe('guardar los módulos sin pisar a v1', () => {
   });
 
   it('sin nada marcado y con claves ajenas, deja las ajenas', () => {
-    assert.deepEqual(modulosParaGuardar([], ['pendientes']), ['pendientes']);
+    assert.deepEqual(modulosParaGuardar([], ['modulo_viejo']), ['modulo_viejo']);
   });
 });
 

@@ -97,6 +97,41 @@ class EstadosManualesDeRelevo(unittest.TestCase):
                 self.assertNotIn(d, self.front)
 
 
+class ModulosDeV1(unittest.TestCase):
+    """v2 tiene que cubrir todos los módulos de permisos que v1 conoce.
+
+    Los dos fronts leen la misma colección `wt_roles`. Si v1 puede otorgar un
+    módulo que v2 no tiene como pantalla, ese acceso existe pero no lleva a
+    ningún lado — y al revés, si v2 muestra una pantalla cuyo módulo v1 no
+    puede otorgar, nadie puede darle ese acceso a un perfil de sólo lectura.
+
+    Este test es el que dice si v2 está listo para reemplazar a v1.
+    """
+
+    def _modulos_v1(self):
+        html = (RAIZ / "frontend" / "index.html").read_text(encoding="utf-8")
+        i = html.index("ALL_MODULES: [")
+        cuerpo = html[i:html.index("],", i)]
+        return set(re.findall(r"key:\s*'([a-z_]+)'", cuerpo))
+
+    def _modulos_v2(self):
+        texto = (SRC / "dominio.js").read_text(encoding="utf-8")
+        return set(re.findall(r"modulo:\s*'([a-z_]+)'", texto))
+
+    def test_v2_cubre_todos_los_modulos_de_v1(self):
+        faltan = self._modulos_v1() - self._modulos_v2()
+        self.assertEqual(faltan, set(),
+                         f"v1 puede otorgar módulos que v2 no tiene como pantalla: {faltan}")
+
+    def test_lo_que_v2_agrega_es_solo_admin(self):
+        """v2 tiene `admin`, que v1 no lista porque su panel de permisos no lo
+        ofrece —y está bien: nadie debería poder darle administración a un
+        perfil de sólo lectura desde esa pantalla."""
+        de_mas = self._modulos_v2() - self._modulos_v1()
+        self.assertEqual(de_mas, {"admin"},
+                         f"v2 usa módulos que v1 no conoce: {de_mas - {'admin'}}")
+
+
 class NombresDeEstado(unittest.TestCase):
     """Cada estado del backend tiene que tener nombre legible en el front."""
 

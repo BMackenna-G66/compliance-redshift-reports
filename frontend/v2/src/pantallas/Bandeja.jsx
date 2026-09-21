@@ -119,12 +119,16 @@ export function Bandeja({ api, navegar }) {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [filtro, setFiltro] = useState('todas');
+  /* La bandeja muestra las ACTIVAS. «Ya revisadas» es el mismo listado con
+     otro endpoint; sin esta vista, lo que se revisó desaparece y no hay
+     forma de comprobar qué se hizo ni de deshacer una revisión apurada. */
+  const [vista, setVista] = useState('activas');
 
   const cargar = useCallback(async () => {
     setCargando(true);
     setError('');
     try {
-      const d = await api.get('/alerts');
+      const d = await api.get(vista === 'revisadas' ? '/alerts/reviewed' : '/alerts');
       setAlertas(d?.alerts || []);
       // El aviso que el backend manda cuando la lectura falló parcialmente.
       // Sin esto la pantalla mostraría una bandeja vacía como si no hubiera
@@ -135,7 +139,7 @@ export function Bandeja({ api, navegar }) {
     } finally {
       setCargando(false);
     }
-  }, [api]);
+  }, [api, vista]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -176,7 +180,8 @@ export function Bandeja({ api, navegar }) {
   return (
     <>
       <div className="wt-kpis">
-        <Kpi principal etiqueta="Alertas activas" valor={n(ind.total)}
+        <Kpi principal etiqueta={vista === 'revisadas' ? 'Ya revisadas' : 'Alertas activas'}
+             valor={n(ind.total)}
              pie={!sinDatos
                ? `${ind.reportes} reporte${ind.reportes === 1 ? '' : 's'}`
                : cargando ? 'leyendo…' : 'no se pudieron leer'} />
@@ -193,7 +198,7 @@ export function Bandeja({ api, navegar }) {
       </div>
 
       <Tabla
-        titulo="Bandeja de alertas"
+        titulo={vista === 'revisadas' ? 'Alertas ya revisadas' : 'Bandeja de alertas'}
         columnas={columnas(navegar)}
         filas={visibles}
         cargando={cargando}
@@ -208,6 +213,15 @@ export function Bandeja({ api, navegar }) {
         herramientas={
           <>
             <div className="wt-filtros">
+              <button className="wt-filtro" aria-pressed={vista === 'activas'}
+                      onClick={() => { setVista('activas'); setFiltro('todas'); }}>
+                Activas
+              </button>
+              <button className="wt-filtro" aria-pressed={vista === 'revisadas'}
+                      onClick={() => { setVista('revisadas'); setFiltro('todas'); }}>
+                Ya revisadas
+              </button>
+              <span style={{ width: 1, alignSelf: 'stretch', background: 'var(--borde)' }} />
               {Object.entries(FILTROS).map(([clave, f]) => (
                 <button
                   key={clave}

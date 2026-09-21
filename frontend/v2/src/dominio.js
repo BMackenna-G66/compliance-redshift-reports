@@ -219,7 +219,9 @@ export const SE_PIDE_AL_BACKEND = {
    mostrar. Un ítem de menú que siempre lleva a un error no es un atajo, es
    una trampa. */
 export const PANTALLAS = [
+  { grupo: 'Operación', id: 'inicio',        titulo: 'Inicio',              modulo: 'dashboard' },
   { grupo: 'Operación', id: 'dashboard',     titulo: 'Bandeja de Alertas',  modulo: 'alertados' },
+  { grupo: 'Operación', id: 'pendientes',    titulo: 'Pendientes',          modulo: 'pendientes' },
   { grupo: 'Operación', id: 'alert',         titulo: 'Triage de alerta',    modulo: 'alertados', nuevo: true, enMenu: false },
   { grupo: 'Operación', id: 'cases',         titulo: 'Casos',               modulo: 'casos' },
   { grupo: 'Operación', id: 'kanban',        titulo: 'Kanban',              modulo: 'casos' },
@@ -229,6 +231,8 @@ export const PANTALLAS = [
 
   { grupo: 'Análisis',  id: 'informe',       titulo: 'Informe de gestión',  modulo: 'casos' },
   { grupo: 'Análisis',  id: 'reports',       titulo: 'Reportes AML',        modulo: 'alertas' },
+  { grupo: 'Análisis',  id: 'queries',       titulo: 'Queries',             modulo: 'queries' },
+  { grupo: 'Análisis',  id: 'busqueda',      titulo: 'Búsqueda',            modulo: 'busqueda' },
   { grupo: 'Análisis',  id: 'individual',    titulo: 'Análisis Individual', modulo: 'aml_individual' },
   { grupo: 'Análisis',  id: 'institucional', titulo: 'Institucional',       modulo: 'institucional' },
   { grupo: 'Análisis',  id: 'history',       titulo: 'Historial',           modulo: 'historial' },

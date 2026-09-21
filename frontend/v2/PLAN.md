@@ -1,6 +1,7 @@
 # WatchTower v2 — plan de trabajo
 
-> **Estado**: Fases 0 a 6 terminadas. Sigue la Fase 7.
+> **Estado**: Fases 0 a 6 y 8 terminadas. Falta la 7 (ROS) y **dar el corte**,
+> que es una línea y una decisión.
 > **Regla que manda sobre todo lo demás**: v1 sigue en producción y no se toca.
 > v2 se construye en paralelo, en su propia URL, hasta que esté completo.
 
@@ -347,16 +348,78 @@ La carga inicial bajó de 263 a **228 kB comprimidos**, y ahí se queda: las
 fases que vienen ya no la engordan. El piso son los 152 kB de Firebase, que
 hace falta para el login.
 
-## Fase 7 — ROS / UAF
+## Fase 7 — ROS / UAF · postergada
 
-Pantalla nueva sin equivalente en v1. Antes de construirla hay que definir con
-compliance qué es exactamente un ROS acá: el diseño muestra una pantalla, no un
-proceso.
+Pantalla nueva sin equivalente en v1. Queda para cuando esté definido el
+servicio externo que se va a apificar y conectar acá. El diseño muestra una
+pantalla, no un proceso.
 
-## Fase 8 — El corte
+## Fase 8 — El corte ✅ *(el mecanismo; falta apretar el botón)*
 
-v2 pasa a ser el front. Big bang, en su propia URL hasta ese momento. v1 queda
-accesible un tiempo por si algo falta.
+**LO PRIMERO FUE MEDIR QUÉ SE PERDÍA.** Un corte a lo grande sin saberlo es la
+forma más rápida de romperle el día al equipo. v1 tiene 14 pestañas y v2 tenía
+19 pantallas, pero no eran las mismas: al cruzarlas aparecieron **cinco cosas
+de v1 sin equivalente**.
+
+| Faltaba | Qué era | Estado |
+|---|---|---|
+| Dashboard AML | 559 líneas · 8 gráficos · la pantalla de entrada | ✅ construida |
+| Ya revisadas | Las alertas resueltas; sin esto, lo revisado desaparece | ✅ conmutador en la bandeja |
+| Pendientes | Lo que alguien te asignó a mano | ✅ construida |
+| Búsqueda | Alertas y casos de una entidad | ✅ construida |
+| Queries | Los reportes a medida | ✅ construida |
+
+Ahora hay **un test que vigila la cobertura**: compara los módulos de permisos
+que v1 puede otorgar con los que v2 tiene como pantalla. Si alguien agrega uno
+en v1, avisa. Es el test que responde «¿v2 ya reemplaza a v1?».
+
+**Los gráficos se dibujan en SVG a mano.** v1 usa Chart.js, ~200 kB para ocho
+barras y dos líneas — más que todas las pantallas de v2 juntas. Son cien
+líneas, salen con los tokens del tema y funcionan en oscuro sin una paleta
+aparte. Y **el eje siempre arranca en cero**: una barra que empieza en 90 hace
+que una diferencia del 2% parezca del 200%.
+
+### Cómo se da el corte
+
+Una variable en el workflow:
+
+```yaml
+env:
+  FRENTE_PRINCIPAL: v1    # ← cambiar a v2 y listo
+```
+
+| | `v1` (hoy) | `v2` |
+|---|---|---|
+| `/` | WatchTower actual | Front nuevo |
+| `/v1/` | redirige a `/` | WatchTower actual |
+| `/v2/` | Front nuevo | redirige a `/` |
+
+**Los dos se publican siempre.** Lo único que cambia es cuál atiende la
+dirección que la gente tiene en el marcador, y la carpeta del que quedó
+principal redirige a la raíz — así ningún enlace se rompe en ninguna
+dirección. La redirección **conserva el hash**, que es lo que se pierde en
+silencio: v2 rutea con `#/casos` y perderlo dejaría a todos en el inicio.
+
+Volver atrás es cambiar esa línea. No hay migración ni datos que mover: los
+dos fronts hablan con la misma API y leen la misma identidad.
+
+Dos guardas más: con `FRENTE_PRINCIPAL=v2` el despliegue **se corta** si v2 no
+compiló —publicar la raíz sin el front principal es peor que no publicar—, y
+la config de la raíz pasa a ser la de v2, sin la clave de Gemini que v2 no usa.
+
+### ⚠️ Lo que falta antes de apretar
+
+Nada de v2 se probó **con una sesión real**. El banco de pruebas entra sin
+Google y con la escritura bloqueada a propósito, así que no se ejercitó:
+
+- el login con Google y la lectura del perfil de Firestore;
+- **ninguna escritura** contra producción —asignar, cambiar estados, notas,
+  interruptores, embargos—;
+- la pantalla de flags, que necesita desplegar `GET /flags`.
+
+Eso no se puede hacer desde acá sin tocar datos reales del equipo. Lo sensato
+es entrar a `/v2/` con una cuenta de verdad, trabajar un rato, y recién
+entonces cambiar la línea.
 
 ## Fase 9 — Vista CX *(la que era Fase 1)*
 

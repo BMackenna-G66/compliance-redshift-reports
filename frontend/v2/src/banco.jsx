@@ -72,6 +72,10 @@ const CONSTRUIDAS = {
   admin_cluster: lazy(() => import('./pantallas/Cluster.jsx').then((m) => ({ default: m.Cluster }))),
   audit: lazy(() => import('./pantallas/Auditoria.jsx').then((m) => ({ default: m.Auditoria }))),
   salud: lazy(() => import('./pantallas/Salud.jsx').then((m) => ({ default: m.Salud }))),
+  inicio: lazy(() => import('./pantallas/Inicio.jsx').then((m) => ({ default: m.Inicio }))),
+  pendientes: lazy(() => import('./pantallas/Pendientes.jsx').then((m) => ({ default: m.Pendientes }))),
+  busqueda: lazy(() => import('./pantallas/Busqueda.jsx').then((m) => ({ default: m.Busqueda }))),
+  queries: lazy(() => import('./pantallas/Queries.jsx').then((m) => ({ default: m.Queries }))),
 };
 
 function Banco() {
