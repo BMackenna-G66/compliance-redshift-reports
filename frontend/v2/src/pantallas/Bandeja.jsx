@@ -11,7 +11,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { Suspense, lazy } from 'react';
+
 import { Tabla } from '../comun/Tabla.jsx';
+import { queryDeExportacion } from '../comun/reparto.js';
+import { soloLectura } from '../permisos.js';
+
+/* El panel de reparto se carga al abrirlo: casi nadie reparte alertas en la
+   mayoría de las visitas a la bandeja. */
+const Reparto = lazy(() =>
+  import('./alertas/Reparto.jsx').then((m) => ({ default: m.Reparto })));
 import { Kpi } from '../comun/Kpi.jsx';
 import { InsigniaCaso, InsigniaPrioridad } from '../comun/Insignia.jsx';
 import {
@@ -113,7 +122,7 @@ function columnas(navegar) {
   ];
 }
 
-export function Bandeja({ api, navegar }) {
+export function Bandeja({ api, perfil, navegar }) {
   const [alertas, setAlertas] = useState([]);
   const [catalogo, setCatalogo] = useState({});
   const [cargando, setCargando] = useState(true);
@@ -123,6 +132,14 @@ export function Bandeja({ api, navegar }) {
      otro endpoint; sin esta vista, lo que se revisó desaparece y no hay
      forma de comprobar qué se hizo ni de deshacer una revisión apurada. */
   const [vista, setVista] = useState('activas');
+
+  const [seleccion, setSeleccion] = useState([]);
+  const [usuarios, setUsuarios] = useState([]);
+  const [repartiendo, setRepartiendo] = useState(false);
+  const [aviso, setAviso] = useState('');
+  const [bajando, setBajando] = useState(false);
+
+  const lectura = soloLectura(perfil);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -147,6 +164,7 @@ export function Bandeja({ api, navegar }) {
   // esta llamada falla no pasa nada grave: se muestra el nombre técnico.
   useEffect(() => {
     let vivo = true;
+    api.get('/crm/users').then((d) => setUsuarios(d?.users || [])).catch(() => {});
     api.get('/reports')
       .then((d) => {
         if (!vivo) return;
@@ -174,6 +192,22 @@ export function Bandeja({ api, navegar }) {
 
      Incluye el caso "cargando" y no sólo el error: el parpadeo de ceros dura
      poco, pero es igual de falso mientras dura. */
+  async function exportar() {
+    setBajando(true); setAviso('');
+    try {
+      const d = await api.get(`/alerts/export.xlsx?${queryDeExportacion({ vista, filtro })}`);
+      if (d?.error) throw new Error(d.error);
+      if (!d?.url) throw new Error('El backend no generó el archivo.');
+      globalThis.open(d.url, '_blank', 'noopener');
+      setAviso('Excel generado. Si no se abrió, revisá el bloqueo de ventanas emergentes.');
+    } catch (e) {
+      setAviso(`No se pudo generar el Excel: ${e?.message || 'error'}`);
+    } finally {
+      setBajando(false);
+    }
+  }
+
+  const elegidas = visibles.filter((a) => seleccion.includes(a.alert_id));
   const sinDatos = (cargando || Boolean(error)) && alertas.length === 0;
   const n = (v) => (sinDatos ? '—' : v);
 
@@ -197,9 +231,44 @@ export function Bandeja({ api, navegar }) {
              alPulsar={sinDatos ? undefined : () => alternar('sin_puntaje')} activo={filtro === 'sin_puntaje'} />
       </div>
 
+      {aviso && (
+        <p className="wt-aviso-lectura"
+           style={{ background: 'var(--nivel-bajo-tenue)', color: 'var(--nivel-bajo-texto)' }}>
+          {aviso}
+        </p>
+      )}
+
+      {repartiendo && elegidas.length > 0 && (
+        <Suspense fallback={<p className="wt-estado">Cargando…</p>}>
+          <Reparto api={api} alertas={elegidas} usuarios={usuarios}
+                   alCerrar={() => setRepartiendo(false)}
+                   alTerminar={async (msg) => {
+                     setRepartiendo(false); setSeleccion([]); setAviso(msg);
+                     await cargar();
+                   }} />
+        </Suspense>
+      )}
+
       <Tabla
         titulo={vista === 'revisadas' ? 'Alertas ya revisadas' : 'Bandeja de alertas'}
-        columnas={columnas(navegar)}
+        columnas={[
+          ...(lectura ? [] : [{
+            clave: '_sel',
+            titulo: '',
+            ancho: '3%',
+            buscable: false,
+            ordenable: false,
+            exportar: () => '',
+            render: (a) => (
+              <input type="checkbox" checked={seleccion.includes(a.alert_id)}
+                     aria-label={`Elegir la alerta ${a.alert_id}`}
+                     onChange={(e) => setSeleccion((s) => (
+                       e.target.checked ? [...s, a.alert_id]
+                                        : s.filter((x) => x !== a.alert_id)))} />
+            ),
+          }]),
+          ...columnas(navegar),
+        ]}
         filas={visibles}
         cargando={cargando}
         error={error}
@@ -238,6 +307,20 @@ export function Bandeja({ api, navegar }) {
                 </button>
               ))}
             </div>
+            {!lectura && seleccion.length > 0 && (
+              <button className="wt-btn wt-btn-primario" onClick={() => setRepartiendo(true)}>
+                Repartir {seleccion.length}
+              </button>
+            )}
+            {seleccion.length > 0 && (
+              <button className="wt-btn" onClick={() => setSeleccion([])}>Deseleccionar</button>
+            )}
+            {/* El Excel lo arma el backend con los filtros puestos, no el CSV
+                de la tabla: trae todas las columnas del reporte de origen,
+                que es lo que se manda afuera. */}
+            <button className="wt-btn" onClick={exportar} disabled={bajando}>
+              {bajando ? 'Generando…' : 'Excel'}
+            </button>
             <button className="wt-btn" onClick={cargar} disabled={cargando}>Refrescar</button>
           </>
         }

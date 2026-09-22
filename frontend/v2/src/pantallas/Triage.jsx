@@ -18,7 +18,7 @@ import {
   correoDe, fecha, filaDelReporte, hace, montoDe, montoTexto, nombreLegible,
   prioridadDe, scoreDe,
 } from '../comun/alertas.js';
-import { soloLectura } from '../permisos.js';
+import { esAdmin, soloLectura } from '../permisos.js';
 
 function Dato({ etiqueta, children }) {
   return (
@@ -105,6 +105,53 @@ export function Triage({ api, perfil, email, id: alertId, navegar }) {
   const guardarNota = () => accion('nota',
     () => api.post(`/alerts/${alertId}/notes`, { notes: nota }),
     'Nota guardada.');
+
+  /**
+   * Abre un caso a partir de la alerta, y lo ata.
+   *
+   * Son dos llamadas y la segunda importa: sin `link-case` el caso queda
+   * creado pero la alerta sigue figurando «sin caso», y alguien la vuelve a
+   * trabajar desde cero. Si la segunda falla se avisa, pero no se borra el
+   * caso: existe y es recuperable atándolo a mano.
+   */
+  const abrirCaso = () => accion('caso', async () => {
+    const d = await api.post('/cases', {
+      // El título vacío lo compone el backend como «Caso: <cliente> (<id>)»,
+      // igual que los automáticos.
+      title: `Caso: ${alerta.entity_value || alerta.entity_id || 'sin cliente'}`,
+      description: `Detectado en: ${alerta.report_name || 'alerta manual'}`,
+      priority: alerta.priority || 'medium',
+      entity_type: alerta.entity_field === 'company_id' ? 'company' : 'customer',
+      entity_id: alerta.entity_value || alerta.entity_id || '',
+      entity_name: alerta.entity_name || '',
+      report_name: alerta.report_name || '',
+      // La fila que originó la alerta. v1 no la mandaba en los casos creados
+      // a mano, y quedaban sin los números que sí tienen los automáticos.
+      alert_data: alerta.row_data || {},
+      alert_priority: alerta.priority || '',
+      created_by: email,
+    });
+    if (!d?.case_id) throw new Error(d?.error || 'El backend no devolvió el caso.');
+    try {
+      await api.post(`/alerts/${alertId}/link-case`, { case_id: d.case_id });
+    } catch {
+      setAviso('El caso se creó pero no se pudo atar a esta alerta: atalo a mano '
+             + 'o la alerta va a seguir figurando sin caso.');
+    }
+    navegar('caso', [d.case_id]);
+  });
+
+  const borrar = () => {
+    const ok = globalThis.confirm(
+      'Eliminar la alerta la borra definitivamente, no la archiva.\n\n'
+      + 'Si lo que querés es sacarla de la bandeja, usá «marcar como revisada»: '
+      + 'eso la conserva.\n\n¿Eliminar igual?');
+    if (!ok) return;
+    accion('borrar', async () => {
+      await api.del(`/alerts/${alertId}`);
+      navegar('dashboard');
+    });
+  };
 
   const revisar = () => {
     // Marcarla revisada la saca de la bandeja activa. No es destructivo
@@ -278,7 +325,26 @@ export function Triage({ api, perfil, email, id: alertId, navegar }) {
                     Guardar la nota
                   </button>
 
-                  <hr style={{ border: 0, borderTop: '1px solid var(--borde)', margin: 'var(--e-2) 0' }} />
+                  <hr className="wt-separador" />
+
+                  {alerta.case_id ? (
+                    <button className="wt-btn" onClick={() => navegar('caso', [alerta.case_id])}>
+                      Abrir su caso
+                    </button>
+                  ) : (
+                    <>
+                      <button className="wt-btn wt-btn-primario" disabled={guardando === 'caso'}
+                              onClick={abrirCaso}>
+                        {guardando === 'caso' ? 'Creando…' : 'Abrir un caso'}
+                      </button>
+                      <p style={{ margin: 0, fontSize: 'var(--texto-xs)', color: 'var(--texto-mute)' }}>
+                        Crea el caso con los datos de esta alerta y se lo ata, así deja de
+                        figurar «sin caso».
+                      </p>
+                    </>
+                  )}
+
+                  <hr className="wt-separador" />
 
                   <button className="wt-btn" disabled={guardando === 'revisar'} onClick={revisar}>
                     Marcar como revisada
@@ -287,6 +353,20 @@ export function Triage({ api, perfil, email, id: alertId, navegar }) {
                     Sale de la bandeja activa y pasa a «Ya revisados». La nota de arriba se
                     guarda junto con la revisión.
                   </p>
+
+                  {esAdmin(perfil) && (
+                    <>
+                      <hr className="wt-separador" />
+                      <button className="wt-btn wt-btn-peligro" disabled={guardando === 'borrar'}
+                              onClick={borrar}>
+                        Eliminar la alerta
+                      </button>
+                      <p style={{ margin: 0, fontSize: 'var(--texto-xs)', color: 'var(--texto-mute)' }}>
+                        La borra definitivamente. Para sacarla de la bandeja conservándola,
+                        marcala como revisada.
+                      </p>
+                    </>
+                  )}
                 </>
               )}
             </div>

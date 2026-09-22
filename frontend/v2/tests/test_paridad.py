@@ -45,21 +45,12 @@ BACKEND = RAIZ / "lambda" / "api_handler.py"
 
 PENDIENTES = {
     # ── El detalle del caso ───────────────────────────────────────────────
-    "/cases/bulk-assign": "asignación masiva de casos",
 
     # ── La ficha del cliente ──────────────────────────────────────────────
     "/clientes/:x/solicitudes-recientes": "documentación pedida y recibida",
     "/customer/context": "el contexto del cliente (perfil KYC de la ficha)",
 
     # ── Alertas ───────────────────────────────────────────────────────────
-    "/alerts/:x": "borrar una alerta",
-    "/alerts/:x/link-case": "atar una alerta a un caso",
-    "/alerts/bulk-distribute": "repartir alertas entre analistas",
-    "/alerts/notify": "notificar por correo/Slack",
-    "/alerts/export.xlsx": "exportar alertas a Excel",
-    "/alert-prioritization/send-manual": "envío manual de la cola priorizada",
-    "/alert-document-config": "configuración de documentos por reporte",
-    "/alert-document-config/:x": "editar y borrar esa configuración",
 
     # ── Reportes y corridas ───────────────────────────────────────────────
     "/schedules": "la programación de reportes",
