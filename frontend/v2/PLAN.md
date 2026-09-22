@@ -604,9 +604,10 @@ a quién investigar. Está en el historial de git por si el feed se vuelve real.
 
 ## Pendientes que no son de v2 pero lo bloquean
 
-**`GET /cases/{id}` sin los `sla_*`** — el detalle del caso tiene que pedir
-además la lista completa sólo para saber en qué punto del plazo está. Que el
-detalle devuelva los mismos campos que la lista lo ahorraría.
+*(El de `GET /cases/{id}` sin los `sla_*` se resolvió: el detalle ahora los
+devuelve, calculados en la misma pasada que ya hacía por el último pedido de
+documentos. Abrir un caso pasó de 79 KB a 1,5 KB.)*
+
 
 **La línea de CORS** — la API sólo permite el header `content-type` y los
 métodos GET/POST/DELETE/OPTIONS. Sin `authorization` no hay auth real en v2, y
