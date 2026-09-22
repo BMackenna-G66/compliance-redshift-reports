@@ -44,19 +44,13 @@ BACKEND = RAIZ / "lambda" / "api_handler.py"
 # llevan escrito el motivo: son decisiones, no olvidos.
 
 PENDIENTES = {
-    # ── El detalle del caso ───────────────────────────────────────────────
 
     # ── La ficha del cliente ──────────────────────────────────────────────
-    "/clientes/:x/solicitudes-recientes": "documentación pedida y recibida",
     "/customer/context": "el contexto del cliente (perfil KYC de la ficha)",
 
     # ── Alertas ───────────────────────────────────────────────────────────
 
-    # ── Reportes y corridas ───────────────────────────────────────────────
-    "/schedules": "la programación de reportes",
 
-    # ── Análisis ──────────────────────────────────────────────────────────
-    "/analyze/entity-name": "resolver el nombre de una entidad",
 
     # ── El tablero ────────────────────────────────────────────────────────
     "/dashboard/stats": "las tarjetas del tablero de v1",
@@ -73,14 +67,6 @@ PENDIENTES = {
     "/institutional/alerts/:x": "revisar una alerta institucional",
 
     # ── Administración ────────────────────────────────────────────────────
-    "/rules": "las reglas de alertamiento",
-    "/rules/:x": "editar y borrar una regla",
-    "/slack-users": "los destinatarios de Slack",
-    "/slack-users/:x": "quitar un destinatario",
-    "/users/:x": "editar y dar de baja un usuario del CRM",
-    "/email-templates": "las plantillas de correo",
-    "/email-templates/preview": "previsualizar una plantilla",
-    "/whitelist/bulk": "alta masiva de whitelist",
 
     # ── Embargos ──────────────────────────────────────────────────────────
     "/embargos/:x/resultados": "los resultados de una corrida de embargos",

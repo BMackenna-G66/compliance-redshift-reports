@@ -17,7 +17,7 @@
    haría lento cada caso para algo que no siempre se mira.
    ========================================================================= */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Campos } from '../comun/Campos.jsx';
 import { Correos } from '../comun/Correos.jsx';
@@ -32,6 +32,11 @@ import {
 } from '../comun/expediente.js';
 import { ESTADOS_CASO } from '../dominio.js';
 import { esAdmin, soloLectura } from '../permisos.js';
+
+/* El panel del correo se carga al abrirlo: trae el catálogo de plantillas y
+   la previsualización, y la mayoría de las visitas al caso no lo usan. */
+const PedirDocumentos = lazy(() =>
+  import('./caso/PedirDocumentos.jsx').then((m) => ({ default: m.PedirDocumentos })));
 
 const ESTADOS_ELEGIBLES = ['open', 'in_progress', 'under_review', 'closed'];
 
@@ -72,6 +77,7 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
   const [perfilAbierto, setPerfilAbierto] = useState(false);
   const [correos, setCorreos] = useState(null);
   const [ia, setIa] = useState('');
+  const [pidiendo, setPidiendo] = useState(false);
 
   /* La whitelist que nace al cerrar el caso. */
   const [wl, setWl] = useState({ abierta: false, dias: 30, alcance: 'global', motivo: '' });
@@ -521,11 +527,28 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
               </Carta>
             )}
 
+            {pidiendo && (
+              <Suspense fallback={<p className="wt-estado">Armando el correo…</p>}>
+                <PedirDocumentos api={api} caso={caso} perfil={perfilCliente} email={email}
+                                 alCerrar={() => setPidiendo(false)}
+                                 alTerminar={async (msg) => {
+                                   setPidiendo(false); setAviso(msg);
+                                   setCorreos(null);
+                                   await cargar();
+                                 }} />
+              </Suspense>
+            )}
+
             {/* ── El checklist de documentos ─────────────────────────────── */}
             {checklist.length > 0 && (
               <Carta
                 titulo="Documentos solicitados"
                 cuenta={`${resumenDocs.entregado} de ${resumenDocs.total} entregados`}
+                herramientas={!lectura && (
+                  <button className="wt-btn" onClick={() => setPidiendo(true)}>
+                    {correos ? 'Reenviar el correo' : 'Escribirle al cliente'}
+                  </button>
+                )}
               >
                 <div className="wt-checklist">
                   {checklist.map((item) => {
@@ -806,6 +829,17 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
                       )}
                     </>
                   )}
+
+                  <hr className="wt-separador" />
+
+                  <button className="wt-btn" disabled={!caso.entity_id}
+                          onClick={() => setPidiendo(true)}>
+                    Pedirle documentación al cliente
+                  </button>
+                  <p style={{ margin: 0, fontSize: 'var(--texto-xs)', color: 'var(--texto-mute)' }}>
+                    Muestra el correo completo antes de mandarlo, y avisa si ya se le pidió
+                    lo mismo hace poco.
+                  </p>
 
                   <hr className="wt-separador" />
 

@@ -243,6 +243,7 @@ export const PANTALLAS = [
 
   { grupo: 'Administración', id: 'admin_users',   titulo: 'Usuarios y permisos', modulo: 'admin' },
   { grupo: 'Administración', id: 'admin_auto',    titulo: 'Automatización',      modulo: 'admin' },
+  { grupo: 'Administración', id: 'admin_config',  titulo: 'Configuración',       modulo: 'admin' },
   { grupo: 'Administración', id: 'admin_cluster', titulo: 'Cluster',             modulo: 'admin' },
   { grupo: 'Administración', id: 'audit',         titulo: 'Auditoría',           modulo: 'admin' },
   { grupo: 'Administración', id: 'salud',         titulo: 'Salud del módulo',    modulo: 'admin', nuevo: true },

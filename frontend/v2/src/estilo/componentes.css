@@ -921,3 +921,14 @@ button.wt-kpi[aria-pressed='true'] {
   font-size: var(--texto-xs);
   font-weight: var(--peso-medio);
 }
+
+/* La vista previa del correo, en un marco aislado. El alto es fijo y con
+   desplazamiento propio: un correo largo empujaría el botón de enviar fuera
+   de la pantalla, y ese botón tiene que verse junto al texto que va a salir. */
+.wt-vista-correo {
+  width: 100%;
+  height: 340px;
+  border: 1px solid var(--borde);
+  border-radius: var(--r-md);
+  background: #fff;
+}

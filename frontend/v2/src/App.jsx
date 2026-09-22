@@ -49,6 +49,8 @@ const CONSTRUIDAS = {
   embargos: lazy(() => import('./pantallas/Embargos.jsx').then((m) => ({ default: m.Embargos }))),
   admin_users: lazy(() => import('./pantallas/Usuarios.jsx').then((m) => ({ default: m.Usuarios }))),
   admin_auto: lazy(() => import('./pantallas/Automatizacion.jsx').then((m) => ({ default: m.Automatizacion }))),
+  admin_config: lazy(() =>
+    import('./pantallas/Administracion.jsx').then((m) => ({ default: m.Administracion }))),
   admin_cluster: lazy(() => import('./pantallas/Cluster.jsx').then((m) => ({ default: m.Cluster }))),
   audit: lazy(() => import('./pantallas/Auditoria.jsx').then((m) => ({ default: m.Auditoria }))),
   salud: lazy(() => import('./pantallas/Salud.jsx').then((m) => ({ default: m.Salud }))),
