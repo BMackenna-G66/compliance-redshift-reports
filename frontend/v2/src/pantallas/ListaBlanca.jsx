@@ -157,6 +157,7 @@ export function ListaBlanca({ api, perfil }) {
   const [aviso, setAviso] = useState('');
   const [guardando, setGuardando] = useState(false);
   const [quitando, setQuitando] = useState('');
+  const [masiva, setMasiva] = useState(null);
 
   const lectura = soloLectura(perfil);
 
@@ -188,6 +189,45 @@ export function ListaBlanca({ api, perfil }) {
       await cargar();
     } catch (e) {
       setError(e?.message || 'No se pudo agregar.');
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  /**
+   * Alta masiva: se pegan los identificadores y entran todos juntos.
+   *
+   * Es la acción más silenciosa de la aplicación: cada línea acá deja de
+   * generar alertas para siempre —la whitelist perdona TODO, sanciones y
+   * delitos sensibles incluidos— y no hay nada en pantalla que lo recuerde
+   * después. Por eso la confirmación dice cuántos son, y el motivo es
+   * obligatorio: es lo único que va a quedar escrito.
+   */
+  async function agregarMasiva() {
+    const ids = String(masiva.ids || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+    if (ids.length === 0) { setError('Pegá al menos un identificador.'); return; }
+    if (!masiva.reason.trim()) { setError('El motivo es obligatorio: es lo único que queda escrito.'); return; }
+    const ok = globalThis.confirm(
+      `Se van a agregar ${ids.length} cliente(s) a la lista blanca por `
+      + `${masiva.duration_days} días.\n\n`
+      + 'Mientras estén, NO generan ninguna alerta: ni de sanciones ni de delitos '
+      + 'sensibles.\n\n¿Confirmás?');
+    if (!ok) return;
+    setGuardando(true); setError(''); setAviso('');
+    try {
+      const d = await api.post('/whitelist/bulk', {
+        rows: ids.map((v) => ({ entity_field: masiva.entity_field, entity_value: v })),
+        entity_field: masiva.entity_field,
+        duration_days: Number(masiva.duration_days),
+        reason: masiva.reason.trim(),
+        scope: masiva.scope,
+      });
+      if (d?.error) throw new Error(d.error);
+      setAviso(`Agregados ${d?.added ?? ids.length} de ${ids.length}.`);
+      setMasiva(null);
+      await cargar();
+    } catch (e) {
+      setError(e?.message || 'No se pudo hacer el alta masiva.');
     } finally {
       setGuardando(false);
     }
@@ -242,6 +282,71 @@ export function ListaBlanca({ api, perfil }) {
 
       {!lectura && <Agregar onAgregar={agregar} guardando={guardando} />}
 
+      {masiva && (
+        <section className="wt-carta" style={{ marginBottom: 'var(--e-4)' }}>
+          <header className="wt-carta-cabecera">
+            <h2 className="wt-carta-titulo">Alta masiva</h2>
+            <div className="wt-carta-herramientas">
+              <button className="wt-btn" onClick={() => setMasiva(null)}>Cerrar</button>
+            </div>
+          </header>
+          <div className="wt-cuerpo-carta">
+            <p className="wt-nota wt-nota-alarma">
+              Mientras un cliente esté en la lista blanca <strong>no genera ninguna
+              alerta</strong>: tampoco las de sanciones ni las de delitos sensibles. El
+              motivo que escribas es lo único que va a quedar explicando por qué.
+            </p>
+            <label className="wt-parametro">
+              <span>Identificadores</span>
+              <textarea className="wt-input" style={{ width: '100%', minHeight: 100, resize: 'vertical' }}
+                        value={masiva.ids}
+                        onChange={(e) => setMasiva((m) => ({ ...m, ids: e.target.value }))}
+                        placeholder="Coma, espacio o salto de línea" />
+            </label>
+            <div className="wt-parametros" style={{ marginTop: 'var(--e-3)' }}>
+              <label className="wt-parametro">
+                <span>Tipo</span>
+                <select className="wt-input" value={masiva.entity_field}
+                        onChange={(e) => setMasiva((m) => ({ ...m, entity_field: e.target.value }))}>
+                  <option value="customer_id">Personas</option>
+                  <option value="company_id">Empresas</option>
+                </select>
+              </label>
+              <label className="wt-parametro">
+                <span>Por cuánto</span>
+                <select className="wt-input" value={masiva.duration_days}
+                        onChange={(e) => setMasiva((m) => ({
+                          ...m, duration_days: Number(e.target.value) }))}>
+                  <option value={30}>30 días</option><option value={60}>60 días</option>
+                  <option value={90}>90 días</option>
+                </select>
+              </label>
+              <label className="wt-parametro">
+                <span>Alcance</span>
+                <select className="wt-input" value={masiva.scope}
+                        onChange={(e) => setMasiva((m) => ({ ...m, scope: e.target.value }))}>
+                  <option value="global">Todas las alertas</option>
+                  <option value="report">Sólo un reporte</option>
+                </select>
+              </label>
+            </div>
+            <label className="wt-parametro" style={{ marginTop: 'var(--e-3)' }}>
+              <span>Motivo (obligatorio)</span>
+              <input className="wt-input" value={masiva.reason}
+                     onChange={(e) => setMasiva((m) => ({ ...m, reason: e.target.value }))}
+                     placeholder="Por qué se les perdona el alertamiento" />
+            </label>
+            <div style={{ display: 'flex', gap: 'var(--e-2)', marginTop: 'var(--e-4)' }}>
+              <button className="wt-btn wt-btn-primario" disabled={guardando}
+                      onClick={agregarMasiva}>
+                {guardando ? 'Agregando…' : 'Agregar a todos'}
+              </button>
+              <button className="wt-btn" onClick={() => setMasiva(null)}>Cancelar</button>
+            </div>
+          </div>
+        </section>
+      )}
+
       <Tabla
         titulo="Lista blanca"
         columnas={columnas(quitar, lectura, quitando)}
@@ -253,7 +358,17 @@ export function ListaBlanca({ api, perfil }) {
         nombreExport="lista-blanca-watchtower"
         vacioTexto="No hay nadie en la lista blanca."
         herramientas={
-          <button className="wt-btn" onClick={cargar} disabled={cargando}>Refrescar</button>
+          <>
+            {!lectura && !masiva && (
+              <button className="wt-btn" onClick={() => setMasiva({
+                ids: '', entity_field: 'customer_id', duration_days: 90,
+                reason: '', scope: 'global',
+              })}>
+                Alta masiva
+              </button>
+            )}
+            <button className="wt-btn" onClick={cargar} disabled={cargando}>Refrescar</button>
+          </>
         }
       />
     </>

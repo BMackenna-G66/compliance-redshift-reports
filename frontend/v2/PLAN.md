@@ -1,7 +1,8 @@
 # WatchTower v2 — plan de trabajo
 
-> **Estado**: las ocho fases terminadas. Falta **dar el corte**, que es una
-> línea y una decisión.
+> **Estado**: las ocho fases terminadas **y la paridad con v1 cerrada**. v2
+> hace todo lo que hace v1. Falta **dar el corte**, que es una línea y una
+> decisión.
 > **Regla que manda sobre todo lo demás**: v1 sigue en producción y no se toca.
 > v2 se construye en paralelo, en su propia URL, hasta que esté completo.
 
@@ -468,6 +469,80 @@ Google y con la escritura bloqueada a propósito, así que no se ejercitó:
 Eso no se puede hacer desde acá sin tocar datos reales del equipo. Lo sensato
 es entrar a `/v2/` con una cuenta de verdad, trabajar un rato, y recién
 entonces cambiar la línea.
+
+## Fase 8.5 — La paridad ✅
+
+No estaba en el plan y tuvo que estar. Al mirar v2 terminado apareció lo
+obvio: las ocho fases construyeron las veintitantas pantallas, pero cada una
+se escribió mirando a v1 y quedándose con lo principal. **Lo secundario se
+perdió en silencio.** Medido: v1 usaba 103 rutas de la API y v2 usaba 47.
+
+El detalle del caso tenía 5 de las 17 acciones de v1. La ficha del cliente
+había perdido cuatro secciones enteras —cuyos datos ya llegaban en la misma
+respuesta y no se dibujaban—. Y v2 no podía ejecutar un solo reporte.
+
+### El guardián
+
+Lo que hace que esto no vuelva a pasar es `tests/test_paridad.py`. Lee las
+rutas que v1 usa **de su propio HTML** —no de una lista escrita a mano, que se
+desactualiza al primer commit— y las que usa v2, y exige que la diferencia
+esté declarada con su motivo.
+
+Falla en las dos direcciones, y la segunda es la que importa: si se declara
+algo que ya está portado, también falla. Sin eso la lista se pudre en vez de
+vaciarse. Se vació.
+
+Hoy `PENDIENTES` tiene dos entradas y ninguna es una función que falte:
+`/roles` (v2 lee Firestore) y `/cluster/wake` (v2 lo llama como
+`/cluster/{accion}`).
+
+**A partir de acá el test cambia de oficio**: medía cuánto faltaba, ahora mide
+que no se pierda nada. Si alguien toca una pantalla y se lleva puesta una
+llamada, lo dice en el acto.
+
+### Cuatro defectos que aparecieron en el camino
+
+Ninguno se veía compilando. Los cuatro salieron de mirar el código contra el
+backend o la pantalla contra producción:
+
+**`'Envío internacional'.includes('nacional')` es verdadero.** El paso 4 del
+análisis individual clasifica cada transacción con eso, así que **en v1 todas
+las internacionales se clasifican como nacionales**: la hoja «Internacionales»
+sale siempre vacía y las internacionales terminan en la otra con las columnas
+del motor en blanco, indistinguibles de una nacional que no cruzó. v2 descarta
+«internacional» primero, y hay un test de sincronía contra el CASE del SQL.
+
+**Los avisos de la ficha se pintaban todos iguales.** El mapa de tonos tenía
+`alerta`/`aviso`/`ok`, nombres que el backend nunca emitió —manda `alto` y
+`medio`— así que los dos caían en el respaldo. Un cliente con plata devuelta se
+veía como uno con una nota cualquiera, que es justo la distinción que el aviso
+existe para hacer.
+
+**La lista de extensiones de adjunto no coincidía con la del backend.** El
+front dejaba subir cuatro que el backend rechaza: el analista esperaba una
+subida de 40 MB para recibir el error.
+
+**La bandera de «¿sigue montada la pantalla?»**, escrita a mano en cuatro
+pantallas, estaba mal de las dos formas posibles: tres la apagaban al
+desmontar sin encenderla al montar —React remonta en desarrollo, así que
+quedaba apagada para siempre y el sondeo se cancelaba antes de la primera
+vuelta—, y la cuarta no la apagaba nunca. Ahora es `useVivo()`, una vez y
+bien. Este no se veía en la consola: no tira ningún error. Se vio en la red,
+porque el disparo salía y la cosecha no.
+
+### Y uno de producción, encontrado al pasar
+
+Cinco correos de un caso no salían con un `UnicodeEncodeError` en la posición
+56. La causa: en el campo del correo había quedado guardado un motivo de
+bloqueo en vez de una dirección, `smtplib` lo escribe crudo en `RCPT TO:<...>`
+y codifica ese comando en ASCII. La `ú` de «según» cae justo ahí.
+
+Se repitió cinco veces porque «Reenviar» prellena con el correo del pedido
+anterior: una vez que el valor malo entró, se alimentaba solo. Arreglado en el
+backend (`_send_email`, el único lugar por donde sale todo correo), en v1 y en
+v2. Está en `main` y desplegado.
+
+---
 
 ## Fase 9 — Vista CX *(la que era Fase 1)*
 

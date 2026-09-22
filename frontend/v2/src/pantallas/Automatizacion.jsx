@@ -10,13 +10,35 @@
    toda la aplicación —corre sin que nadie la mire— así que pregunta.
    ========================================================================= */
 
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 
 import { Kpi } from '../comun/Kpi.jsx';
 import { fecha, hace } from '../comun/alertas.js';
 import { soloLectura } from '../permisos.js';
 
+const Documentos = lazy(() =>
+  import('./alertas/Documentos.jsx').then((m) => ({ default: m.Documentos })));
+
+function Pestanas({ vista, alCambiar }) {
+  return (
+    <nav className="wt-pasos" aria-label="Vistas de automatización">
+      {[['cola', 'La cola priorizada', 'prender, probar y enviar'],
+        ['documentos', 'Documentos por alerta', 'qué se le pide a cada una']]
+        .map(([k, titulo, pie]) => (
+          <button key={k} className={`wt-paso-boton${vista === k ? ' wt-paso-activo' : ''}`}
+                  onClick={() => alCambiar(k)}>
+            <span>
+              <span className="wt-paso-titulo">{titulo}</span>
+              <span className="wt-paso-pie">{pie}</span>
+            </span>
+          </button>
+      ))}
+    </nav>
+  );
+}
+
 export function Automatizacion({ api, perfil, email }) {
+  const [vista, setVista] = useState('cola');
   const [ajustes, setAjustes] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
@@ -73,10 +95,46 @@ export function Automatizacion({ api, perfil, email }) {
     }
   }
 
+  /**
+   * Manda la cola priorizada AHORA, sin esperar al horario.
+   *
+   * Esto SÍ le escribe a clientes reales, a diferencia de la prueba. Por eso
+   * pregunta y por eso el texto lo dice con todas las letras: es la misma
+   * acción que hace el proceso automático, adelantada a mano.
+   */
+  async function enviarAhora() {
+    const ok = globalThis.confirm(
+      'Esto manda la cola priorizada AHORA y les escribe a CLIENTES REALES.\n\n'
+      + 'No es la prueba: los correos salen de verdad.\n\n¿Confirmás?');
+    if (!ok) return;
+    setActuando('manual'); setError(''); setAviso('');
+    try {
+      const d = await api.post('/alert-prioritization/send-manual', { user_email: email });
+      setAviso(`Envío manual hecho: ${d?.enviados ?? d?.mensaje ?? 'mirá el historial'}.`);
+    } catch (e) {
+      setError(e?.message || 'No se pudo hacer el envío manual.');
+    } finally {
+      setActuando('');
+    }
+  }
+
   const prendida = Boolean(ajustes?.enabled);
+
+  if (vista === 'documentos') {
+    return (
+      <>
+        <Pestanas vista={vista} alCambiar={setVista} />
+        <Suspense fallback={<p className="wt-estado">Cargando…</p>}>
+          <Documentos api={api} perfil={perfil} />
+        </Suspense>
+      </>
+    );
+  }
 
   return (
     <>
+      <Pestanas vista={vista} alCambiar={setVista} />
+
       <div className="wt-kpis">
         <Kpi principal etiqueta="Priorización automática"
              valor={cargando && !ajustes ? '—' : prendida ? 'Prendida' : 'Apagada'}
@@ -148,7 +206,21 @@ export function Automatizacion({ api, perfil, email }) {
               <button className="wt-btn" disabled={Boolean(actuando)} onClick={probar}>
                 {actuando === 'prueba' ? 'Corriendo…' : 'Correr una prueba (no envía)'}
               </button>
+              {/* Éste SÍ manda. Va separado del de prueba y con el color de
+                  peligro para que no se confundan de botón. */}
+              <button className="wt-btn wt-btn-peligro" disabled={Boolean(actuando)}
+                      onClick={enviarAhora}>
+                {actuando === 'manual' ? 'Enviando…' : 'Mandar la cola ahora (sí envía)'}
+              </button>
             </div>
+          )}
+          {!lectura && (
+            <p style={{ margin: 'var(--e-3) 0 0', fontSize: 'var(--texto-xs)',
+                        color: 'var(--texto-mute)' }}>
+              «Correr una prueba» muestra qué HARÍA el proceso sin escribirle a nadie.
+              «Mandar la cola ahora» hace lo mismo que el proceso automático, adelantado a
+              mano: los correos salen de verdad.
+            </p>
           )}
         </div>
       </section>

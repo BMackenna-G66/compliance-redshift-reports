@@ -10,6 +10,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Tabla } from '../comun/Tabla.jsx';
 import { Kpi } from '../comun/Kpi.jsx';
 import {
+  MAX_TOKENS_IA, TEMPERATURA_IA, avisoDeRecorte, columnasDe, promptDelResultado,
+} from '../comun/corridas.js';
+import {
   ESTADOS_CORRIDA, duracion, duracionTexto, enCurso, fecha, hace, parametros,
 } from '../comun/analisis.js';
 import { nombreLegible } from '../comun/alertas.js';
@@ -113,13 +116,20 @@ function columnas(alVerParams, alDescargar, bajando) {
   ];
 }
 
-export function Historial({ api }) {
+export function Historial({ api, perfil }) {
   const [corridas, setCorridas] = useState([]);
   const [catalogo, setCatalogo] = useState({});
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [detalle, setDetalle] = useState(null);
   const [bajando, setBajando] = useState('');
+  /* El resultado de la corrida abierta. `GET /runs/{id}` guarda sólo diez
+     filas de muestra; `/rows` trae el resultado completo, que es lo que
+     permite paginarlo y buscarlo entero. */
+  const [filas, setFilas] = useState([]);
+  const [recorte, setRecorte] = useState('');
+  const [trayendo, setTrayendo] = useState(false);
+  const [ia, setIa] = useState({ texto: '', cargando: false });
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -135,6 +145,57 @@ export function Historial({ api }) {
   }, [api]);
 
   useEffect(() => { cargar(); }, [cargar]);
+
+  /**
+   * Abre una corrida: sus parámetros y su resultado.
+   *
+   * La muestra se pinta enseguida y el completo se pide aparte, así la tabla
+   * aparece en el acto aunque el resultado pese.
+   */
+  async function abrir(corrida) {
+    if (detalle?.run_id === corrida.run_id) { cerrar(); return; }
+    setDetalle(corrida); setFilas([]); setRecorte(''); setIa({ texto: '', cargando: false });
+    setTrayendo(true); setError('');
+    try {
+      const d = await api.get(`/runs/${corrida.run_id}`);
+      setDetalle({ ...corrida, ...(d || {}) });
+      setFilas(d?.result_preview || []);
+      try {
+        const todo = await api.get(`/runs/${corrida.run_id}/rows`);
+        if (todo?.rows?.length) { setFilas(todo.rows); setRecorte(avisoDeRecorte(todo)); }
+      } catch { /* se queda con la muestra */ }
+    } catch (e) {
+      setError(e?.message || 'No se pudo abrir la corrida.');
+    } finally {
+      setTrayendo(false);
+    }
+  }
+
+  function cerrar() {
+    setDetalle(null); setFilas([]); setRecorte(''); setIa({ texto: '', cargando: false });
+  }
+
+  async function analizar() {
+    setIa({ texto: '', cargando: true }); setError('');
+    try {
+      const d = await api.post('/ai/generate', {
+        prompt: promptDelResultado({
+          reporte: detalle?._reporte || detalle?.report_name,
+          descripcion: detalle?.description || '',
+          columnas: columnasDe(filas),
+          filas,
+          total: detalle?.row_count,
+          resumenBackend: detalle?.ai_summary || null,
+        }),
+        temperature: TEMPERATURA_IA,
+        max_tokens: MAX_TOKENS_IA,
+      });
+      setIa({ texto: d?.text || 'Sin respuesta de la IA.', cargando: false });
+    } catch (e) {
+      setIa({ texto: '', cargando: false });
+      setError(e?.message || 'No se pudo analizar el resultado.');
+    }
+  }
 
   useEffect(() => {
     let vivo = true;
@@ -199,7 +260,7 @@ export function Historial({ api }) {
               {detalle.run_id}
             </span>
             <button className="wt-btn" style={{ marginLeft: 'auto' }}
-                    onClick={() => setDetalle(null)}>Cerrar</button>
+                    onClick={cerrar}>Cerrar</button>
           </header>
           <div className="wt-cuerpo-carta">
             <dl className="wt-datos">
@@ -214,9 +275,51 @@ export function Historial({ api }) {
         </section>
       )}
 
+      {detalle && (
+        <section className="wt-carta" style={{ marginBottom: 'var(--e-4)' }}>
+          <header className="wt-carta-cabecera">
+            <h2 className="wt-carta-titulo">Análisis con IA</h2>
+            <div className="wt-carta-herramientas">
+              <button className="wt-btn" disabled={ia.cargando || filas.length === 0}
+                      onClick={analizar}>
+                {ia.cargando ? 'Analizando…' : 'Analizar el resultado'}
+              </button>
+            </div>
+          </header>
+          <div className="wt-cuerpo-carta">
+            {ia.texto ? <div className="wt-ia">{ia.texto}</div> : (
+              <p className="wt-vacio">
+                Lee las filas de esta corrida y dice qué patrones aparecen. No guarda
+                nada: la conclusión la escribe quien investiga.
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+
+      {detalle && (trayendo || filas.length > 0) && (
+        <>
+          {recorte && <p className="wt-nota">{recorte}</p>}
+          <Tabla
+            titulo={trayendo ? 'Trayendo el resultado…'
+                    : `Resultado · ${filas.length.toLocaleString('es-CL')} filas`}
+            columnas={columnasDe(filas).map((c) => ({
+              clave: c, titulo: c.replace(/_/g, ' '),
+              tipo: typeof filas[0]?.[c] === 'number' ? 'numero' : undefined,
+            }))}
+            filas={filas}
+            cargando={trayendo}
+            claveFila={(_, i) => i}
+            porPagina={50}
+            nombreExport={`resultado-${detalle.report_name || detalle.run_id}`}
+          />
+          <div style={{ height: 'var(--e-4)' }} />
+        </>
+      )}
+
       <Tabla
         titulo="Historial de corridas"
-        columnas={columnas(setDetalle, descargar, bajando)}
+        columnas={columnas(abrir, descargar, bajando)}
         filas={preparadas}
         cargando={cargando}
         error={error}

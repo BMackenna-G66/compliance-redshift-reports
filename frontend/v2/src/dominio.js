@@ -229,6 +229,7 @@ export const PANTALLAS = [
   { grupo: 'Operación', id: 'ficha',         titulo: 'Ficha del cliente',   modulo: 'casos' },
   { grupo: 'Operación', id: 'relevo',        titulo: 'Relevo · partners',   modulo: 'relevo' },
 
+  { grupo: 'Análisis',  id: 'analitica',     titulo: 'Analítica',           modulo: 'dashboard' },
   { grupo: 'Análisis',  id: 'informe',       titulo: 'Informe de gestión',  modulo: 'casos' },
   { grupo: 'Análisis',  id: 'reports',       titulo: 'Reportes AML',        modulo: 'alertas' },
   { grupo: 'Análisis',  id: 'queries',       titulo: 'Queries',             modulo: 'queries' },
@@ -243,6 +244,7 @@ export const PANTALLAS = [
 
   { grupo: 'Administración', id: 'admin_users',   titulo: 'Usuarios y permisos', modulo: 'admin' },
   { grupo: 'Administración', id: 'admin_auto',    titulo: 'Automatización',      modulo: 'admin' },
+  { grupo: 'Administración', id: 'admin_config',  titulo: 'Configuración',       modulo: 'admin' },
   { grupo: 'Administración', id: 'admin_cluster', titulo: 'Cluster',             modulo: 'admin' },
   { grupo: 'Administración', id: 'audit',         titulo: 'Auditoría',           modulo: 'admin' },
   { grupo: 'Administración', id: 'salud',         titulo: 'Salud del módulo',    modulo: 'admin', nuevo: true },

@@ -233,5 +233,134 @@ class ElMapaDeMontos(unittest.TestCase):
                          f"el mapa nombra reportes que no están en el catálogo: {faltan}")
 
 
+class ElTipoDeEnvio(unittest.TestCase):
+    """Los dos valores de `tipo_envio` salen de un CASE del SQL de remesas.
+
+    El paso 4 del análisis individual separa la planilla en dos hojas según
+    esto, así que un cambio en el literal manda transacciones a la hoja
+    equivocada sin avisar.
+
+    Es exactamente donde v1 se rompe hoy: clasifica con
+    `tipo_envio.includes('nacional')`, y «Envío internacional» CONTIENE
+    «nacional», así que todas las internacionales caen en la hoja de
+    nacionales y la otra sale vacía.
+    """
+
+    def test_los_dos_literales_siguen_siendo_los_mismos(self):
+        texto = (LAMBDA / "api_handler.py").read_text(encoding="utf-8")
+        i = texto.index("_SQL_REMESA_SEARCH")
+        bloque = texto[i:i + 1200]
+        backend = set(re.findall(r"THEN '([^']*)'|ELSE '([^']*)'", bloque))
+        backend = {a or b for a, b in backend}
+        js = (SRC / "comun" / "individual.js").read_text(encoding="utf-8")
+        front = {
+            re.search(r"ENVIO_NACIONAL = '([^']*)'", js).group(1),
+            re.search(r"ENVIO_INTERNACIONAL = '([^']*)'", js).group(1),
+        }
+        self.assertEqual(front, backend,
+                         f"el front espera {front} y el SQL manda {backend}")
+
+    def test_uno_contiene_al_otro_y_por_eso_el_orden_importa(self):
+        """Deja escrito POR QUÉ la clasificación descarta «internacional» primero.
+
+        Si algún día los literales dejan de solaparse, este test falla y el
+        comentario de `esNacional()` se puede simplificar. Mientras se
+        solapen, el orden no es un detalle de estilo.
+        """
+        js = (SRC / "comun" / "individual.js").read_text(encoding="utf-8")
+        nac = re.search(r"ENVIO_NACIONAL = '([^']*)'", js).group(1).lower()
+        internac = re.search(r"ENVIO_INTERNACIONAL = '([^']*)'", js).group(1).lower()
+        self.assertIn("nacional", internac,
+                      "ya no se solapan: revisá el comentario de esNacional()")
+        self.assertIn("nacional", nac)
+
+
+class LosTonosDeLosAvisos(unittest.TestCase):
+    """Los tonos que la ficha sabe pintar tienen que ser los que el backend manda.
+
+    Se descubrió contra producción: el front tenía `alerta`/`aviso`/`ok`, que
+    el backend nunca usó, así que los dos tonos reales caían en el respaldo y
+    TODOS los avisos se pintaban igual. Un cliente con plata devuelta se veía
+    como uno con una nota cualquiera — que es exactamente la distinción que el
+    aviso existe para hacer.
+    """
+
+    def test_coinciden(self):
+        backend = set(re.findall(r'"tono":\s*"(\w+)"',
+                                 (LAMBDA / "ficha_cliente.py").read_text(encoding="utf-8")))
+        self.assertTrue(backend, "no encontré los tonos en ficha_cliente.py")
+        texto = (SRC / "pantallas" / "Ficha.jsx").read_text(encoding="utf-8")
+        i = texto.index("const TONOS = {")
+        front = set(re.findall(r"^\s{2}(\w+):", texto[i:texto.index("\n};", i)], re.M))
+        self.assertEqual(front, backend, (
+            f"la ficha pinta tonos que el backend no manda: {front - backend} · "
+            f"y no sabe pintar: {backend - front}"))
+
+
+class LasExtensionesDeAdjunto(unittest.TestCase):
+    """Lo que el front deja subir tiene que ser lo que el backend acepta.
+
+    El front las repite para avisar ANTES de subir un archivo de 40 MB que va
+    a terminar rechazado. Las dos formas de desincronizarse son molestas de
+    distinta manera: si el front permite de más, el analista espera la subida
+    entera para recibir un error; si permite de menos, hay documentos válidos
+    que no puede adjuntar y no hay ningún mensaje que se lo explique.
+    """
+
+    def _del_backend(self):
+        texto = (LAMBDA / "api_handler.py").read_text(encoding="utf-8")
+        m = re.search(r"_ATTACHMENT_EXTS_ALLOWED\s*=\s*\{([^}]*)\}", texto)
+        self.assertIsNotNone(m, "no encontré _ATTACHMENT_EXTS_ALLOWED")
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    def test_coinciden(self):
+        backend = self._del_backend()
+        front = set(_lista_js(SRC / "comun" / "expediente.js", "EXTENSIONES_ADJUNTO"))
+        self.assertEqual(front, backend, (
+            f"el front deja subir de más: {front - backend} · "
+            f"y de menos: {backend - front}"))
+
+
+class LaBanderaDePantallaViva(unittest.TestCase):
+    """Nadie vuelve a escribir a mano la bandera de «¿sigue montada?».
+
+    Se escribió a mano en cuatro pantallas y salió mal de las dos formas
+    posibles:
+
+    · apagarla al desmontar sin encenderla al montar — React monta, desmonta y
+      vuelve a montar en desarrollo, así que quedaba apagada para siempre y el
+      sondeo se cancelaba antes de la primera vuelta. La pantalla se quedaba en
+      «Consultando…» sin pedir nada, y se descubrió mirando la red: el disparo
+      salía y la cosecha no.
+
+    · declararla y no apagarla nunca, que es no tener nada.
+
+    `useVivo()` lo hace bien una sola vez. Este test impide volver atrás.
+    """
+
+    def test_nadie_arma_la_bandera_a_mano(self):
+        culpables = []
+        for archivo in list(SRC.rglob("*.jsx")) + list(SRC.rglob("*.js")):
+            if archivo.name == "vivo.js":
+                continue
+            texto = archivo.read_text(encoding="utf-8")
+            if re.search(r"useRef\(true\)", texto) and "vivo" in texto.lower():
+                culpables.append(str(archivo.relative_to(SRC)))
+        self.assertEqual(culpables, [],
+                         "usá useVivo() de comun/vivo.js en vez de una bandera propia: " 
+                         + ", ".join(culpables))
+
+    def test_use_vivo_enciende_al_montar(self):
+        """Lo que se rompió: sin esta línea, un remontaje la deja apagada."""
+        texto = (SRC / "comun" / "vivo.js").read_text(encoding="utf-8")
+        i = texto.index("useEffect(")
+        cuerpo = texto[i:i + 200]
+        self.assertIn("vivo.current = true", cuerpo,
+                      "useVivo tiene que encender la bandera al montar")
+        self.assertLess(cuerpo.index("vivo.current = true"),
+                        cuerpo.index("vivo.current = false"),
+                        "se enciende al montar y se apaga al desmontar, en ese orden")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

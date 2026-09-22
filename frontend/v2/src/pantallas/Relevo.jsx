@@ -16,13 +16,23 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import { Suspense, lazy } from 'react';
+
 import { Tabla } from '../comun/Tabla.jsx';
 import { Kpi } from '../comun/Kpi.jsx';
+import { estadoDocumento, ESTADOS_DOCUMENTO } from '../comun/expediente.js';
 import {
   ESTADOS_MANUALES, FILTROS_RELEVO, aplicarFiltro, estadoDeEnvios, etapaDe,
   faltantesTexto, hace, indicadores, nombreEstado, porEtapa, porTipo,
 } from '../comun/relevo.js';
 import { soloLectura } from '../permisos.js';
+
+/* Los paneles pesados se cargan cuando se abren: la mayoría de las visitas a
+   esta pantalla son para mirar en qué estado está el circuito, no para
+   mandarle un correo a alguien. */
+const Envio = lazy(() => import('./relevo/Envio.jsx').then((m) => ({ default: m.Envio })));
+const Operacion = lazy(() =>
+  import('./relevo/Operacion.jsx').then((m) => ({ default: m.Operacion })));
 
 /* ── El aviso de envíos ─────────────────────────────────────────────────── */
 
@@ -233,9 +243,16 @@ function columnas(alAbrir) {
 
 /* ── El detalle ─────────────────────────────────────────────────────────── */
 
-function Detalle({ caso, lectura, alFijarEstado, guardando, alCerrar }) {
+function Detalle({
+  caso, detalle, checklist, cargando, lectura, alFijarEstado, guardando, alCerrar,
+  alEnviar, alDescargar,
+}) {
   const [estado, setEstado] = useState('');
   const e = etapaDe(caso);
+  /* El detalle trae más de lo que viene en la lista —notas, comunicaciones,
+     el requerimiento del partner—; mientras no llegó se muestra lo que ya se
+     tenía en vez de dejar la carta en blanco. */
+  const c = { ...caso, ...(detalle || {}) };
 
   return (
     <section className="wt-carta" style={{ marginBottom: 'var(--e-4)' }}>
@@ -253,41 +270,84 @@ function Detalle({ caso, lectura, alFijarEstado, guardando, alCerrar }) {
       </header>
       <div className="wt-cuerpo-carta"
            style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: 'var(--e-4)' }}>
-        <dl className="wt-datos">
-          <dt>Caso</dt><dd className="mono" style={{ wordBreak: 'break-all' }}>{caso.id}</dd>
-          <dt>Partner</dt><dd>{caso.partner}{caso.caso_partner && ` · ${caso.caso_partner}`}</dd>
-          {caso.cliente_correo && <><dt>Correo</dt><dd>{caso.cliente_correo}</dd></>}
-          <dt>Transacciones</dt><dd>{caso.n_transacciones}</dd>
-          <dt>Correos</dt><dd>{caso.n_correos}</dd>
-          <dt>Intentos</dt>
-          <dd>
-            {caso.intentos}
-            {caso.agotado && (
-              <span style={{ color: 'var(--estado-error-texto)' }}> · agotado</span>
+        <div>
+          <dl className="wt-datos">
+            <dt>Caso</dt><dd className="mono" style={{ wordBreak: 'break-all' }}>{c.id}</dd>
+            <dt>Partner</dt><dd>{c.partner}{c.caso_partner && ` · ${c.caso_partner}`}</dd>
+            {c.cliente_correo && <><dt>Correo</dt><dd>{c.cliente_correo}</dd></>}
+            <dt>Transacciones</dt><dd>{c.n_transacciones}</dd>
+            <dt>Correos</dt><dd>{c.n_correos}</dd>
+            <dt>Intentos</dt>
+            <dd>
+              {c.intentos}
+              {c.agotado && (
+                <span style={{ color: 'var(--estado-error-texto)' }}> · agotado</span>
+              )}
+            </dd>
+            {c.plazo && <><dt>Plazo del partner</dt><dd>{c.plazo}</dd></>}
+            <dt>Primer correo</dt><dd>{c.primera || '—'}</dd>
+            <dt>Último correo</dt><dd>{c.ultima || '—'}</dd>
+            {(c.faltantes || []).length > 0 && (
+              <>
+                <dt>Qué falta</dt>
+                <dd>
+                  <ul style={{ margin: 0, paddingLeft: '1.1em' }}>
+                    {c.faltantes.map((f) => (
+                      <li key={f.item}>
+                        {f.es || f.item}
+                        <span className="mono" style={{ fontSize: 'var(--texto-xs)',
+                                                        color: 'var(--texto-mute)' }}>
+                          {' '}{f.item}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </dd>
+              </>
             )}
-          </dd>
-          {caso.plazo && <><dt>Plazo del partner</dt><dd>{caso.plazo}</dd></>}
-          <dt>Primer correo</dt><dd>{caso.primera || '—'}</dd>
-          <dt>Último correo</dt><dd>{caso.ultima || '—'}</dd>
-          {(caso.faltantes || []).length > 0 && (
-            <>
-              <dt>Qué falta</dt>
-              <dd>
-                <ul style={{ margin: 0, paddingLeft: '1.1em' }}>
-                  {caso.faltantes.map((f) => (
-                    <li key={f.item}>
-                      {f.es || f.item}
-                      <span className="mono" style={{ fontSize: 'var(--texto-xs)',
-                                                      color: 'var(--texto-mute)' }}>
-                        {' '}{f.item}
+          </dl>
+
+          {/* El checklist de lo que el cliente mandó. Es lo que decide si la
+              devolución sale completa o parcial, así que se muestra con el
+              caso y no escondido detrás de otro clic. */}
+          {cargando ? (
+            <p className="wt-estado" style={{ marginTop: 'var(--e-3)' }}>Trayendo el detalle…</p>
+          ) : (checklist || []).length > 0 && (
+            <div style={{ marginTop: 'var(--e-4)' }}>
+              <h3 className="wt-subtitulo">Documentación</h3>
+              <div className="wt-checklist">
+                {checklist.map((it, i) => {
+                  const clave = estadoDocumento(it);
+                  const est = ESTADOS_DOCUMENTO[clave];
+                  return (
+                    <div key={it.item || i} className="wt-checklist-item" style={{ cursor: 'default' }}>
+                      <span>{it.es || it.item || it.categoria}</span>
+                      <span className="wt-insignia" style={{ color: est.color, background: est.fondo }}>
+                        {est.etiqueta}
                       </span>
-                    </li>
-                  ))}
-                </ul>
-              </dd>
-            </>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
-        </dl>
+
+          {(c.comunicaciones || []).length > 0 && (
+            <div style={{ marginTop: 'var(--e-4)' }}>
+              <h3 className="wt-subtitulo">Comunicaciones · {c.comunicaciones.length}</h3>
+              {c.comunicaciones.slice(0, 8).map((m, i) => (
+                <div key={i} className="wt-correo">
+                  <div className="wt-correo-meta">
+                    <strong>{m.direccion === 'enviado' ? 'Enviado' : 'Recibido'}</strong>
+                    {' · '}{m.para || m.de || '—'}
+                    <span style={{ marginLeft: 'auto' }}>{String(m.cuando || '').slice(0, 16)}</span>
+                  </div>
+                  {m.asunto && <p className="wt-correo-asunto">{m.asunto}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         <div className="wt-acciones">
           {lectura ? (
@@ -318,6 +378,35 @@ function Detalle({ caso, lectura, alFijarEstado, guardando, alCerrar }) {
                 no son etapas del trabajo sino datos que faltan, y ponerlos tapa el
                 diagnóstico en vez de arreglarlo.
               </p>
+
+              <hr className="wt-separador" />
+
+              {/* Los cuatro correos. Ninguno manda nada al apretarlo: abren la
+                  vista previa, que muestra a quién le llega y con qué texto. */}
+              <button className="wt-btn" disabled={!c.cliente_correo}
+                      onClick={() => alEnviar('pedido')}>
+                Pedir la documentación
+              </button>
+              <button className="wt-btn" disabled={!c.cliente_correo}
+                      onClick={() => alEnviar('recontacto')}>
+                Recontactar
+              </button>
+              <button className="wt-btn" disabled={!c.cliente_correo}
+                      onClick={() => alEnviar('mensaje')}>
+                Mandarle un mensaje
+              </button>
+              <button className="wt-btn" onClick={() => alEnviar('devolucion')}>
+                Devolución de fondos
+              </button>
+              <p style={{ margin: 0, fontSize: 'var(--texto-xs)', color: 'var(--texto-mute)' }}>
+                Ninguno envía al apretarlo: abren la vista previa con el correo completo.
+              </p>
+
+              <hr className="wt-separador" />
+
+              <button className="wt-btn" onClick={alDescargar}>
+                Bajar lo que mandó el cliente
+              </button>
             </>
           )}
         </div>
@@ -338,6 +427,13 @@ export function Relevo({ api, perfil, email }) {
   const [abierto, setAbierto] = useState(null);
   const [verInterruptores, setVerInterruptores] = useState(false);
   const [guardando, setGuardando] = useState('');
+  const [vista, setVista] = useState('casos');
+  /* El detalle y el checklist se traen al abrir un caso y se recuerdan: son
+     dos llamadas por caso, y volver a abrir el mismo no tiene por qué
+     pagarlas de nuevo. */
+  const [detalles, setDetalles] = useState({});
+  const [trayendo, setTrayendo] = useState(false);
+  const [envio, setEnvio] = useState(null);
 
   const lectura = soloLectura(perfil);
 
@@ -357,6 +453,46 @@ export function Relevo({ api, perfil, email }) {
   }, [api]);
 
   useEffect(() => { cargar(); }, [cargar]);
+
+  /**
+   * Abre un caso: su detalle completo y su checklist de documentación.
+   *
+   * Son dos llamadas en paralelo y no encadenadas: ninguna depende de la
+   * otra, y en serie se nota — el checklist tarda tanto como el detalle.
+   */
+  async function abrir(caso) {
+    if (abierto?.id === caso.id) { setAbierto(null); return; }
+    setAbierto(caso);
+    setEnvio(null);
+    if (detalles[caso.id]) return;
+    setTrayendo(true);
+    const [d, ck] = await Promise.allSettled([
+      api.get(`/relevo/casos/${encodeURIComponent(caso.id)}`),
+      api.get(`/relevo/casos/${encodeURIComponent(caso.id)}/checklist`),
+    ]);
+    setDetalles((m) => ({
+      ...m,
+      [caso.id]: {
+        caso: d.status === 'fulfilled' ? (d.value?.caso || null) : null,
+        checklist: ck.status === 'fulfilled'
+          ? (ck.value?.checklist || ck.value?.items || []) : [],
+      },
+    }));
+    setTrayendo(false);
+  }
+
+  /** Baja lo que el cliente mandó: el backend devuelve una URL prefirmada. */
+  async function descargar(caso) {
+    setError(''); setAviso('');
+    try {
+      const d = await api.get(`/relevo/casos/${encodeURIComponent(caso.id)}/descarga`);
+      const url = d?.url || d?.download_url;
+      if (!url) throw new Error('Este caso no tiene documentos para bajar.');
+      globalThis.open(url, '_blank', 'noopener');
+    } catch (e) {
+      setError(e?.message || 'No se pudo preparar la descarga.');
+    }
+  }
 
   const preparados = useMemo(
     () => casos.map((c) => ({ ...c, _faltantes: faltantesTexto(c) })),
@@ -450,14 +586,58 @@ export function Relevo({ api, perfil, email }) {
 
       {!sinDatos && <Circuito etapas={etapas} total={ind.total} />}
 
+      <nav className="wt-pasos" aria-label="Vistas del relevo">
+        {[['casos', 'Casos', 'el circuito'], ['operacion', 'Operación', 'lote, espejo y vencidos']]
+          .map(([k, titulo, pie]) => (
+            <button key={k} className={`wt-paso-boton${vista === k ? ' wt-paso-activo' : ''}`}
+                    onClick={() => setVista(k)}>
+              <span>
+                <span className="wt-paso-titulo">{titulo}</span>
+                <span className="wt-paso-pie">{pie}</span>
+              </span>
+            </button>
+          ))}
+      </nav>
+
+      {vista === 'operacion' ? (
+        <Suspense fallback={<p className="wt-estado">Cargando…</p>}>
+          <Operacion api={api} email={email} lectura={lectura} casos={casos}
+                     alRecargar={cargar}
+                     alRecontactar={(v) => {
+                       const c = casos.find((x) => x.id === (v.caso_id || v.id))
+                                 || { id: v.caso_id || v.id, cliente_correo: v.cliente_correo };
+                       setVista('casos'); setAbierto(c); setEnvio('recontacto');
+                     }} />
+        </Suspense>
+      ) : (
+        <>
+
       {abierto && (
         <Detalle caso={abierto} lectura={lectura} guardando={guardando === 'estado'}
-                 alFijarEstado={fijarEstado} alCerrar={() => setAbierto(null)} />
+                 detalle={detalles[abierto.id]?.caso}
+                 checklist={detalles[abierto.id]?.checklist}
+                 cargando={trayendo}
+                 alFijarEstado={fijarEstado}
+                 alEnviar={setEnvio}
+                 alDescargar={() => descargar(abierto)}
+                 alCerrar={() => { setAbierto(null); setEnvio(null); }} />
+      )}
+
+      {abierto && envio && (
+        <Suspense fallback={<p className="wt-estado">Armando el correo…</p>}>
+          <Envio api={api} caso={abierto} tipo={envio} email={email}
+                 alCerrar={() => setEnvio(null)}
+                 alTerminar={async (msg) => {
+                   setEnvio(null); setAbierto(null); setAviso(msg);
+                   setDetalles({});
+                   await cargar();
+                 }} />
+        </Suspense>
       )}
 
       <Tabla
         titulo="Casos de relevo"
-        columnas={columnas(setAbierto)}
+        columnas={columnas(abrir)}
         filas={visibles}
         cargando={cargando}
         error=""
@@ -483,6 +663,8 @@ export function Relevo({ api, perfil, email }) {
           </>
         }
       />
+        </>
+      )}
     </>
   );
 }

@@ -127,3 +127,52 @@ export function indicadores(corridas) {
     clientes,
   };
 }
+
+/* ── Los resultados de una corrida ───────────────────────────────────────── */
+
+/* Los tres montones en los que queda partida una lista de oficios: la gente
+   que es cliente, la que no, y la que se descartó por no tener un documento
+   utilizable. */
+export const TIPOS_RESULTADO = [
+  { clave: 'clientes', etiqueta: 'Clientes', conteo: 'clientes' },
+  { clave: 'no_clientes', etiqueta: 'No clientes', conteo: 'no_clientes' },
+  { clave: 'descartados', etiqueta: 'Descartados', conteo: 'descartados' },
+];
+
+export function tiposConConteo(corrida) {
+  const c = corrida?.conteos || {};
+  return TIPOS_RESULTADO.map((t) => ({ ...t, n: Number(c[t.conteo] || 0) }));
+}
+
+/**
+ * Las coincidencias en las que el número de documento coincide pero el TIPO
+ * no.
+ *
+ * Es el error más caro de este módulo. El cruce contra la base es por número
+ * solamente, así que una cédula colombiana y un DNI argentino con el mismo
+ * número dan «coincidencia». Responderle a un juzgado que esa persona es
+ * cliente cuando es otra con el mismo número es un problema serio, y la única
+ * señal que lo delata es esta bandera.
+ */
+export function dudosas(filas) {
+  return (filas || []).filter((f) => f?.tipo_coincide === false);
+}
+
+export function avisoDeDudosas(filas, total) {
+  const n = dudosas(filas).length;
+  if (n === 0) return '';
+  return `${n} de ${Number(total || filas.length).toLocaleString('es-CL')} coinciden por `
+       + 'número pero con un tipo de documento distinto — probablemente sean otra persona. '
+       + 'Revisalas antes de responderle al juzgado.';
+}
+
+/** Cuántas filas se piden por vez. El backend recorta y lo dice en `mostrando`. */
+export const LIMITE_RESULTADOS = 200;
+
+export function avisoDeRecorteEmbargo(datos) {
+  const total = Number(datos?.total || 0);
+  const mostrando = Number(datos?.mostrando || 0);
+  if (!total || mostrando >= total) return '';
+  return `Se ven ${mostrando.toLocaleString('es-CL')} de ${total.toLocaleString('es-CL')}. `
+       + 'Para el listado completo, descargá el Excel de la corrida.';
+}
