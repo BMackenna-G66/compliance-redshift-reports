@@ -25,13 +25,25 @@ import {
  * porque esconderla sería esconder trabajo pendiente.
  */
 export function filaDelReporte(alerta) {
-  const v = alerta?.row_data;
-  if (!v) return {};
-  if (typeof v === 'object') return v;
-  if (typeof v !== 'string') return {};
+  return comoFila(alerta?.row_data);
+}
+
+/**
+ * Normaliza una fila cruda venga como venga.
+ *
+ * SE USA TAMBIÉN AL MANDARLA DE VUELTA, y ahí es donde importa: el backend
+ * espera un objeto en `alert_data` y en las filas del reparto masivo. Mandarle
+ * el texto sin parsear no da error —lo guarda igual— y después el caso muestra
+ * la sección «Alerta que originó el caso» vacía, sin que nada explique por
+ * qué. v1 lo normaliza desde siempre; v2 no lo hacía.
+ */
+export function comoFila(valor) {
+  if (!valor) return {};
+  if (typeof valor === 'object') return Array.isArray(valor) ? {} : valor;
+  if (typeof valor !== 'string') return {};
   try {
-    const d = JSON.parse(v);
-    return d && typeof d === 'object' ? d : {};
+    const d = JSON.parse(valor);
+    return d && typeof d === 'object' && !Array.isArray(d) ? d : {};
   } catch {
     return {};
   }

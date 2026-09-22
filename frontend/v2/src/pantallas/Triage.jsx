@@ -127,7 +127,9 @@ export function Triage({ api, perfil, email, id: alertId, navegar }) {
       report_name: alerta.report_name || '',
       // La fila que originó la alerta. v1 no la mandaba en los casos creados
       // a mano, y quedaban sin los números que sí tienen los automáticos.
-      alert_data: alerta.row_data || {},
+      // Normalizado: el backend lo guarda tal cual, y si le llega el texto
+      // JSON sin parsear el caso queda con la evidencia ilegible.
+      alert_data: filaDelReporte(alerta),
       alert_priority: alerta.priority || '',
       created_by: email,
     });

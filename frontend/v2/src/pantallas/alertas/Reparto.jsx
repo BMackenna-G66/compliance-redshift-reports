@@ -13,6 +13,7 @@
 
 import { useState } from 'react';
 
+import { filaDelReporte } from '../../comun/alertas.js';
 import { repartoEquitativo } from '../../comun/reparto.js';
 
 function Analistas({ usuarios, elegidos, alCambiar }) {
@@ -67,7 +68,7 @@ export function Reparto({ api, alertas, usuarios, alCerrar, alTerminar }) {
       if (modo === 'repartir') {
         const d = await api.post('/alerts/bulk-distribute', {
           alert_ids: alertas.map((a) => a.alert_id),
-          rows: alertas.map((a) => a.row_data || {}),
+          rows: alertas.map(filaDelReporte),
           report_name: alertas[0]?.report_name || '',
           assignees: elegidos,
           priority: prioridad,

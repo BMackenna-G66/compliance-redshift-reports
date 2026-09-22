@@ -544,13 +544,41 @@ v2. Está en `main` y desplegado.
 
 ---
 
-## Fase 9 — Vista CX *(la que era Fase 1)*
+## Fase 9 — Vista CX ✅
 
-Sólo casos abiertos, buscables por email o customer id, nada más.
+Una caja de búsqueda y una respuesta. Es la pantalla para atender una llamada:
+el cliente pregunta por qué le pidieron papeles, y de este lado hay que saber
+si tiene algo abierto sin leer una tabla de doce columnas.
 
-Hoy existe en v1 como perfil de sólo lectura, así que esto es portarla — y para
-cuando llegue el turno, el armazón de permisos de la Fase 1 ya la hace casi
-gratis.
+En v1 «CX» no es una pantalla: es el rol `lectura` mirando la tabla de casos
+completa. Esto es una pantalla propia, y las decisiones que la hacen distinta
+son tres.
+
+**Busca en memoria, no contra la API.** `GET /search/entity` busca por
+identificador, pero el correo del cliente **no está** en `/cases` ni en el
+nivel de arriba de `/alerts`: vive dentro de `row_data`, que además llega como
+texto JSON. Se arma un índice con las dos listas —73 casos abiertos y 122
+alertas— y se busca sobre eso. Instantáneo, y anda con Redshift pausado.
+
+**Contesta tres cosas, no dos.** «Tiene N casos abiertos», «figura pero no
+tiene nada abierto» y «no figura». Las dos últimas parecen lo mismo y no lo
+son: una dice que lo miramos y está limpio, la otra que nunca lo vimos.
+Juntarlas hace que CX afirme lo primero cuando sólo puede afirmar lo segundo.
+
+**No contesta mientras carga.** Buscar sobre un padrón a medio leer devuelve
+«no figura», y de este lado hay alguien por decirle a un cliente que no aparece
+en el sistema. Es la peor forma de equivocarse que tiene esta pantalla y es
+silenciosa: la respuesta se ve igual de segura que una buena. Se descubrió
+probándola contra producción — contestó «no figura» sobre un cliente que sí
+tenía un caso abierto.
+
+**Lo que no muestra, a propósito**: el motivo de la alerta, el puntaje, el
+reporte que la disparó, el analista asignado. Nada de eso se le dice a un
+cliente, y tenerlo en pantalla mientras se habla con él es cómo se filtra sin
+querer. La pantalla lleva escrito qué se puede decir y qué no.
+
+El id y el correo se buscan **enteros**; el nombre, por partes. Buscar «370» y
+que aparezca medio padrón es cómo CX elige mal con el cliente esperando.
 
 ---
 

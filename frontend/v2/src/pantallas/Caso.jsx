@@ -22,7 +22,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Campos } from '../comun/Campos.jsx';
 import { Correos } from '../comun/Correos.jsx';
 import { InsigniaSla } from '../comun/InsigniaSla.jsx';
-import { fecha, hace } from '../comun/alertas.js';
+import { comoFila, fecha, hace } from '../comun/alertas.js';
 import { diasTexto, sinContactar } from '../comun/casos.js';
 import {
   DURACIONES_WHITELIST, ESTADOS_DOCUMENTO, MAX_TOKENS_IA, TEMPERATURA_IA,
@@ -130,7 +130,11 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
 
   const estado = useMemo(() => ESTADOS_CASO[caso?.status], [caso]);
   const camposPerfil = useMemo(() => campos(perfilCliente), [perfilCliente]);
-  const camposAlerta = useMemo(() => campos(caso?.alert_data), [caso]);
+  /* `alert_data` puede estar guardado como texto JSON: así lo manda el
+     backend en las alertas, y así quedó en los casos que v2 creó antes de
+     normalizarlo. Se parsea al leer para que esos casos también muestren su
+     evidencia. */
+  const camposAlerta = useMemo(() => campos(comoFila(caso?.alert_data)), [caso]);
   const checklist = caso?.documentos_checklist || [];
   const resumenDocs = useMemo(() => resumenChecklist(checklist), [checklist]);
   const bandeja = useMemo(() => resumenCorreos(correos), [correos]);
@@ -518,7 +522,7 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
                   </>
                 }
               >
-                <Campos datos={caso.alert_data} />
+                <Campos datos={comoFila(caso.alert_data)} />
                 <p style={{ marginTop: 'var(--e-2)', marginBottom: 0,
                             fontSize: 'var(--texto-xs)', color: 'var(--texto-mute)' }}>
                   Son los valores de la fila del reporte que gatilló esta alerta, tal como

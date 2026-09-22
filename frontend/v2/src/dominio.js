@@ -220,6 +220,7 @@ export const SE_PIDE_AL_BACKEND = {
    una trampa. */
 export const PANTALLAS = [
   { grupo: 'Operación', id: 'inicio',        titulo: 'Inicio',              modulo: 'dashboard' },
+  { grupo: 'Operación', id: 'cx',            titulo: 'Consulta de cliente', modulo: 'dashboard' },
   { grupo: 'Operación', id: 'dashboard',     titulo: 'Bandeja de Alertas',  modulo: 'alertados' },
   { grupo: 'Operación', id: 'pendientes',    titulo: 'Pendientes',          modulo: 'pendientes' },
   { grupo: 'Operación', id: 'alert',         titulo: 'Triage de alerta',    modulo: 'alertados', nuevo: true, enMenu: false },
