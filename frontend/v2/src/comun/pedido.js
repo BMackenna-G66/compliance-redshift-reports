@@ -20,6 +20,27 @@
 /** Cuántos días atrás se buscan pedidos previos. */
 export const DIAS_PEDIDOS_PREVIOS = 30;
 
+/* La forma de una dirección de correo. La misma que usa `_direccion_de_envio`
+   en `api_handler.py`, y por el mismo motivo: `smtplib` escribe el
+   destinatario crudo en `RCPT TO:<...>` y lo codifica en ASCII, así que
+   cualquier cosa que no sea una dirección muere ahí con un
+   `UnicodeEncodeError` que no dice qué pasó.
+
+   Pasó en producción en septiembre de 2026: en el campo del correo de un caso
+   quedó guardado el texto de un motivo de bloqueo, y cinco correos a un
+   cliente se perdieron sin que el mensaje de error mencionara al
+   destinatario ni una vez. */
+const FORMA_CORREO = /^[^@\s,;<>]+@[^@\s,;<>]+\.[A-Za-z]{2,}$/;
+
+export function correoValido(valor) {
+  const s = String(valor || '').trim();
+  // Sólo ASCII: las direcciones internacionalizadas existen, pero Gmail por
+  // SMTP simple no las acepta.
+  // eslint-disable-next-line no-control-regex
+  if (!/^[\x00-\x7F]*$/.test(s)) return false;
+  return FORMA_CORREO.test(s);
+}
+
 /**
  * Qué le falta al pedido para poder mandarse.
  *
@@ -30,6 +51,9 @@ export const DIAS_PEDIDOS_PREVIOS = 30;
 export function faltaParaPedir({ correo, documentos, textoLibre }, plantilla) {
   const falta = [];
   if (!String(correo || '').trim()) falta.push('el correo del cliente');
+  else if (!correoValido(correo)) {
+    falta.push(`una dirección de correo válida («${String(correo).trim().slice(0, 40)}» no lo es)`);
+  }
   // La plantilla de texto libre es la excepción: no pide documentos.
   if (!plantilla?.requires_custom_text && (documentos || []).length === 0) {
     falta.push('al menos un documento');
@@ -103,7 +127,11 @@ export function borradorDelPedido({ caso, ultimoPedido, perfil, checklist } = {}
     entity_id: caso?.entity_id ? String(caso.entity_id) : '',
     nombre: ultimoPedido?.nombre_completo || caso?.entity_name
             || p.nombre_completo || p.razon_social || '',
-    correo: ultimoPedido?.correo || p.email || p.correo || p.customer_email || '',
+    // Sólo se arrastra el correo anterior si ES un correo: un valor malo
+    // guardado una vez se reusaría en cada reenvío para siempre, que es
+    // exactamente lo que pasó en v1.
+    correo: (correoValido(ultimoPedido?.correo) ? ultimoPedido.correo : '')
+            || p.email || p.correo || p.customer_email || '',
     prioridad: prioridadDelCaso(caso),
     alerta: caso?.report_name || '',
     documentos: docs.map((x) => x.categoria).filter(Boolean),

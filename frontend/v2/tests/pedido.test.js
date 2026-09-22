@@ -9,8 +9,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  avisoDePedidosPrevios, borradorDelPedido, faltaParaPedir, pedidosSinResponder,
-  plantillaPorDefecto, prioridadDelCaso, resolverPlantilla,
+  avisoDePedidosPrevios, borradorDelPedido, correoValido, faltaParaPedir,
+  pedidosSinResponder, plantillaPorDefecto, prioridadDelCaso, resolverPlantilla,
 } from '../src/comun/pedido.js';
 
 const NORMAL = { key: 'general_b2c', requires_custom_text: false };
@@ -165,5 +165,60 @@ describe('el borrador del pedido', () => {
     const b = borradorDelPedido({});
     assert.equal(b.correo, '');
     assert.deepEqual(b.documentos, []);
+  });
+});
+
+describe('la dirección de correo', () => {
+  it('rechaza el texto que rompió producción', () => {
+    // «Bloqueo preventivo por alerta transaccional según Watchtower» quedó
+    // guardado en el campo del correo de un caso. smtplib murió escribiendo
+    // `RCPT TO:<...>` con un UnicodeEncodeError en la posición 56 —la `ú` de
+    // «según»— y cinco correos a un cliente se perdieron sin que el mensaje
+    // dijera nunca que el problema era el destinatario.
+    assert.equal(correoValido(
+      'Bloqueo preventivo por alerta transaccional según Watchtower [12:23]Recordatorio:'),
+      false);
+  });
+
+  it('acepta las direcciones de verdad', () => {
+    for (const v of ['ana@global66.com', '  ana@global66.com  ',
+                     'ana.perez+aml@sub.global66.cl']) {
+      assert.equal(correoValido(v), true, v);
+    }
+  });
+
+  it('rechaza lo que SMTP no acepta', () => {
+    for (const v of ['ana global66.com', 'ana@localhost', 'a@x.com, b@y.com',
+                     'josé@global66.com', 'ana@global66.com\nBcc: otro@ajeno.com',
+                     '', null, undefined]) {
+      assert.equal(correoValido(v), false, String(v));
+    }
+  });
+
+  it('el faltante nombra lo que hay en el campo', () => {
+    // Sin eso hay que ir a la base a ver qué quedó guardado ahí.
+    const f = faltaParaPedir({ correo: 'no soy un correo', documentos: ['x'] }, NORMAL);
+    assert.equal(f.length, 1);
+    assert.match(f[0], /no soy un correo/);
+  });
+
+  it('no arrastra un correo inválido del pedido anterior', () => {
+    // Es lo que hizo que el mismo valor malo se reusara cinco veces: cada
+    // «Reenviar» tomaba el correo del pedido de antes sin mirarlo.
+    const b = borradorDelPedido({
+      caso: { entity_id: 1 },
+      ultimoPedido: { correo: 'Bloqueo preventivo por alerta transaccional según Watchtower' },
+      perfil: { email: 'bueno@global66.com' },
+    });
+    assert.equal(b.correo, 'bueno@global66.com');
+  });
+
+  it('sí arrastra uno válido', () => {
+    const b = borradorDelPedido({
+      caso: { entity_id: 1 },
+      ultimoPedido: { correo: 'anterior@global66.com' },
+      perfil: { email: 'perfil@global66.com' },
+    });
+    assert.equal(b.correo, 'anterior@global66.com');
   });
 });
