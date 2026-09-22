@@ -1,15 +1,15 @@
 /* ============================================================================
    Detalle del caso
    ----------------------------------------------------------------------------
-   POR QUÉ SE PIDEN DOS COSAS AL CARGAR. `GET /cases/{id}` devuelve el caso con
-   sus notas, sus alertas y sus adjuntos, pero NO los campos `sla_*`: el
-   semáforo se calcula en `GET /cases`, sobre la lista. Así que se piden las
-   dos y se juntan.
+   UNA SOLA LLAMADA. `GET /cases/{id}` devuelve el caso con sus notas, sus
+   alertas, sus adjuntos y —desde ahora— los campos `sla_*` del semáforo.
 
-   La alternativa era recalcular el plazo acá, y eso es justo lo que no se
-   hace: la regla es de compliance y tener dos definiciones del mismo plazo
-   termina en una pantalla que dice «en plazo» sobre un caso que el sistema
-   considera vencido.
+   Antes no los devolvía, y esta pantalla tenía que pedir además la lista
+   COMPLETA —77 KB y 3,5 segundos— sólo para saber en qué punto del plazo
+   estaba el caso que ya tenía delante. Se arregló en el backend en vez de
+   recalcular el plazo acá: la regla es de compliance, y dos definiciones del
+   mismo plazo terminan en una pantalla que dice «en plazo» sobre un caso que
+   el sistema considera vencido.
 
    LO QUE SE PIDE SOLO Y LO QUE NO. Los correos y la ficha KYC se traen a
    pedido. El correo es una consulta pesada y la ficha le pega al cluster de
@@ -94,14 +94,8 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
     setCargando(true);
     setError('');
     try {
-      const [detalle, lista] = await Promise.all([
-        api.get(`/cases/${casoId}`),
-        // Sólo por los campos del semáforo. Si esta falla, el caso igual se
-        // muestra: se pierde el plazo, no la pantalla entera.
-        api.get('/cases?status=all').catch(() => null),
-      ]);
-      const delListado = (lista?.cases || []).find((c) => c.case_id === casoId) || {};
-      const completo = { ...delListado, ...(detalle?.case || {}), ...slaDe(delListado) };
+      const detalle = await api.get(`/cases/${casoId}`);
+      const completo = detalle?.case || {};
       setCaso(completo);
       setNotas(detalle?.notes || []);
       setAlertas(detalle?.alerts || []);
@@ -893,17 +887,4 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
       )}
     </>
   );
-}
-
-/** Sólo los campos del semáforo, para que el detalle no los pise con undefined.
- *
- *  `GET /cases/{id}` no los trae; si se hiciera `{...lista, ...detalle}` sin
- *  esto, las claves que el detalle no tiene quedarían igual, pero cualquier
- *  día que el detalle empiece a mandarlas vacías borrarían las buenas. */
-function slaDe(c) {
-  const salida = {};
-  for (const [k, v] of Object.entries(c || {})) {
-    if (k.startsWith('sla_') || k === 'note_count') salida[k] = v;
-  }
-  return salida;
 }
