@@ -5835,8 +5835,17 @@
         </div>
         <div>
           <label class="block text-sm font-medium text-slate-300 mb-1">Correo</label>
+          <!-- El borde rojo aparece mientras se escribe, no al apretar enviar:
+               es lo que hace que un pegado equivocado se vea antes de que el
+               correo intente salir. -->
           <input type="email" x-model="docRequestModal.correo"
-            class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500" />
+            :class="docRequestModal.correo && !esCorreoValido(docRequestModal.correo)
+              ? 'border-red-500' : 'border-slate-600'"
+            class="w-full bg-slate-900 border rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500" />
+          <p x-show="docRequestModal.correo && !esCorreoValido(docRequestModal.correo)"
+             class="text-xs text-red-400 mt-1">
+            Eso no es una dirección de correo. El envío va a fallar.
+          </p>
         </div>
         <div>
           <label class="block text-sm font-medium text-slate-300 mb-1">Alerta (referencia)</label>
@@ -10234,6 +10243,11 @@
           this.docRequestModal.error = 'El correo es requerido.';
           return;
         }
+        if (!this.esCorreoValido(this.docRequestModal.correo)) {
+          this.docRequestModal.error = `"${this.docRequestModal.correo.trim().slice(0, 60)}" `
+            + 'no es una dirección de correo. Corregila antes de enviar.';
+          return;
+        }
         // La plantilla de texto libre no pide documentos: sirve para aclarar
         // algo de lo ya enviado. Exigir un adjunto ahí obligaba a marcar uno
         // que después aparecía pedido en el correo y en el checklist.
@@ -11530,6 +11544,26 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
         return out;
       },
 
+      // Una dirección de correo, lo bastante estricta como para que lo que
+      // pase sea algo que SMTP acepte: un solo @, sin espacios ni comas, y un
+      // dominio con punto.
+      //
+      // Existe por un incidente: en el campo del correo de un caso quedó
+      // guardado el texto "Bloqueo preventivo por alerta transaccional según
+      // Watchtower [12:23]Recordatorio:". El backend lo aceptaba, y smtplib
+      // moría escribiendo `RCPT TO:<...>` con un UnicodeEncodeError que no
+      // decía en ninguna parte que el problema fuera el destinatario. Cinco
+      // correos a un cliente se perdieron así.
+      esCorreoValido(v) {
+        const s = String(v || '').trim();
+        // Sólo ASCII: existen direcciones internacionalizadas, pero Gmail por
+        // SMTP simple no las acepta. Mejor decirlo acá que dejar que el
+        // backend devuelva un error de codificación.
+        // eslint-disable-next-line no-control-regex
+        if (!/^[\x00-\x7F]*$/.test(s)) return false;
+        return /^[^@\s,;<>]+@[^@\s,;<>]+\.[A-Za-z]{2,}$/.test(s);
+      },
+
       openResendEmailFromCase() {
         const c = this.activeCase;
         const last = this.activeCaseLastDocRequest;
@@ -11547,7 +11581,11 @@ Responde en español, directo y estructurado. Sin texto adicional.`;
           entity_id: c.entity_id ? String(c.entity_id) : '',
           nombre: (last && last.nombre_completo) || c.entity_name
                   || perfil.nombre_completo || perfil.razon_social || '',
-          correo: (last && last.correo) || perfil.email || perfil.correo || '',
+          // Sólo se arrastra el correo anterior si ES un correo. Sin este
+          // filtro, un valor malo guardado una vez se reusa en cada
+          // "Reenviar" para siempre — que es exactamente lo que pasó.
+          correo: (last && this.esCorreoValido(last.correo) ? last.correo : '')
+                  || perfil.email || perfil.correo || '',
           prioridad: (c.priority === 'high' ? 'P1' : c.priority === 'medium' ? 'P2' : 'P3'),
           alerta: c.report_name || '',
           documentos: (c.documentos_checklist || []).map(item => item.categoria).filter(Boolean),
