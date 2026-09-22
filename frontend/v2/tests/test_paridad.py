@@ -81,23 +81,6 @@ PENDIENTES = {
     "/institutional/alerts/check": "correr el chequeo institucional",
     "/institutional/alerts/:x": "revisar una alerta institucional",
 
-    # ── Relevo ────────────────────────────────────────────────────────────
-    "/relevo/casos/:x": "el detalle de un caso de relevo",
-    "/relevo/casos/:x/pedido": "mandarle el pedido de documentos",
-    "/relevo/casos/:x/mensaje": "mandarle un mensaje",
-    "/relevo/casos/:x/recontactar": "recontactar",
-    "/relevo/casos/:x/devolucion": "la devolución de fondos",
-    "/relevo/casos/:x/checklist": "su checklist de documentos",
-    "/relevo/casos/:x/descarga": "bajar lo que mandó el cliente",
-    "/relevo/clientes": "el padrón de clientes del relevo",
-    "/relevo/config": "la configuración del relevo",
-    "/relevo/espejo": "el espejo de Redshift",
-    "/relevo/mensajes": "las plantillas de mensaje",
-    "/relevo/vencidos": "los vencidos del relevo",
-    "/relevo/pedidos/lote": "pedidos en lote",
-    "/relevo/probar": "probar el envío sin mandar nada al cliente",
-    "/relevo/resolver": "resolver un pendiente del relevo",
-
     # ── Administración ────────────────────────────────────────────────────
     "/rules": "las reglas de alertamiento",
     "/rules/:x": "editar y borrar una regla",
@@ -200,10 +183,17 @@ def _ruta(expr):
 def _literales(texto, vocabulario):
     """Toda cadena `/loquesea` cuyo primer segmento la API sirve.
 
-    Hace falta además de las llamadas porque v1 arma varias rutas en una
-    variable antes de pasarlas, y ahí el literal es lo único visible."""
+    Hace falta además de las llamadas porque las dos versiones arman rutas
+    lejos de donde las usan: v1 en una variable (`const path = '/cases' + qs`)
+    y v2 en una tabla de configuración (`ruta: (id) => `/relevo/.../pedido``).
+    En los dos casos el literal es lo único visible.
+
+    Se aceptan las comillas invertidas además de las simples y dobles: sin
+    eso, toda ruta escrita como plantilla queda fuera del conteo y el
+    guardián la reporta como no cubierta aunque esté ahí.
+    """
     hallados = set()
-    for m in re.finditer(r"""['"](/[a-zA-Z0-9_./${}-]*)['"]""", texto):
+    for m in re.finditer(r"""['"`](/[a-zA-Z0-9_./${}-]*)['"`]""", texto):
         ruta = re.sub(r"\$\{[^}]*\}", ":x", m.group(1)).rstrip("/")
         if ruta.lstrip("/").split("/")[0] in vocabulario:
             hallados.add(ruta)
