@@ -783,3 +783,59 @@ button.wt-kpi[aria-pressed='true'] {
   background: var(--nivel-critico-tenue);
   color: var(--nivel-critico-texto);
 }
+
+/* ── La ficha del cliente ──────────────────────────────────────────────── */
+
+/* Las cartas de la ficha viven en una grilla de columnas angostas. El
+   historial de correos y el perfil KYC no entran ahí: uno es una
+   conversación y el otro treinta campos, y en 300px los dos se vuelven
+   ilegibles. Ocupan el ancho completo. */
+.wt-carta-ancha { grid-column: 1 / -1; }
+
+.wt-dos-columnas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--e-5);
+}
+.wt-subtitulo {
+  margin: 0 0 var(--e-2);
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-medio);
+  color: var(--texto-mute);
+  text-transform: none;
+}
+.wt-vacio { margin: 0; font-size: var(--texto-base); color: var(--texto-mute); }
+.wt-documento {
+  display: flex;
+  align-items: baseline;
+  gap: var(--e-2);
+  padding: 3px 0;
+  font-size: var(--texto-sm);
+  color: var(--texto-2);
+  min-width: 0;
+}
+.wt-documento-fecha {
+  font-size: var(--texto-xs);
+  color: var(--texto-mute);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Un enlace que es un botón: navega dentro de la aplicación, así que no
+   puede ser un <a href> — pero tiene que leerse como enlace. */
+.wt-enlace {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--texto-xs);
+  color: var(--g66-azul-texto);
+  padding: 0;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wt-enlace:hover { text-decoration: underline; }
+.wt-enlace:focus-visible { outline: 2px solid var(--g66-azul); outline-offset: 2px; }

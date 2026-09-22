@@ -233,6 +233,28 @@ class ElMapaDeMontos(unittest.TestCase):
                          f"el mapa nombra reportes que no están en el catálogo: {faltan}")
 
 
+class LosTonosDeLosAvisos(unittest.TestCase):
+    """Los tonos que la ficha sabe pintar tienen que ser los que el backend manda.
+
+    Se descubrió contra producción: el front tenía `alerta`/`aviso`/`ok`, que
+    el backend nunca usó, así que los dos tonos reales caían en el respaldo y
+    TODOS los avisos se pintaban igual. Un cliente con plata devuelta se veía
+    como uno con una nota cualquiera — que es exactamente la distinción que el
+    aviso existe para hacer.
+    """
+
+    def test_coinciden(self):
+        backend = set(re.findall(r'"tono":\s*"(\w+)"',
+                                 (LAMBDA / "ficha_cliente.py").read_text(encoding="utf-8")))
+        self.assertTrue(backend, "no encontré los tonos en ficha_cliente.py")
+        texto = (SRC / "pantallas" / "Ficha.jsx").read_text(encoding="utf-8")
+        i = texto.index("const TONOS = {")
+        front = set(re.findall(r"^\s{2}(\w+):", texto[i:texto.index("\n};", i)], re.M))
+        self.assertEqual(front, backend, (
+            f"la ficha pinta tonos que el backend no manda: {front - backend} · "
+            f"y no sabe pintar: {backend - front}"))
+
+
 class LasExtensionesDeAdjunto(unittest.TestCase):
     """Lo que el front deja subir tiene que ser lo que el backend acepta.
 

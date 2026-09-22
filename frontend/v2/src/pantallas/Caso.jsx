@@ -19,14 +19,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { Campos } from '../comun/Campos.jsx';
+import { Correos } from '../comun/Correos.jsx';
 import { InsigniaSla } from '../comun/InsigniaSla.jsx';
 import { fecha, hace } from '../comun/alertas.js';
 import { diasTexto, sinContactar } from '../comun/casos.js';
 import {
   DURACIONES_WHITELIST, ESTADOS_DOCUMENTO, MAX_TOKENS_IA, TEMPERATURA_IA,
-  altaDeWhitelist, campos, contextoDelCliente, cuerpoRecortado, esFallido,
-  estadoDocumento, notaDeWhitelist, promptDelCaso, repartirAdjuntos,
-  resumenChecklist, resumenCorreos, siguienteEstadoDocumento, vinoPorCorreo,
+  altaDeWhitelist, campos, contextoDelCliente, estadoDocumento, notaDeWhitelist,
+  promptDelCaso, repartirAdjuntos, resumenChecklist, resumenCorreos,
+  siguienteEstadoDocumento, vinoPorCorreo,
 } from '../comun/expediente.js';
 import { ESTADOS_CASO } from '../dominio.js';
 import { esAdmin, soloLectura } from '../permisos.js';
@@ -35,23 +37,6 @@ const ESTADOS_ELEGIBLES = ['open', 'in_progress', 'under_review', 'closed'];
 
 function Dato({ etiqueta, children }) {
   return (<><dt>{etiqueta}</dt><dd>{children}</dd></>);
-}
-
-/* Una grilla de «etiqueta: valor» para los diccionarios que manda el backend
-   —la ficha KYC y la fila de la alerta—. Las claves no se conocen de
-   antemano: cada reporte trae las suyas. */
-function Grilla({ filas }) {
-  if (filas.length === 0) return null;
-  return (
-    <div className="wt-campos">
-      {filas.map((f) => (
-        <div key={f.clave} className="wt-campo">
-          <div className="wt-campo-etiqueta">{f.etiqueta}</div>
-          <div className="wt-campo-valor">{f.valor}</div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function Carta({ titulo, cuenta, herramientas, children }) {
@@ -497,7 +482,7 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
                     queda guardada en el caso.
                   </p>
                 ) : perfilAbierto ? (
-                  <Grilla filas={camposPerfil} />
+                  <Campos datos={perfilCliente} />
                 ) : (
                   <p style={{ margin: 0, fontSize: 'var(--texto-base)', color: 'var(--texto-mute)' }}>
                     {camposPerfil.length} campos guardados.
@@ -527,7 +512,7 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
                   </>
                 }
               >
-                <Grilla filas={camposAlerta} />
+                <Campos datos={caso.alert_data} />
                 <p style={{ marginTop: 'var(--e-2)', marginBottom: 0,
                             fontSize: 'var(--texto-xs)', color: 'var(--texto-mute)' }}>
                   Son los valores de la fila del reporte que gatilló esta alerta, tal como
@@ -661,52 +646,9 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
                 <p style={{ margin: 0, color: 'var(--texto-mute)', fontSize: 'var(--texto-base)' }}>
                   Sin correos registrados en este caso.
                 </p>
-              ) : bandeja.correos.map((m, i) => {
-                const fallo = esFallido(m);
-                const entrante = m.direccion !== 'enviado';
-                const { texto, recortado } = cuerpoRecortado(m);
-                return (
-                  <article key={`em${i}`} className="wt-correo"
-                           style={{ borderLeftColor: fallo ? 'var(--nivel-critico-texto)'
-                                    : entrante ? 'var(--g66-azul-texto)' : 'var(--borde)' }}>
-                    <div className="wt-correo-meta">
-                      <strong style={{ color: entrante ? 'var(--g66-azul-texto)' : 'var(--texto-2)' }}>
-                        {entrante ? 'Recibido' : 'Enviado'}
-                      </strong>
-                      {' · '}{entrante ? `de ${m.de || '—'}` : `a ${m.para || '—'}`}
-                      <span style={{ marginLeft: 'auto' }}>{String(m.cuando || '').slice(0, 16)}</span>
-                    </div>
-                    {/* Un envío que falló también es historia: explica un silencio. */}
-                    {fallo && (
-                      <p style={{ margin: '0 0 4px', fontSize: 'var(--texto-sm)',
-                                  color: 'var(--nivel-critico-texto)' }}>
-                        No se envió: {m.error || 'sin detalle'}
-                      </p>
-                    )}
-                    {m.asunto && <p className="wt-correo-asunto">{m.asunto}</p>}
-                    {texto && (
-                      <p className="wt-correo-cuerpo">
-                        {texto}{recortado && '…'}
-                      </p>
-                    )}
-                    {!m.cuerpo && !entrante && (
-                      <p style={{ margin: 0, fontSize: 'var(--texto-xs)', color: 'var(--texto-mute)' }}>
-                        (el cuerpo no se guardaba cuando se envió este correo)
-                      </p>
-                    )}
-                    {(m.documentos || []).length > 0 && (
-                      <div className="wt-correo-docs">
-                        {(m.documentos || []).map((d, j) => (
-                          <span key={`d${i}_${j}`} className="wt-insignia"
-                                style={{ color: 'var(--texto-2)', background: 'var(--superficie-3)' }}>
-                            {d}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </article>
-                );
-              })}
+              ) : (
+                <Correos correos={bandeja.correos} />
+              )}
             </Carta>
 
             {/* ── Las notas ─────────────────────────────────────────────── */}
