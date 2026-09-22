@@ -4766,19 +4766,63 @@ def get_case_detail(case_id: str):
                 })
         case_out = {k: v for k, v in c.items() if k != "notes"}
 
-        # Última solicitud de documentos de este caso — se usa para prellenar
-        # nombre/correo/plantilla al reenviar un correo desde el detalle del
-        # caso (esos datos no viven en el caso mismo, solo en el audit trail).
+        # Una sola pasada por `document_requests` para las dos cosas que salen
+        # de ahí: el último pedido y la cuenta de contactos del plazo.
+        #
+        # El ÚLTIMO PEDIDO se usa para prellenar nombre/correo/plantilla al
+        # reenviar un correo desde el detalle (esos datos no viven en el caso,
+        # sólo en el registro de envíos).
+        #
+        # LOS CONTACTOS son los envíos que efectivamente salieron. Uno fallido
+        # no cuenta: el cliente no recibió nada, así que el recontacto sigue
+        # pendiente. Es el mismo criterio que `_contactos_por_caso()`, y el
+        # test de sincronía vigila que no se separen.
         last_request = None
+        contactos = 0
+        ultimo_contacto = ""
         for r in sorted(_crm_list("document_requests"), key=lambda r: r.get("created_at", "")):
-            if r.get("case_id") == case_id:
-                last_request = {
-                    "correo": r.get("correo", ""),
-                    "nombre_completo": r.get("nombre_completo", ""),
-                    "template_key": r.get("template_key", ""),
-                }
+            if r.get("case_id") != case_id:
+                continue
+            last_request = {
+                "correo": r.get("correo", ""),
+                "nombre_completo": r.get("nombre_completo", ""),
+                "template_key": r.get("template_key", ""),
+            }
+            if r.get("sent"):
+                contactos += 1
+                cuando = r.get("created_at", "")
+                if cuando > ultimo_contacto:
+                    ultimo_contacto = cuando
 
-        return resp(200, {"case": case_out, "notes": notes, "alerts": alerts, "last_document_request": last_request})
+        # Los campos del plazo, los mismos que devuelve `GET /cases`.
+        #
+        # ANTES NO ESTABAN, y el detalle del caso del front nuevo tenía que
+        # pedir además la lista COMPLETA —77 KB y 3,5 segundos— sólo para saber
+        # en qué punto del plazo estaba el caso que ya tenía en pantalla.
+        #
+        # Recalcularlo del lado del front no era opción: la regla es de
+        # compliance y dos definiciones del mismo plazo terminan en una
+        # pantalla que dice «en plazo» sobre un caso que el sistema considera
+        # vencido.
+        if sla_casos:
+            case_out.update(sla_casos.evaluar(
+                c, sla_casos.ahora(),
+                contactos=contactos,
+                ultimo_contacto=ultimo_contacto,
+                respondio=any(_es_correo_recibido(n) for n in (c.get("notes") or []))))
+
+        return resp(200, {
+            "case": case_out,
+            "notes": notes,
+            "alerts": alerts,
+            "last_document_request": last_request,
+            # El mismo bloque que manda la lista, para que el front no tenga
+            # que traerla sólo por esto.
+            "sla_config": {
+                "horas_recontacto": sla_casos.HORAS_RECONTACTO if sla_casos else None,
+                "horas_cierre": sla_casos.HORAS_CIERRE if sla_casos else None,
+            },
+        })
     except Exception as e:
         return resp(500, {"error": str(e)})
 
