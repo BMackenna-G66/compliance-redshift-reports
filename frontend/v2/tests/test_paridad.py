@@ -62,17 +62,9 @@ PENDIENTES = {
     "/alert-document-config/:x": "editar y borrar esa configuración",
 
     # ── Reportes y corridas ───────────────────────────────────────────────
-    "/execute": "ejecutar un reporte",
-    "/runs/:x/rows": "las filas crudas de una corrida",
     "/schedules": "la programación de reportes",
-    "/queries": "guardar una consulta",
-    "/queries/:x": "borrar una consulta guardada",
 
     # ── Análisis ──────────────────────────────────────────────────────────
-    "/analyze/customer/b2c": "el análisis de cliente persona",
-    "/analyze/customer/b2b": "el análisis de cliente empresa",
-    "/search/transactions": "paso 2 del análisis: búsqueda de remesas",
-    "/search/wallet": "el análisis de wallet",
     "/analyze/entity-name": "resolver el nombre de una entidad",
 
     # ── El tablero ────────────────────────────────────────────────────────

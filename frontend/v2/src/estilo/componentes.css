@@ -839,3 +839,85 @@ button.wt-kpi[aria-pressed='true'] {
 }
 .wt-enlace:hover { text-decoration: underline; }
 .wt-enlace:focus-visible { outline: 2px solid var(--g66-azul); outline-offset: 2px; }
+
+/* ── Los parámetros de un reporte ──────────────────────────────────────────
+   Uno o dos campos: una fila que se acomoda sola. No es un formulario en
+   ventana aparte porque para dos campos el clic de cierre no aporta nada. */
+.wt-parametros {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--e-3);
+}
+.wt-parametro {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--texto-sm);
+  color: var(--texto-mute);
+}
+.wt-parametro input[type="checkbox"] {
+  align-self: flex-start;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--g66-azul);
+}
+
+/* ── Los pasos del análisis individual ────────────────────────────────────
+   Una fila de botones en vez de pestañas comunes porque hay un ORDEN: el 1
+   alimenta al 2 y al 3, y esos dos alimentan al 4. El número adelante lo
+   dice sin necesidad de explicarlo. */
+.wt-pasos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--e-2);
+  margin-bottom: var(--e-4);
+}
+.wt-paso-boton {
+  appearance: none;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: var(--e-2);
+  padding: var(--e-2) var(--e-3);
+  border: 1px solid var(--borde);
+  border-radius: var(--r-md);
+  background: var(--superficie);
+  color: var(--texto-2);
+  cursor: pointer;
+  text-align: left;
+}
+.wt-paso-boton:hover { background: var(--superficie-3); }
+.wt-paso-activo {
+  border-color: var(--g66-azul);
+  box-shadow: inset 0 0 0 1px var(--g66-azul);
+}
+.wt-paso-boton .wt-paso-n {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--r-pill);
+  background: var(--superficie-3);
+  color: var(--texto-mute);
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-medio);
+}
+.wt-paso-activo .wt-paso-n { background: var(--g66-azul); color: var(--texto-sobre-oscuro); }
+.wt-paso-titulo {
+  display: block;
+  font-size: var(--texto-base);
+  font-weight: var(--peso-medio);
+  color: var(--texto);
+}
+.wt-paso-pie { display: block; font-size: var(--texto-xs); color: var(--texto-mute); }
+.wt-paso-cuenta {
+  margin-left: var(--e-2);
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--nivel-bajo-tenue);
+  color: var(--nivel-bajo-texto);
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-medio);
+}

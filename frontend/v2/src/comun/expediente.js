@@ -12,8 +12,9 @@
    ========================================================================= */
 
 import { fecha, hace } from './alertas.js';
+import { MAX_TOKENS_IA, TEMPERATURA_IA } from './ia.js';
 
-export { fecha, hace };
+export { fecha, hace, MAX_TOKENS_IA, TEMPERATURA_IA };
 
 /* ── Los campos de un objeto plano ───────────────────────────────────────── */
 
@@ -197,10 +198,6 @@ export function notaDeWhitelist(cuerpo) {
 
 /* ── El análisis con IA ──────────────────────────────────────────────────── */
 
-/* 2048 se quedaba corto: un análisis de cuatro secciones sobre la ficha
-   completa da ~8.000 caracteres y chocaba con MAX_TOKENS. */
-export const MAX_TOKENS_IA = 8192;
-export const TEMPERATURA_IA = 0.3;
 
 function lista(items, vacio, formato) {
   if (!items || items.length === 0) return vacio;

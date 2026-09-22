@@ -233,6 +233,48 @@ class ElMapaDeMontos(unittest.TestCase):
                          f"el mapa nombra reportes que no están en el catálogo: {faltan}")
 
 
+class ElTipoDeEnvio(unittest.TestCase):
+    """Los dos valores de `tipo_envio` salen de un CASE del SQL de remesas.
+
+    El paso 4 del análisis individual separa la planilla en dos hojas según
+    esto, así que un cambio en el literal manda transacciones a la hoja
+    equivocada sin avisar.
+
+    Es exactamente donde v1 se rompe hoy: clasifica con
+    `tipo_envio.includes('nacional')`, y «Envío internacional» CONTIENE
+    «nacional», así que todas las internacionales caen en la hoja de
+    nacionales y la otra sale vacía.
+    """
+
+    def test_los_dos_literales_siguen_siendo_los_mismos(self):
+        texto = (LAMBDA / "api_handler.py").read_text(encoding="utf-8")
+        i = texto.index("_SQL_REMESA_SEARCH")
+        bloque = texto[i:i + 1200]
+        backend = set(re.findall(r"THEN '([^']*)'|ELSE '([^']*)'", bloque))
+        backend = {a or b for a, b in backend}
+        js = (SRC / "comun" / "individual.js").read_text(encoding="utf-8")
+        front = {
+            re.search(r"ENVIO_NACIONAL = '([^']*)'", js).group(1),
+            re.search(r"ENVIO_INTERNACIONAL = '([^']*)'", js).group(1),
+        }
+        self.assertEqual(front, backend,
+                         f"el front espera {front} y el SQL manda {backend}")
+
+    def test_uno_contiene_al_otro_y_por_eso_el_orden_importa(self):
+        """Deja escrito POR QUÉ la clasificación descarta «internacional» primero.
+
+        Si algún día los literales dejan de solaparse, este test falla y el
+        comentario de `esNacional()` se puede simplificar. Mientras se
+        solapen, el orden no es un detalle de estilo.
+        """
+        js = (SRC / "comun" / "individual.js").read_text(encoding="utf-8")
+        nac = re.search(r"ENVIO_NACIONAL = '([^']*)'", js).group(1).lower()
+        internac = re.search(r"ENVIO_INTERNACIONAL = '([^']*)'", js).group(1).lower()
+        self.assertIn("nacional", internac,
+                      "ya no se solapan: revisá el comentario de esNacional()")
+        self.assertIn("nacional", nac)
+
+
 class LosTonosDeLosAvisos(unittest.TestCase):
     """Los tonos que la ficha sabe pintar tienen que ser los que el backend manda.
 

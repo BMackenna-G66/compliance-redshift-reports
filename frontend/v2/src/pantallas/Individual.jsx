@@ -1,89 +1,52 @@
 /* ============================================================================
    Análisis individual
    ----------------------------------------------------------------------------
-   Se le dan ids de cliente, corre las diez banderas sobre sus transacciones y
-   deja un Excel.
+   Cuatro pasos encadenados, más la consulta directa de un cliente.
 
-   ES ASÍNCRONO Y ESO SE NOTA. `POST /analyze/individual` no devuelve el
-   resultado: devuelve un `run_id`. Hay que preguntar por él hasta que
-   termine. Una corrida de 891 clientes tardó tres minutos, y el cluster de
-   Redshift está pausado de 18:30 a 04:00 — la primera consulta del día lo
-   despierta y eso agrega varios minutos más, con estado `RESUMING`.
+     1. Extracción de casos — el reporte de Salesforce, del que salen los ids
+        de cliente y los números de remesa.
+     2. Búsqueda de remesas — esos números contra Redshift. También el wallet.
+     3. Motor AML — esos ids por las diez banderas.
+     4. Conclusión — se cruzan los resultados de 2 y 3 y sale la planilla.
 
-   Por eso la pantalla dice en qué va, cuánto lleva, y no se queda en un
-   "Cargando…" mudo que la gente interpreta como que se colgó.
+   EL ENCADENADO ES EL PUNTO. Lo que el paso 1 encuentra se le pasa al 2 y al
+   3 con un botón; el estado vive acá, en el contenedor, justamente para que
+   no haya que copiar cientos de identificadores de una planilla a otra. Cada
+   paso se puede usar suelto igual: nadie está obligado a empezar por el 1.
+
+   Los pasos se cargan a demanda. El 4 arrastra SheetJS —400 kB— y no tiene
+   sentido pagarlos al entrar a la pantalla si lo que se venía a hacer era
+   correr el motor.
    ========================================================================= */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useState } from 'react';
 
-import { ESTADOS_CORRIDA, duracionTexto, enCurso, leerIds } from '../comun/analisis.js';
 import { soloLectura } from '../permisos.js';
 
-/* Cada cuánto se vuelve a preguntar. Seis segundos: lo bastante seguido para
-   que se sienta vivo, lo bastante espaciado para no castigar a la API
-   durante los tres minutos que puede durar una corrida grande. */
-const CADA_MS = 6000;
+const Paso1 = lazy(() => import('./individual/Paso1.jsx').then((m) => ({ default: m.Paso1 })));
+const Paso2 = lazy(() => import('./individual/Paso2.jsx').then((m) => ({ default: m.Paso2 })));
+const Paso3 = lazy(() => import('./individual/Paso3.jsx').then((m) => ({ default: m.Paso3 })));
+const Paso4 = lazy(() => import('./individual/Paso4.jsx').then((m) => ({ default: m.Paso4 })));
+const Cliente = lazy(() => import('./individual/Cliente.jsx').then((m) => ({ default: m.Cliente })));
+
+const PASOS = [
+  { clave: '1', titulo: 'Extracción de casos', pie: 'el reporte de Salesforce' },
+  { clave: '2', titulo: 'Búsqueda de remesas', pie: 'y de wallets' },
+  { clave: '3', titulo: 'Motor AML', pie: 'las diez banderas' },
+  { clave: '4', titulo: 'Conclusión', pie: 'la planilla final' },
+  { clave: 'cliente', titulo: 'Análisis de cliente', pie: 'la consulta directa' },
+];
 
 export function Individual({ api, perfil, email }) {
-  const [texto, setTexto] = useState('');
-  const [dias, setDias] = useState('90');
-  const [tipo, setTipo] = useState('natural');
-  const [corrida, setCorrida] = useState(null);
-  const [error, setError] = useState('');
-  const [lanzando, setLanzando] = useState(false);
-  const [desde, setDesde] = useState(null);
-  const temporizador = useRef(null);
+  const [paso, setPaso] = useState('3');
+
+  /* Lo que un paso le pasa al siguiente. Vive acá para que sobreviva al
+     cambio de pestaña: perderlo obligaría a volver a importar el archivo. */
+  const [casos, setCasos] = useState([]);
+  const [remesas, setRemesas] = useState('');
+  const [ids, setIds] = useState('');
 
   const lectura = soloLectura(perfil);
-  const ids = leerIds(texto);
-
-  /* Se limpia al desmontar: sin esto el intervalo sigue pidiendo después de
-     que el usuario se fue a otra pantalla. */
-  useEffect(() => () => clearInterval(temporizador.current), []);
-
-  const consultar = useCallback(async (runId) => {
-    try {
-      const d = await api.get(`/runs/${runId}`);
-      setCorrida(d);
-      if (!enCurso(d?.status)) {
-        clearInterval(temporizador.current);
-        temporizador.current = null;
-      }
-    } catch (e) {
-      // Un tropiezo de red no cancela el seguimiento: la corrida sigue en el
-      // servidor y la próxima vuelta puede contestar bien.
-      setError(`No pude consultar el estado (${e?.message || 'error'}). Sigo intentando.`);
-    }
-  }, [api]);
-
-  async function lanzar(e) {
-    e.preventDefault();
-    if (ids.length === 0) return;
-    setLanzando(true); setError(''); setCorrida(null);
-    clearInterval(temporizador.current);
-    try {
-      const d = await api.post('/analyze/individual', {
-        customer_ids: ids.map((x) => (/^\d+$/.test(x) ? Number(x) : x)),
-        days: Number(dias) || 90,
-        entity_type: tipo,
-        user_email: email,
-      });
-      const runId = d?.run_id;
-      if (!runId) throw new Error('La API no devolvió un identificador de corrida.');
-      setDesde(Date.now());
-      setCorrida({ run_id: runId, status: 'QUEUED' });
-      await consultar(runId);
-      temporizador.current = setInterval(() => consultar(runId), CADA_MS);
-    } catch (err) {
-      setError(err?.message || 'No se pudo lanzar el análisis.');
-    } finally {
-      setLanzando(false);
-    }
-  }
-
-  const estado = corrida ? ESTADOS_CORRIDA[String(corrida.status).toUpperCase()] : null;
-  const corriendo = corrida && enCurso(corrida.status);
-  const transcurrido = desde && corriendo ? (Date.now() - desde) / 1000 : null;
 
   return (
     <>
@@ -93,125 +56,61 @@ export function Individual({ api, perfil, email }) {
           Análisis individual
         </h1>
         <span style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
-          las diez banderas sobre las transacciones de cada cliente
+          de la extracción de casos a la planilla final
         </span>
       </div>
 
-      {error && <div className="wt-estado-error" style={{ marginBottom: 'var(--e-4)' }}>{error}</div>}
-
-      {lectura ? (
-        <p className="wt-nota">
-          Tu perfil es de consulta: podés ver los resultados en el historial, pero no
-          lanzar análisis nuevos.
-        </p>
-      ) : (
-        <section className="wt-carta" style={{ marginBottom: 'var(--e-4)' }}>
-          <header className="wt-carta-cabecera">
-            <h2 className="wt-carta-titulo">Qué analizar</h2>
-          </header>
-          <form className="wt-cuerpo-carta" onSubmit={lanzar}>
-            <label style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
-              Ids de cliente
-              {/* Se aceptan comas, espacios y saltos de línea: los ids suelen
-                  venir pegados de un Excel o de un mensaje de Slack, y pedir
-                  un formato exacto sólo agrega un paso manual. */}
-              <textarea className="wt-input"
-                        style={{ display: 'block', width: '100%', marginTop: 4,
-                                 minHeight: 90, resize: 'vertical' }}
-                        value={texto} onChange={(e) => setTexto(e.target.value)}
-                        placeholder="1234567, 2345678  —  separados por coma, espacio o salto de línea" />
-            </label>
-            <p style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)', margin: '6px 0 0' }}>
-              {ids.length === 0
-                ? 'Ningún id todavía.'
-                : `${ids.length} cliente${ids.length === 1 ? '' : 's'} para analizar.`}
-            </p>
-
-            <div style={{ display: 'flex', gap: 'var(--e-3)', alignItems: 'flex-end',
-                          marginTop: 'var(--e-3)', flexWrap: 'wrap' }}>
-              <label style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
-                Ventana
-                <select className="wt-input" style={{ display: 'block', marginTop: 4, width: 130 }}
-                        value={dias} onChange={(e) => setDias(e.target.value)}>
-                  <option value="30">30 días</option>
-                  <option value="60">60 días</option>
-                  <option value="90">90 días</option>
-                  <option value="180">180 días</option>
-                </select>
-              </label>
-              <label style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
-                Tipo
-                <select className="wt-input" style={{ display: 'block', marginTop: 4, width: 150 }}
-                        value={tipo} onChange={(e) => setTipo(e.target.value)}>
-                  <option value="natural">Persona natural</option>
-                  <option value="company">Empresa</option>
-                </select>
-              </label>
-              <button className="wt-btn wt-btn-primario" type="submit"
-                      disabled={lanzando || corriendo || ids.length === 0}>
-                {lanzando ? 'Lanzando…' : corriendo ? 'Hay una corriendo' : 'Analizar'}
-              </button>
-            </div>
-          </form>
-        </section>
-      )}
-
-      {corrida && (
-        <section className="wt-carta">
-          <header className="wt-carta-cabecera">
-            <h2 className="wt-carta-titulo">La corrida</h2>
-            {estado && (
-              <span className="wt-insignia"
-                    style={{ color: estado.color, background: estado.fondo }}>
-                {estado.etiqueta}
-              </span>
-            )}
-            <span className="mono" style={{ marginLeft: 'auto', fontSize: 'var(--texto-xs)',
-                                            color: 'var(--texto-mute)' }}>
-              {corrida.run_id}
+      <nav className="wt-pasos" aria-label="Pasos del análisis">
+        {PASOS.map((p) => (
+          <button key={p.clave}
+                  className={`wt-paso-boton${paso === p.clave ? ' wt-paso-activo' : ''}`}
+                  aria-current={paso === p.clave ? 'step' : undefined}
+                  onClick={() => setPaso(p.clave)}>
+            <span className="wt-paso-n">{p.clave === 'cliente' ? '·' : p.clave}</span>
+            <span>
+              <span className="wt-paso-titulo">{p.titulo}</span>
+              <span className="wt-paso-pie">{p.pie}</span>
             </span>
-          </header>
-          <div className="wt-cuerpo-carta">
-            {corriendo ? (
-              <>
-                <p style={{ margin: 0 }}>
-                  Corriendo desde hace {duracionTexto(transcurrido)}. Se consulta sola cada
-                  seis segundos; podés dejar la pantalla abierta.
-                </p>
-                {String(corrida.status).toUpperCase() === 'RESUMING' && (
-                  <p className="wt-nota" style={{ marginTop: 'var(--e-3)', marginBottom: 0 }}>
-                    El cluster de Redshift estaba pausado y se está despertando. La primera
-                    consulta del día tarda varios minutos más de lo normal.
-                  </p>
-                )}
-              </>
-            ) : ['ERROR', 'FAILED'].includes(String(corrida.status).toUpperCase()) ? (
-              <p className="wt-estado-error" style={{ margin: 0 }}>
-                La corrida falló. Revisá el historial para ver el detalle.
-              </p>
-            ) : (
-              <>
-                <p style={{ margin: 0 }}>
-                  Terminó con{' '}
-                  <strong>{Number(corrida.row_count || 0).toLocaleString('es-CL')} filas</strong>.
-                </p>
-                {corrida.download_url ? (
-                  <p style={{ marginTop: 'var(--e-3)', marginBottom: 0 }}>
-                    <a href={corrida.download_url} target="_blank" rel="noopener noreferrer">
-                      Descargar el Excel
-                    </a>
-                  </p>
-                ) : (
-                  <p style={{ marginTop: 'var(--e-3)', marginBottom: 0,
-                              color: 'var(--texto-mute)', fontSize: 'var(--texto-sm)' }}>
-                    Esta corrida no dejó archivo para descargar.
-                  </p>
-                )}
-              </>
+            {/* Cuánto trae cada paso, para saber de un vistazo qué ya se
+                hizo sin tener que entrar a mirar. */}
+            {p.clave === '1' && casos.length > 0 && (
+              <span className="wt-paso-cuenta">{casos.length}</span>
             )}
-          </div>
-        </section>
-      )}
+          </button>
+        ))}
+      </nav>
+
+      <Suspense fallback={<p className="wt-estado">Cargando el paso…</p>}>
+        {paso === '1' && (
+          <Paso1
+            casos={casos}
+            alCambiar={setCasos}
+            alMandarIds={(xs) => { setIds(xs.join('\n')); setPaso('3'); }}
+            alMandarRemesas={(xs) => { setRemesas(xs.join('\n')); setPaso('2'); }}
+          />
+        )}
+        {paso === '2' && (
+          lectura ? <SoloLectura /> : (
+            <Paso2 api={api} email={email} remesas={remesas} alCambiarRemesas={setRemesas} />
+          )
+        )}
+        {paso === '3' && (
+          <Paso3 api={api} perfil={perfil} email={email} texto={ids} alCambiarTexto={setIds} />
+        )}
+        {paso === '4' && <Paso4 casos={casos} />}
+        {paso === 'cliente' && (
+          lectura ? <SoloLectura /> : <Cliente api={api} />
+        )}
+      </Suspense>
     </>
+  );
+}
+
+function SoloLectura() {
+  return (
+    <p className="wt-nota">
+      Tu perfil es de consulta: podés ver los resultados en el historial, pero no lanzar
+      consultas nuevas contra Redshift.
+    </p>
   );
 }
