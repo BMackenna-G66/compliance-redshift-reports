@@ -233,5 +233,29 @@ class ElMapaDeMontos(unittest.TestCase):
                          f"el mapa nombra reportes que no están en el catálogo: {faltan}")
 
 
+class LasExtensionesDeAdjunto(unittest.TestCase):
+    """Lo que el front deja subir tiene que ser lo que el backend acepta.
+
+    El front las repite para avisar ANTES de subir un archivo de 40 MB que va
+    a terminar rechazado. Las dos formas de desincronizarse son molestas de
+    distinta manera: si el front permite de más, el analista espera la subida
+    entera para recibir un error; si permite de menos, hay documentos válidos
+    que no puede adjuntar y no hay ningún mensaje que se lo explique.
+    """
+
+    def _del_backend(self):
+        texto = (LAMBDA / "api_handler.py").read_text(encoding="utf-8")
+        m = re.search(r"_ATTACHMENT_EXTS_ALLOWED\s*=\s*\{([^}]*)\}", texto)
+        self.assertIsNotNone(m, "no encontré _ATTACHMENT_EXTS_ALLOWED")
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    def test_coinciden(self):
+        backend = self._del_backend()
+        front = set(_lista_js(SRC / "comun" / "expediente.js", "EXTENSIONES_ADJUNTO"))
+        self.assertEqual(front, backend, (
+            f"el front deja subir de más: {front - backend} · "
+            f"y de menos: {backend - front}"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
