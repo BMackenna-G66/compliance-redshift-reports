@@ -4131,8 +4131,12 @@ def send_manual_document_request(body: dict):
     template_key = (body.get("template_key") or "").strip()
     texto_libre = body.get("texto_libre", "")
 
-    if not correo:
-        return resp(400, {"error": "correo is required"})
+    # Se valida ANTES de crear el caso: si la dirección no sirve, el correo no
+    # va a salir, y crear un caso más un registro de pedido fallido por algo
+    # que se sabe de antemano sólo agrega ruido que después hay que limpiar.
+    _, problema_correo = _direccion_de_envio(correo)
+    if problema_correo:
+        return resp(400, {"error": f"No se puede enviar: {problema_correo}."})
     if not documentos:
         return resp(400, {"error": "documentos (lista, al menos 1) is required"})
     if not template_key:
@@ -7373,6 +7377,58 @@ def get_analytics_result(q0: str = "", q1: str = "", q2: str = "", q3: str = "",
 # Phase 8 — Email notifications
 # ---------------------------------------------------------------------------
 
+# Una dirección de correo, lo bastante estricta como para que lo que pase sea
+# algo que SMTP acepte: exactamente un @, sin espacios ni comas ni saltos de
+# línea, y un dominio con punto. No pretende validar según el RFC —eso es
+# imposible con una expresión regular— sino frenar lo que NO es una dirección.
+_FORMA_CORREO = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[A-Za-z]{2,}$")
+
+
+def _direccion_de_envio(destinatario: str) -> tuple[str, str]:
+    """Devuelve `(direccion, error)` para un destinatario.
+
+    POR QUÉ EXISTE. `smtplib.sendmail` escribe la dirección cruda en el comando
+    `RCPT TO:<...>` y lo codifica en ASCII. Si lo que llega no es una
+    dirección, no falla con un mensaje útil: falla con
+
+        UnicodeEncodeError: 'ascii' codec can't encode character '\\xfa'
+        in position 56: ordinal not in range(128)
+
+    ...que es lo que pasó en producción el 17 y el 22 de septiembre de 2026.
+    En el campo del correo había quedado guardado el texto «Bloqueo preventivo
+    por alerta transaccional según Watchtower [12:23]Recordatorio:», la `ú` de
+    «según» cae en la posición 56 de ese comando, y cinco correos a un cliente
+    murieron ahí sin que el mensaje dijera en ningún lado que el problema era
+    el destinatario.
+
+    Se acepta la forma «Nombre <alguien@dominio.com>» porque es válida y
+    alguien la va a pegar tarde o temprano; lo que viaja en el sobre es sólo
+    la dirección, que es lo único que SMTP admite ahí.
+    """
+    from email.utils import parseaddr
+
+    crudo = (destinatario or "").strip()
+    if not crudo:
+        return "", "no hay ninguna dirección de correo"
+
+    _, direccion = parseaddr(crudo)
+    direccion = (direccion or "").strip()
+
+    if not direccion or not _FORMA_CORREO.match(direccion):
+        # Se muestra lo que llegó, recortado: sin eso hay que ir a buscar a la
+        # base qué había en el campo.
+        muestra = crudo if len(crudo) <= 60 else f"{crudo[:57]}…"
+        return "", f"«{muestra}» no es una dirección de correo"
+
+    try:
+        direccion.encode("ascii")
+    except UnicodeEncodeError:
+        return "", (f"«{direccion}» tiene caracteres que SMTP no acepta en el "
+                    "destinatario (acentos, eñes)")
+
+    return direccion, ""
+
+
 def _send_email(
     to: str, subject: str, html_body: str, from_addr: str | None = None,
     attachments: list[tuple[str, bytes]] | None = None,
@@ -7391,8 +7447,14 @@ def _send_email(
 
     `attachments` es una lista opcional de (nombre, bytes).
     """
-    if not to or not to.strip():
-        return {"sent": False, "error": "destinatario vacío"}
+    # El corte va ACÁ, en el único lugar por donde sale todo correo del
+    # sistema: los cinco que llaman a esta función quedan cubiertos de una, y
+    # el que se agregue mañana también.
+    destino, problema = _direccion_de_envio(to)
+    if problema:
+        print(f"[email] NO ENVIADO — {problema}")
+        return {"sent": False, "error": f"No se envió: {problema}."}
+
     gmail_password = _get_gmail_password()
     if not gmail_password:
         msg_err = ("No hay app password de Gmail configurada (ni en Secrets Manager "
@@ -7421,18 +7483,20 @@ def _send_email(
 
     msg["Subject"] = subject
     msg["From"] = sender
+    # La cabecera puede llevar «Nombre <dir>»; el sobre, no. Son dos cosas
+    # distintas y SMTP sólo admite la dirección pelada en `RCPT TO`.
     msg["To"] = to
     try:
         # 8s era muy justo: el handshake TLS + login contra Gmail desde una
         # Lambda fría se pasaba del límite y el correo se perdía sin aviso.
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
             server.login(GMAIL_USER, gmail_password)
-            server.sendmail(sender, [to], msg.as_string())
-        print(f"[email] enviado a {to} (asunto: {subject!r})")
+            server.sendmail(sender, [destino], msg.as_string())
+        print(f"[email] enviado a {destino} (asunto: {subject!r})")
         return {"sent": True, "error": None}
     except Exception as e:
         detalle = f"{type(e).__name__}: {e}"
-        print(f"[email] FALLÓ el envío a {to}: {detalle}")
+        print(f"[email] FALLÓ el envío a {destino}: {detalle}")
         return {"sent": False, "error": detalle}
 
 
