@@ -16,7 +16,7 @@
    se pide aparte con `/rows`, que es lo que permite paginarlo entero.
    ========================================================================= */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { Tabla } from '../comun/Tabla.jsx';
 import {
@@ -25,6 +25,7 @@ import {
 } from '../comun/corridas.js';
 import { COLOR_CATEGORIA, COLOR_CATEGORIA_POR_DEFECTO } from '../dominio.js';
 import { soloLectura } from '../permisos.js';
+import { useVivo } from '../comun/vivo.js';
 
 function Categoria({ reporte }) {
   const color = COLOR_CATEGORIA[reporte.category] || COLOR_CATEGORIA_POR_DEFECTO;
@@ -163,10 +164,7 @@ export function Reportes({ api, perfil }) {
   const [recorte, setRecorte] = useState('');
 
   const lectura = soloLectura(perfil);
-  /* El sondeo consulta esto antes de cada vuelta. Sin él, salir de la
-     pantalla deja el ciclo pegándole a la API contra un componente muerto. */
-  const vivo = useRef(true);
-  useEffect(() => () => { vivo.current = false; }, []);
+  const vivo = useVivo();
 
   const cargar = useCallback(async () => {
     setCargando(true);

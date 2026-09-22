@@ -264,3 +264,42 @@ export function contextoDelCliente(perfil) {
   return '--- FICHA DEL CLIENTE ---\n'
        + filas.map((f) => `${f.etiqueta}: ${f.valor}`).join('\n');
 }
+
+/* ── El contexto de compliance de un cliente ─────────────────────────────── */
+
+/**
+ * Lee `GET /customer/context`, que junta en una sola respuesta lo que el CRM
+ * sabe del cliente y lo que se movió en sus cuentas.
+ *
+ * LO IMPORTANTE ES `transactions.available`. Cuando el cluster de Redshift
+ * está pausado —lo está de 18:30 a 04:00— el backend devuelve la parte del
+ * CRM igual, con la transaccional vacía. Mostrar ceros ahí hace concluir que
+ * el cliente no movió plata, que es lo contrario de «no se pudo mirar».
+ */
+export function contextoDeCliente(datos) {
+  const crm = datos?.crm || {};
+  const tx = datos?.transactions || {};
+  const num = (v) => Number(v || 0);
+  return {
+    clienteId: datos?.customer_id || '',
+    dias: num(datos?.days),
+    alertas: num(crm.alert_count),
+    casos: num(crm.case_count),
+    reportes: num(crm.distinct_reports),
+    /* «Recurrente» y «combina tipologías» son banderas del CRM, no cuentas:
+       significan que el cliente volvió a aparecer y que aparece por motivos
+       distintos. Las dos suben el riesgo más que el volumen. */
+    recurrente: Boolean(crm.recurrent),
+    combinaTipologias: Boolean(crm.combines_alerts),
+    transaccionalDisponible: Boolean(tx.available),
+    entradas: num(tx.payin?.count),
+    salidas: num(tx.payout?.count),
+    montoEntradas: num(tx.payin?.total_usd),
+    montoSalidas: num(tx.payout?.total_usd),
+  };
+}
+
+/** Por qué no hay datos transaccionales, dicho para que no se lea como cero. */
+export const SIN_TRANSACCIONAL =
+  'No se pudieron leer las transacciones: el cluster de Redshift está pausado '
+  + '(lo está de 18:30 a 04:00). No significa que el cliente no haya movido plata.';

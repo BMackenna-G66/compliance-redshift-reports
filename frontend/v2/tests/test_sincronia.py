@@ -321,5 +321,46 @@ class LasExtensionesDeAdjunto(unittest.TestCase):
             f"y de menos: {backend - front}"))
 
 
+class LaBanderaDePantallaViva(unittest.TestCase):
+    """Nadie vuelve a escribir a mano la bandera de «¿sigue montada?».
+
+    Se escribió a mano en cuatro pantallas y salió mal de las dos formas
+    posibles:
+
+    · apagarla al desmontar sin encenderla al montar — React monta, desmonta y
+      vuelve a montar en desarrollo, así que quedaba apagada para siempre y el
+      sondeo se cancelaba antes de la primera vuelta. La pantalla se quedaba en
+      «Consultando…» sin pedir nada, y se descubrió mirando la red: el disparo
+      salía y la cosecha no.
+
+    · declararla y no apagarla nunca, que es no tener nada.
+
+    `useVivo()` lo hace bien una sola vez. Este test impide volver atrás.
+    """
+
+    def test_nadie_arma_la_bandera_a_mano(self):
+        culpables = []
+        for archivo in list(SRC.rglob("*.jsx")) + list(SRC.rglob("*.js")):
+            if archivo.name == "vivo.js":
+                continue
+            texto = archivo.read_text(encoding="utf-8")
+            if re.search(r"useRef\(true\)", texto) and "vivo" in texto.lower():
+                culpables.append(str(archivo.relative_to(SRC)))
+        self.assertEqual(culpables, [],
+                         "usá useVivo() de comun/vivo.js en vez de una bandera propia: " 
+                         + ", ".join(culpables))
+
+    def test_use_vivo_enciende_al_montar(self):
+        """Lo que se rompió: sin esta línea, un remontaje la deja apagada."""
+        texto = (SRC / "comun" / "vivo.js").read_text(encoding="utf-8")
+        i = texto.index("useEffect(")
+        cuerpo = texto[i:i + 200]
+        self.assertIn("vivo.current = true", cuerpo,
+                      "useVivo tiene que encender la bandera al montar")
+        self.assertLess(cuerpo.index("vivo.current = true"),
+                        cuerpo.index("vivo.current = false"),
+                        "se enciende al montar y se apaga al desmontar, en ese orden")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

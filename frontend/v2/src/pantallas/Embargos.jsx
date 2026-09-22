@@ -19,8 +19,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Tabla } from '../comun/Tabla.jsx';
 import { Kpi } from '../comun/Kpi.jsx';
 import {
-  FORMATOS, descargasDe, duracion, enCurso, etapaDe, fecha, formatoAceptado,
-  hace, hayDescartados, indicadores, progresoDe, resumenDe,
+  FORMATOS, LIMITE_RESULTADOS, avisoDeDudosas, avisoDeRecorteEmbargo, descargasDe, duracion, enCurso, etapaDe, fecha, formatoAceptado,
+  hace, hayDescartados, indicadores, progresoDe, resumenDe, tiposConConteo,
 } from '../comun/embargos.js';
 import { duracionTexto } from '../comun/analisis.js';
 import { soloLectura } from '../permisos.js';
@@ -356,6 +356,101 @@ const COLUMNAS = (alAbrir) => [
   },
 ];
 
+/* ── Los resultados de una corrida ───────────────────────────────────────
+   Quién de la lista del oficio resultó cliente, quién no, y quién se
+   descartó. Se piden a pedido: son hasta 200 filas por montón y la mayoría
+   de las visitas a una corrida son para bajar el Excel, no para leerlas. */
+function Resultados({ api, corrida }) {
+  const [tipo, setTipo] = useState('clientes');
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState('');
+
+  const traer = useCallback(async (cual) => {
+    setCargando(true); setError(''); setDatos(null);
+    try {
+      const d = await api.get(`/embargos/${encodeURIComponent(corrida.run_id)}/resultados`
+                            + `?tipo=${cual}&limite=${LIMITE_RESULTADOS}`);
+      if (d?.error) throw new Error(d.error);
+      setDatos(d);
+    } catch (e) {
+      setError(e?.message || 'No se pudieron leer los resultados.');
+    } finally {
+      setCargando(false);
+    }
+  }, [api, corrida.run_id]);
+
+  useEffect(() => { traer(tipo); }, [traer, tipo]);
+
+  const filas = datos?.filas || [];
+  const aviso = avisoDeDudosas(filas, datos?.total);
+  const recorte = avisoDeRecorteEmbargo(datos);
+  const columnas = filas.length ? Object.keys(filas[0]) : [];
+
+  return (
+    <section className="wt-carta" style={{ marginBottom: 'var(--e-4)' }}>
+      <header className="wt-carta-cabecera">
+        <h2 className="wt-carta-titulo">Resultados</h2>
+        <div className="wt-carta-herramientas">
+          <div className="wt-filtros">
+            {tiposConConteo(corrida).map((x) => (
+              <button key={x.clave} className="wt-filtro" aria-pressed={tipo === x.clave}
+                      onClick={() => setTipo(x.clave)}>
+                {x.etiqueta}<span className="wt-filtro-n">{x.n}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </header>
+      <div className="wt-cuerpo-carta">
+        {/* El cruce es SÓLO por número de documento. Cuando el tipo no
+            coincide es casi seguro otra persona con el mismo número en otro
+            país, y responderle eso a un juzgado es el error más caro de este
+            módulo. */}
+        {aviso && (
+          <p className="wt-nota"
+             style={{ borderColor: 'var(--nivel-critico-texto)',
+                      background: 'var(--nivel-critico-tenue)',
+                      color: 'var(--nivel-critico-texto)' }}>
+            {aviso}
+          </p>
+        )}
+        {recorte && <p className="wt-nota">{recorte}</p>}
+        {error && <p className="wt-estado-error">{error}</p>}
+
+        {cargando ? (
+          <p className="wt-estado">Leyendo…</p>
+        ) : filas.length === 0 ? (
+          <p className="wt-vacio">Ninguna fila en «{tipo}».</p>
+        ) : (
+          <div className="wt-tabla-marco" style={{ maxHeight: 420, overflowY: 'auto' }}>
+            <table className="wt-tabla">
+              <thead>
+                <tr>{columnas.map((c) => <th key={c}>{c.replace(/_/g, ' ')}</th>)}</tr>
+              </thead>
+              <tbody>
+                {filas.map((f, i) => (
+                  <tr key={i}
+                      style={f.tipo_coincide === false
+                        ? { background: 'var(--nivel-critico-tenue)' } : undefined}>
+                    {columnas.map((c) => (
+                      <td key={c} className={typeof f[c] === 'number' ? 'wt-td-num' : undefined}>
+                        {f[c] === null || f[c] === undefined ? '—'
+                          : typeof f[c] === 'boolean' ? (f[c] ? 'sí' : 'no')
+                            : String(f[c])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function Embargos({ api, perfil, email }) {
   const [corridas, setCorridas] = useState([]);
   const [detalle, setDetalle] = useState(null);
@@ -434,6 +529,8 @@ export function Embargos({ api, perfil, email }) {
         clearInterval(temporizador.current);
         setDetalle(null);
       }} />}
+
+      {detalle && !enCurso(detalle) && <Resultados api={api} corrida={detalle} />}
 
       <Tabla
         titulo="Oficios procesados"

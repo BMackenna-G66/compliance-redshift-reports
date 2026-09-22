@@ -20,7 +20,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Campos } from '../comun/Campos.jsx';
 import { Correos } from '../comun/Correos.jsx';
 import { fecha, hace } from '../comun/alertas.js';
-import { campos } from '../comun/expediente.js';
+import { SIN_TRANSACCIONAL, campos, contextoDeCliente } from '../comun/expediente.js';
 import { ESTADOS_CASO } from '../dominio.js';
 
 /* Los tonos que manda el backend, y sólo esos: `alertas_del_resumen()` en
@@ -85,6 +85,9 @@ export function Ficha({ api, id: entityId, navegar }) {
   /* El perfil KYC empieza cerrado: son treinta y pico de campos y desplazan
      todo lo demás de la pantalla. Quien lo necesita, lo abre. */
   const [perfilAbierto, setPerfilAbierto] = useState(false);
+  /* El contexto de compliance va aparte de la ficha: sale de otro endpoint,
+     es rápido, y sirve aunque la ficha grande falle. */
+  const [contexto, setContexto] = useState(null);
 
   const cargar = useCallback(async () => {
     if (!entityId) return;
@@ -99,6 +102,16 @@ export function Ficha({ api, id: entityId, navegar }) {
   }, [api, entityId]);
 
   useEffect(() => { cargar(); }, [cargar]);
+
+  useEffect(() => {
+    if (!entityId) return undefined;
+    let vivo = true;
+    setContexto(null);
+    api.get(`/customer/context?customer_id=${encodeURIComponent(entityId)}&days=90`)
+      .then((d) => { if (vivo && d && !d.error) setContexto(contextoDeCliente(d)); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, [api, entityId]);
 
   async function descargar() {
     setPdf('generando'); setError('');
@@ -185,6 +198,24 @@ export function Ficha({ api, id: entityId, navegar }) {
           })}
           {ficha.aviso_transaccional && (
             <p className="wt-nota">{ficha.aviso_transaccional}</p>
+          )}
+
+          {/* Las dos banderas del CRM suben el riesgo más que el volumen:
+              «recurrente» quiere decir que el cliente volvió a aparecer, y
+              «combina tipologías» que aparece por motivos distintos. */}
+          {contexto && (contexto.recurrente || contexto.combinaTipologias) && (
+            <p className="wt-nota wt-nota-alarma">
+              <strong>
+                {contexto.recurrente && 'Cliente recurrente'}
+                {contexto.recurrente && contexto.combinaTipologias && ' · '}
+                {contexto.combinaTipologias && 'Combina tipologías'}
+              </strong>
+              {' '}— {contexto.alertas} alerta(s) en {contexto.reportes} reporte(s)
+              distinto(s) y {contexto.casos} caso(s).
+            </p>
+          )}
+          {contexto && !contexto.transaccionalDisponible && (
+            <p className="wt-nota">{SIN_TRANSACCIONAL}</p>
           )}
 
           <div className="wt-ficha-grilla">

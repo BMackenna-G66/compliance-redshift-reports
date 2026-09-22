@@ -229,6 +229,7 @@ export const PANTALLAS = [
   { grupo: 'Operación', id: 'ficha',         titulo: 'Ficha del cliente',   modulo: 'casos' },
   { grupo: 'Operación', id: 'relevo',        titulo: 'Relevo · partners',   modulo: 'relevo' },
 
+  { grupo: 'Análisis',  id: 'analitica',     titulo: 'Analítica',           modulo: 'dashboard' },
   { grupo: 'Análisis',  id: 'informe',       titulo: 'Informe de gestión',  modulo: 'casos' },
   { grupo: 'Análisis',  id: 'reports',       titulo: 'Reportes AML',        modulo: 'alertas' },
   { grupo: 'Análisis',  id: 'queries',       titulo: 'Queries',             modulo: 'queries' },

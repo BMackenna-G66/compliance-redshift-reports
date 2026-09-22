@@ -17,6 +17,7 @@ import { useRef, useState } from 'react';
 import { Tabla } from '../../comun/Tabla.jsx';
 import { avisoDeRecorte, columnasDe, estadoDe, seguirCorrida } from '../../comun/corridas.js';
 import { avisoDeDescartes, partirIds, problemaConLosIds } from '../../comun/individual.js';
+import { useVivo } from '../../comun/vivo.js';
 
 function Busqueda({
   api, titulo, explicacion, etiqueta, soloNumeros, ruta, cuerpoDe, texto, alCambiarTexto,
@@ -27,7 +28,7 @@ function Busqueda({
   const [recorte, setRecorte] = useState('');
   const [error, setError] = useState('');
   const [corriendo, setCorriendo] = useState(false);
-  const vivo = useRef(true);
+  const vivo = useVivo();
 
   const lectura = partirIds(texto, { soloNumeros });
   const problema = problemaConLosIds(lectura, etiqueta);

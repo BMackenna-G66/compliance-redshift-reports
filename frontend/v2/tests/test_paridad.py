@@ -15,7 +15,13 @@ motivo. Ni uno más, ni uno menos:
   · se declara algo ya portado  → falla: la lista miente, hay que borrar esa
                                   línea
 
-La segunda mitad es la que hace que la lista se vacíe en vez de pudrirse.
+La segunda mitad es la que hace que la lista se vacíe en vez de pudrirse. Y se
+vació: hoy PENDIENTES tiene sólo dos entradas, y las dos son rutas que v2
+alcanza de otra forma, no funciones que falten.
+
+A PARTIR DE ACÁ CAMBIA DE OFICIO. Mientras v2 se construía, este test medía
+cuánto faltaba. Ahora mide que no se pierda nada: si alguien toca una pantalla
+y se lleva puesta una llamada, el test lo dice en el acto.
 
 POR QUÉ COMPARA RUTAS Y NO MÉTODOS. v1 arma varias rutas en variables
 (`const path = '/cases' + qs`), así que leer el método de cada llamada no es
@@ -44,36 +50,12 @@ BACKEND = RAIZ / "lambda" / "api_handler.py"
 # llevan escrito el motivo: son decisiones, no olvidos.
 
 PENDIENTES = {
-
-    # ── La ficha del cliente ──────────────────────────────────────────────
-    "/customer/context": "el contexto del cliente (perfil KYC de la ficha)",
-
-    # ── Alertas ───────────────────────────────────────────────────────────
-
-
-
-    # ── El tablero ────────────────────────────────────────────────────────
-    "/dashboard/stats": "las tarjetas del tablero de v1",
-    "/dashboard/stats/result": "su resultado asincrónico",
-    "/analytics/summary": "el resumen analítico",
-    "/analytics/result": "su resultado asincrónico",
-    "/analytics/sla": "el analítico de plazos",
-    "/analytics/sla/result": "su resultado asincrónico",
-
-    # ── Institucional ─────────────────────────────────────────────────────
-    "/institutional/clients/refresh": "refrescar las empresas",
-    "/institutional/rules/:x": "editar y borrar una regla institucional",
-    "/institutional/alerts/check": "correr el chequeo institucional",
-    "/institutional/alerts/:x": "revisar una alerta institucional",
-
-    # ── Administración ────────────────────────────────────────────────────
-
-    # ── Embargos ──────────────────────────────────────────────────────────
-    "/embargos/:x/resultados": "los resultados de una corrida de embargos",
-
-    # ── Decisiones, no olvidos ────────────────────────────────────────────
+    # Vacío salvo por dos decisiones. Todo lo que v1 hace, v2 lo hace.
+    #
+    # Estas dos no son olvidos: son rutas que v2 alcanza de otra manera, y
+    # quedan acá para que el guardián no las reporte como pérdida.
     "/roles": "v2 lee los roles de Firestore (wt_roles), no de la API",
-    "/cluster/wake": "v2 lo llama como /cluster/{accion}, cubre wake y pause",
+    "/cluster/wake": "v2 lo llama como /cluster/{accion}, que cubre wake y pause",
 }
 
 
