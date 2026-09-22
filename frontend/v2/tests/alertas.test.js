@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  aplicarFiltro, correoDe, esCasoAbierto, fecha, filaDelReporte, hace,
+  aplicarFiltro, comoFila, correoDe, esCasoAbierto, fecha, filaDelReporte, hace,
   indicadores, montoDe, montoTexto, nombreLegible, porReporte, prepararAlerta,
   prioridadDe, scoreDe,
 } from '../src/comun/alertas.js';
@@ -297,5 +297,42 @@ describe('preparar para la tabla', () => {
     const p = prepararAlerta(alerta());
     assert.equal(p.alert_id, 'a1');
     assert.equal(p.entity_value, '9000001');
+  });
+});
+
+describe('normalizar la fila cruda', () => {
+  it('parsea el texto JSON que manda el backend', () => {
+    // Las 122 alertas de producción traen `row_data` como texto, sin
+    // excepción. Tratarlo como objeto devuelve vacío en silencio.
+    assert.deepEqual(comoFila('{"customer_email":"a@b.com","monto":5}'),
+                     { customer_email: 'a@b.com', monto: 5 });
+  });
+
+  it('un objeto pasa tal cual', () => {
+    const o = { a: 1 };
+    assert.equal(comoFila(o), o);
+  });
+
+  it('una lista no es una fila', () => {
+    // `[]` pasaría el `typeof === 'object'` y después `Object.entries` daría
+    // índices numéricos como si fueran nombres de columna.
+    assert.deepEqual(comoFila([1, 2]), {});
+    assert.deepEqual(comoFila('[1,2]'), {});
+  });
+
+  it('un texto roto no rompe: devuelve vacío', () => {
+    assert.deepEqual(comoFila('{esto no es json'), {});
+    assert.deepEqual(comoFila('null'), {});
+  });
+
+  it('vacío, nulo o de otro tipo dan vacío', () => {
+    for (const v of ['', null, undefined, 0, false, 42]) {
+      assert.deepEqual(comoFila(v), {}, String(v));
+    }
+  });
+
+  it('es lo mismo que usa filaDelReporte', () => {
+    const a = { row_data: '{"x":1}' };
+    assert.deepEqual(filaDelReporte(a), comoFila(a.row_data));
   });
 });

@@ -69,6 +69,7 @@ const CONSTRUIDAS = {
   embargos: lazy(() => import('./pantallas/Embargos.jsx').then((m) => ({ default: m.Embargos }))),
   admin_users: lazy(() => import('./pantallas/Usuarios.jsx').then((m) => ({ default: m.Usuarios }))),
   admin_auto: lazy(() => import('./pantallas/Automatizacion.jsx').then((m) => ({ default: m.Automatizacion }))),
+  cx: lazy(() => import('./pantallas/Cx.jsx').then((m) => ({ default: m.Cx }))),
   analitica: lazy(() =>
     import('./pantallas/Analitica.jsx').then((m) => ({ default: m.Analitica }))),
   admin_config: lazy(() =>
