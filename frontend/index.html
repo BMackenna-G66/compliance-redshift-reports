@@ -6221,6 +6221,101 @@
           <div class="text-5xl mb-4">🔎</div>
           <p class="text-slate-500 text-sm">Busca un cliente, entidad o razón de alerta para ver<br>su historial completo de alertas y casos de investigación.</p>
         </div>
+
+        <!-- ===== Mantenedor de cuentas internas =====
+             Otra pregunta y otra fuente: arriba se busca lo que WatchTower
+             guarda (alertas y casos); acá se va a Redshift a resolver de
+             quién es una cuenta. Están juntas porque quien llega con un IBAN
+             en la mano no sabe de antemano en cuál de las dos está. -->
+        <div class="mt-12 pt-8 border-t border-slate-700">
+          <div class="flex items-baseline gap-3 mb-4">
+            <h2 class="text-base font-bold text-white">🏦 Cuentas internas</h2>
+            <span class="text-xs text-slate-500">de quién es una cuenta, y en qué moneda e instancia vive</span>
+          </div>
+
+          <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <template x-for="c in acctFields" :key="c.clave">
+                <label class="block">
+                  <span class="block text-xs text-slate-400 mb-1" x-text="c.etiqueta"></span>
+                  <input x-model="acctFilters[c.clave]" :placeholder="c.ejemplo"
+                    @keydown.enter="searchAccounts()"
+                    class="w-full bg-slate-900 border border-slate-600 text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-orange-400">
+                </label>
+              </template>
+            </div>
+            <div class="flex items-center gap-3 mt-4">
+              <button @click="searchAccounts()" :disabled="acctLoading || !acctHasFilter()"
+                class="px-5 py-2 bg-orange-600 hover:bg-orange-500 text-white text-sm font-semibold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+                <span x-text="acctLoading ? 'Consultando...' : 'Consultar'"></span>
+              </button>
+              <button @click="acctReset()"
+                class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm rounded-lg transition">
+                Limpiar
+              </button>
+              <span class="text-xs text-slate-500"
+                x-text="acctHasFilter()
+                  ? 'Se combinan con Y: se devuelve lo que cumple todos los campos escritos.'
+                  : 'Completá al menos un campo. Sin filtros esto recorre la tabla entera.'"></span>
+            </div>
+          </div>
+
+          <div x-show="acctError" class="bg-red-900/30 border border-red-700 text-red-300 text-sm rounded-xl px-4 py-3 mb-4"
+            x-text="acctError"></div>
+
+          <template x-if="acctData">
+            <div>
+              <div class="text-sm text-slate-400 mb-3">
+                <span class="text-white font-semibold" x-text="acctData.count"></span>
+                <span x-text="acctData.count === 1 ? ' cuenta' : ' cuentas'"></span>
+                <span class="text-slate-600"> · </span>
+                <span x-text="acctResumen()"></span>
+                <!-- Que cortó se dice acá y no en un log: alguien puede estar
+                     por concluir que un cliente tiene 200 cuentas y son más. -->
+                <template x-if="acctData.truncated">
+                  <span class="text-orange-400">
+                    · hay más: se muestran las <span x-text="acctData.limit"></span>
+                    más recientes por fecha de modificación.
+                  </span>
+                </template>
+              </div>
+
+              <div x-show="acctData.rows.length === 0" class="text-center py-10 text-slate-500 text-sm">
+                Ninguna cuenta cumple esos filtros.
+              </div>
+
+              <div x-show="acctData.rows.length > 0" class="overflow-x-auto bg-slate-800 border border-slate-700 rounded-xl">
+                <table class="w-full text-xs">
+                  <thead class="bg-slate-900/60 text-slate-400">
+                    <tr>
+                      <template x-for="col in acctColumns" :key="col.clave">
+                        <th class="text-left font-medium px-3 py-2 whitespace-nowrap" x-text="col.titulo"></th>
+                      </template>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="(r, i) in acctData.rows" :key="i">
+                      <tr class="border-t border-slate-700/60 hover:bg-slate-700/30">
+                        <template x-for="col in acctColumns" :key="col.clave">
+                          <td class="px-3 py-2 whitespace-nowrap"
+                            :class="col.mono ? 'font-mono text-slate-300' : 'text-slate-300'"
+                            x-text="acctCelda(r, col)"></td>
+                        </template>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+
+              <div x-show="acctData.rows.length > 0" class="mt-3">
+                <button @click="acctExportCSV()"
+                  class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs rounded-lg transition">
+                  ⬇ Exportar CSV
+                </button>
+              </div>
+            </div>
+          </template>
+        </div>
       </div>
 
       <!-- ===== TAB: INSTITUCIONAL ===== -->
@@ -7944,6 +8039,37 @@
       entitySearchLoading: false,
       entitySearchDone: false,
       entityResults: [],
+
+      // Mantenedor de cuentas internas.
+      // Los campos son los mismos que acepta el backend (CUENTAS_FILTROS en
+      // api_handler.py). Si acá se agrega uno que allá no existe, el backend
+      // lo ignora y la pantalla devuelve la tabla entera como si el filtro
+      // hubiera andado — es mudo, por eso están escritos igual en los dos.
+      acctFields: [
+        { clave: 'cuenta',      etiqueta: 'Número de cuenta', ejemplo: 'GB00TCCL00000000000000' },
+        { clave: 'moneda',      etiqueta: 'Moneda',           ejemplo: 'EUR' },
+        { clave: 'wallet',      etiqueta: 'Wallet',           ejemplo: 'CL-XXXX-0000' },
+        { clave: 'customer_id', etiqueta: 'Id de cliente',    ejemplo: '1234567' },
+      ],
+      acctColumns: [
+        { clave: 'cuenta',      titulo: 'Cuenta',     mono: true },
+        { clave: 'tipo_cuenta', titulo: 'Tipo' },
+        { clave: 'wallet',      titulo: 'Wallet',     mono: true },
+        { clave: 'moneda',      titulo: 'Moneda' },
+        { clave: 'customer_id', titulo: 'Cliente',    mono: true },
+        { clave: 'correo',      titulo: 'Correo' },
+        { clave: 'instancia',   titulo: 'Instancia' },
+        { clave: 'branch',      titulo: 'Branch' },
+        { clave: 'segmento',    titulo: 'B2C/B2B' },
+        { clave: 'principal',   titulo: 'Principal',  tipo: 'bool' },
+        { clave: 'estado',      titulo: 'Estado' },
+        { clave: 'creada',      titulo: 'Creada',     tipo: 'fecha' },
+        { clave: 'modificada',  titulo: 'Modificada', tipo: 'fecha' },
+      ],
+      acctFilters: { cuenta: '', moneda: '', wallet: '', customer_id: '' },
+      acctLoading: false,
+      acctError: '',
+      acctData: null,
 
       // Case export
       caseExportLoading: false,
@@ -12720,6 +12846,95 @@ Responde en español, estructurado y conciso.`;
         } finally {
           this.entitySearchLoading = false;
         }
+      },
+
+      // -----------------------------------------------
+      // MANTENEDOR DE CUENTAS INTERNAS
+      // -----------------------------------------------
+
+      acctHasFilter() {
+        return this.acctFields.some(c => String(this.acctFilters[c.clave] || '').trim() !== '');
+      },
+
+      acctReset() {
+        this.acctFields.forEach(c => { this.acctFilters[c.clave] = ''; });
+        this.acctData = null;
+        this.acctError = '';
+      },
+
+      async searchAccounts() {
+        if (!this.acctHasFilter() || this.acctLoading) return;
+        this.acctLoading = true;
+        this.acctError = '';
+        // La tabla anterior se va antes de pedir la nueva: una tabla vieja
+        // bajo unos filtros nuevos es la forma más fácil de leer mal el
+        // resultado, y no falla nada mientras pasa.
+        this.acctData = null;
+        try {
+          const p = new URLSearchParams();
+          for (const c of this.acctFields) {
+            // Un campo vacío NO viaja: `moneda=` no significa «cualquier
+            // moneda», significa «sin filtro», y esa es la diferencia entre
+            // una consulta puntual y recorrer la tabla de cuentas entera.
+            const v = String(this.acctFilters[c.clave] || '').trim();
+            if (v) p.set(c.clave, v);
+          }
+          const d = await this.api('GET', '/search/accounts?' + p.toString());
+          this.acctData = { rows: d?.rows || [], count: d?.count || 0,
+                            truncated: !!d?.truncated, limit: d?.limit || 0,
+                            filters: d?.filters || {} };
+        } catch (e) {
+          this.acctError = (e && e.message)
+            ? e.message
+            : 'No se pudo consultar. Puede que el clúster esté pausado.';
+        } finally {
+          this.acctLoading = false;
+        }
+      },
+
+      acctResumen() {
+        const etiqueta = {};
+        this.acctFields.forEach(c => { etiqueta[c.clave] = c.etiqueta; });
+        return Object.entries(this.acctData?.filters || {})
+          .map(([k, v]) => (etiqueta[k] || k) + ': ' + v).join(' · ');
+      },
+
+      acctCelda(fila, col) {
+        const v = fila[col.clave];
+        if (col.tipo === 'bool') {
+          // `is_client_main` vuelve como '0'/'1', no como booleano. Crudo
+          // obliga a recordar cuál es cuál, y es la columna que dice si es
+          // la cuenta principal del cliente.
+          const s = String(v ?? '').trim().toLowerCase();
+          if (s === '1' || s === 'true' || s === 't') return 'Sí';
+          if (s === '0' || s === 'false' || s === 'f') return 'No';
+          return s ? v : '—';
+        }
+        if (col.tipo === 'fecha') {
+          if (!v) return '—';
+          const d = new Date(String(v).replace(' ', 'T'));
+          return isNaN(d.getTime()) ? String(v) : d.toLocaleString('es-CL');
+        }
+        return (v === null || v === undefined || v === '') ? '—' : v;
+      },
+
+      acctExportCSV() {
+        const filas = this.acctData?.rows || [];
+        if (!filas.length) return;
+        const esc = (s) => '"' + String(s ?? '').replace(/"/g, '""') + '"';
+        const lineas = [this.acctColumns.map(c => esc(c.titulo)).join(',')];
+        for (const f of filas) {
+          lineas.push(this.acctColumns.map(c => esc(this.acctCelda(f, c))).join(','));
+        }
+        const url = URL.createObjectURL(
+          new Blob(['﻿' + lineas.join('\n')], { type: 'text/csv;charset=utf-8' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'cuentas-internas.csv';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
       },
 
       // -----------------------------------------------

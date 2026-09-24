@@ -7,12 +7,22 @@
    PIDE TRES CARACTERES ANTES DE BUSCAR. No es capricho: la búsqueda recorre
    alertas y casos, y un solo dígito devuelve medio sistema con un costo que
    no le sirve a nadie.
+
+   ABAJO, EL MANTENEDOR DE CUENTAS INTERNAS. Es otra pregunta y otra fuente:
+   la de arriba mira lo que WatchTower guarda (alertas y casos); la de abajo
+   va a Redshift a resolver de quién es una cuenta. Van juntas porque quien
+   entra acá con un IBAN en la mano no sabe de antemano en cuál de las dos
+   está la respuesta, y separarlas en dos pantallas obliga a adivinar.
    ========================================================================= */
 
 import { useState } from 'react';
 
 import { Tabla } from '../comun/Tabla.jsx';
 import { fecha, hace } from '../comun/alertas.js';
+import {
+  CAMPOS_CUENTA, COLUMNAS_CUENTA, FORMULARIO_VACIO,
+  consulta, hayFiltro, resumenFiltros,
+} from '../comun/cuentas.js';
 
 const MINIMO = 3;
 
@@ -62,6 +72,104 @@ const COLUMNAS = (navegar) => [
     exportar: () => '',
   },
 ];
+
+/* ── El mantenedor de cuentas internas ─────────────────────────────────── */
+
+function Cuentas({ api }) {
+  const [form, setForm] = useState(FORMULARIO_VACIO);
+  const [datos, setDatos] = useState(null);
+  const [buscando, setBuscando] = useState(false);
+  const [error, setError] = useState('');
+
+  const listo = hayFiltro(form);
+
+  async function buscar(e) {
+    e.preventDefault();
+    if (!listo) return;
+    setBuscando(true); setError(''); setDatos(null);
+    try {
+      setDatos(await api.get(consulta(form)));
+    } catch (err) {
+      /* No se deja la tabla anterior en pantalla: una tabla vieja bajo unos
+         filtros nuevos es la forma más fácil de leer mal el resultado. */
+      setError(err?.message || 'No se pudo consultar. Puede que el clúster esté pausado.');
+    } finally {
+      setBuscando(false);
+    }
+  }
+
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--e-3)',
+                    margin: 'var(--e-5) 0 var(--e-4)' }}>
+        <h2 style={{ margin: 0, fontSize: 'var(--texto-base)',
+                     color: 'var(--g66-navy-texto)' }}>
+          Cuentas internas
+        </h2>
+        <span style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
+          de quién es una cuenta, y en qué moneda e instancia vive
+        </span>
+      </div>
+
+      <section className="wt-carta" style={{ marginBottom: 'var(--e-4)' }}>
+        <form className="wt-cuerpo-carta" onSubmit={buscar}>
+          <div className="wt-parametros">
+            {CAMPOS_CUENTA.map((c) => (
+              <label className="wt-parametro" key={c.clave}>
+                <span>{c.etiqueta}</span>
+                <input
+                  className="wt-input" value={form[c.clave]} placeholder={c.ejemplo}
+                  onChange={(e) => setForm((f) => ({ ...f, [c.clave]: e.target.value }))}
+                />
+              </label>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 'var(--e-2)', alignItems: 'center',
+                        marginTop: 'var(--e-3)' }}>
+            <button className="wt-btn wt-btn-primario" type="submit"
+                    disabled={buscando || !listo}>
+              {buscando ? 'Consultando…' : 'Consultar'}
+            </button>
+            <button className="wt-btn" type="button"
+                    onClick={() => { setForm(FORMULARIO_VACIO); setDatos(null); setError(''); }}>
+              Limpiar
+            </button>
+            <span style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
+              {listo
+                ? 'Se combinan con Y: se devuelve lo que cumple todos los campos escritos.'
+                : 'Completá al menos un campo. Sin filtros esto recorre la tabla entera.'}
+            </span>
+          </div>
+        </form>
+      </section>
+
+      {error && <div className="wt-estado-error" style={{ marginBottom: 'var(--e-4)' }}>{error}</div>}
+
+      {datos && (
+        <>
+          <p className="wt-nota">
+            <strong>{datos.count ?? 0}</strong> cuenta{datos.count === 1 ? '' : 's'}
+            {' · '}{resumenFiltros(datos.filters)}
+            {/* Que cortó se dice acá y no en un log: alguien puede estar por
+                concluir que un cliente tiene 200 cuentas y son más. */}
+            {datos.truncated && (
+              <> · <strong>hay más</strong>: se muestran las {datos.limit} más
+                recientes por fecha de modificación.</>
+            )}
+          </p>
+          <Tabla
+            titulo="Cuentas internas"
+            columnas={COLUMNAS_CUENTA}
+            filas={datos.rows || []}
+            claveFila={(x, i) => `${x.cuenta}-${x.moneda}-${i}`}
+            nombreExport="cuentas-internas"
+            vacioTexto="Ninguna cuenta cumple esos filtros."
+          />
+        </>
+      )}
+    </>
+  );
+}
 
 export function Busqueda({ api, navegar }) {
   const [q, setQ] = useState('');
@@ -139,6 +247,8 @@ export function Busqueda({ api, navegar }) {
           />
         </>
       )}
+
+      <Cuentas api={api} />
     </>
   );
 }
