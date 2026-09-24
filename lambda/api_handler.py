@@ -924,16 +924,28 @@ def _esc(s) -> str:
     return str(s).replace("'", "''")
 
 
-def _rs_exec(sql: str) -> list[dict]:
-    """Execute SQL via Redshift Data API; poll until done; return rows as list of dicts."""
+def _rs_exec(sql: str, params: dict | None = None) -> list[dict]:
+    """Execute SQL via Redshift Data API; poll until done; return rows as list of dicts.
+
+    `params` son parámetros LIGADOS, no interpolados: el SQL lleva `:nombre` y
+    el valor viaja aparte, así que el texto que escribe un usuario nunca entra
+    en la sentencia. Es lo que corresponde cuando el valor viene de un campo
+    editable; el resto del archivo interpola con `_esc()` porque esos valores
+    salen de la propia base, no de un formulario.
+    """
     try:
         # Redshift Data API rejects trailing semicolons
         sql = sql.strip().rstrip(";").strip()
+        extra = {}
+        if params:
+            extra["Parameters"] = [{"name": k, "value": str(v)}
+                                   for k, v in params.items()]
         resp_exec = redshift_data.execute_statement(
             ClusterIdentifier=CLUSTER_ID,
             Database=DATABASE_NAME,
             DbUser=DB_USER,
             Sql=sql,
+            **extra,
         )
         statement_id = resp_exec["Id"]
 
@@ -1749,6 +1761,110 @@ def search_entity_timeline(query: str, limit: int = 100):
                           "alert_count": len(alert_rows), "case_count": len(case_rows)})
     except Exception as e:
         return resp(200, {"results": [], "warning": str(e), "query": query})
+
+
+# ---------------------------------------------------------------------------
+# CUENTAS INTERNAS (mantenedor de la búsqueda)
+# ---------------------------------------------------------------------------
+#
+# QUÉ RESUELVE. «¿De quién es esta cuenta?» es una pregunta de todos los días:
+# llega un IBAN en un requerimiento y hay que decir a qué cliente, moneda,
+# instancia y branch corresponde, y si sigue activa. Hasta hoy eso era abrir
+# un cliente SQL y pegar la consulta a mano, cambiando dos valores.
+#
+# POR QUÉ LOS FILTROS SE ARMAN Y LOS VALORES SE LIGAN. El texto lo escribe el
+# analista, así que no toca la sentencia: la forma del WHERE la elige el
+# backend según qué campos vinieron, y los valores viajan como parámetros del
+# Data API. Interpolar con comillas escapadas también «anda», pero acá el que
+# escribe es un humano con un campo libre, y eso es exactamente donde una
+# comilla de más deja de ser un bug y pasa a ser otra cosa.
+#
+# POR QUÉ SE EXIGE AL MENOS UN FILTRO. Sin WHERE esto recorre la tabla entera
+# de cuentas. No hay ninguna pregunta de compliance que se conteste con eso, y
+# sí hay una forma de tumbar el clúster para todos.
+
+CUENTAS_SQL = """
+SELECT
+    ba.bank_account_number      AS cuenta,
+    ba.bank_account_type_code   AS tipo_cuenta,
+    a.partner_account_id        AS wallet,
+    a.created_date              AS creada,
+    c.email                     AS correo,
+    a.last_modified_date        AS modificada,
+    a.customer_id               AS customer_id,
+    ag.currency_code            AS moneda,
+    ag.instance                 AS instancia,
+    ag.account_branch_name      AS branch,
+    a.is_client_main            AS principal,
+    -- `business_type` va sin calificar en la consulta original; es de
+    -- account_group, y calificarlo evita que un día aparezca en otra tabla
+    -- del join y la columna cambie de significado sin que nadie lo note.
+    ag.business_type            AS segmento,
+    a.account_status            AS estado
+FROM "db_prod"."product_gateway"."account" a
+INNER JOIN "db_prod"."product_gateway"."account_group" ag
+    ON a.account_group_id = ag.account_group_id
+INNER JOIN "db_prod"."product_gateway"."internal_bank_account" ba
+    ON ba.account_id = a.account_id
+LEFT JOIN "db_prod"."product_gateway"."customer" c
+    ON a.customer_id = c.customer_id
+WHERE {filtros}
+ORDER BY a.last_modified_date DESC
+LIMIT {limite}
+"""
+
+# Los campos editables del mantenedor. La clave es lo que llega por la query
+# string; el valor, la columna real. Que esté escrito acá y no en el front es
+# a propósito: el front propone, el backend decide qué se puede filtrar.
+CUENTAS_FILTROS = {
+    "cuenta": "ba.bank_account_number",
+    "moneda": "ag.currency_code",
+    "wallet": "a.partner_account_id",
+    "customer_id": "a.customer_id",
+}
+
+CUENTAS_TOPE = 500
+
+
+def buscar_cuentas(filtros: dict, limite: int = 200):
+    """Cuentas internas que cumplen los filtros del mantenedor."""
+    usados = {}
+    for clave, columna in CUENTAS_FILTROS.items():
+        v = str(filtros.get(clave, "") or "").strip()
+        if v:
+            usados[clave] = (columna, v)
+
+    if not usados:
+        return resp(400, {"error": "Poné al menos un filtro. Sin ninguno esto "
+                                   "recorre la tabla entera de cuentas."})
+
+    try:
+        limite = int(limite)
+    except (TypeError, ValueError):
+        limite = 200
+    limite = max(1, min(limite, CUENTAS_TOPE))
+
+    # El WHERE se arma con nombres de columna del diccionario de arriba; los
+    # valores van ligados. Nada de lo que escribió el usuario llega al texto.
+    donde = " AND ".join(f"{col} = :{clave}" for clave, (col, _) in usados.items())
+    sql = CUENTAS_SQL.format(filtros=donde, limite=limite + 1)
+
+    try:
+        filas = _rs_exec(sql, {k: v for k, (_, v) in usados.items()})
+    except RuntimeError as e:
+        return resp(503, {"error": str(e)})
+
+    # Se pide una fila de más para poder decir «hay más» sin mentir: cortado a
+    # 200 filas sin avisar es cómo alguien concluye que una cuenta no tiene
+    # más movimientos de los que ve.
+    hay_mas = len(filas) > limite
+    return resp(200, {
+        "rows": filas[:limite],
+        "count": len(filas[:limite]),
+        "truncated": hay_mas,
+        "limit": limite,
+        "filters": {k: v for k, (_, v) in usados.items()},
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -2730,6 +2846,11 @@ def handler(event, context):  # noqa: ARG001
         if method == "GET" and parts == ["search", "entity"]:
             qs = event.get("queryStringParameters") or {}
             return search_entity_timeline(qs.get("q", ""), int(qs.get("limit", 100)))
+
+        # GET /search/accounts — mantenedor de cuentas internas
+        if method == "GET" and parts == ["search", "accounts"]:
+            qs = event.get("queryStringParameters") or {}
+            return buscar_cuentas(qs, qs.get("limit", 200))
 
         # GET /audit
         if method == "GET" and parts == ["audit"]:
