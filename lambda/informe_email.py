@@ -1,0 +1,505 @@
+# -*- coding: utf-8 -*-
+"""El informe de gestión de casos, dibujado para correo.
+
+TERCER DIBUJO DE LOS MISMOS NÚMEROS. `informe_casos` calcula, `informe_pdf`
+dibuja el PDF y esto dibuja el correo. Los tres comparten la cuenta a
+propósito: dos definiciones de «caso gestionado» terminan en un PDF y un
+correo que dicen cosas distintas del mismo día, y nadie sabe cuál creer.
+
+POR QUÉ EL HTML ES ASÍ DE FEO. Gmail y Outlook tiran las hojas de estilo y
+las clases, y no entienden flexbox ni grid. Todo va en `<table>` anidadas con
+estilos en línea y la fuente repetida en cada celda. No es descuido: es la
+única forma de que se vea igual en los tres clientes donde se va a abrir.
+
+LO QUE ESTE INFORME NO MIDE, y está escrito en el encabezado del correo
+porque es donde hace falta: mide actividad registrada en la herramienta, no
+desempeño. Un caso difícil y uno trivial cuentan lo mismo, el que toma los
+casos que nadie quiere sale peor, y lo que se trabaja por fuera —una llamada,
+un Slack— no existe acá.
+"""
+from __future__ import annotations
+
+import datetime as dt
+
+import informe_casos as cuenta
+
+# ── Paleta ───────────────────────────────────────────────────────────────
+NAVY = "#131F44"
+NAVY2 = "#1C2E65"
+AZUL = "#0F48C7"
+VERDE = "#01A876"
+VERDE_CLARO = "#01D196"
+AMBAR = "#D97706"
+ROJO = "#DC2626"
+GRIS = "#BFBFBF"
+BORDE = "#e2e8f0"
+
+F = "font-family:Arial,Helvetica,sans-serif;"
+
+# Semáforo por antigüedad. Los cortes son los de la spec.
+SEMAFORO = (
+    (6, "#C3FFEE", "#007a5a"),
+    (13, "#FFEED9", "#9F5900"),
+    (29, "#FFEBEE", "#c62828"),
+)
+SEMAFORO_VENCIDO = ("#b71c1c", "#fff")
+
+# Los tramos del pivot. El `30d+` NO estaba en el informe original —los casos
+# de más de 30 días no caían en ninguna columna y desaparecían de la tabla,
+# que es justo lo que un informe de gestión tiene que mostrar.
+TRAMOS = (
+    ("<3d", 0, 3),
+    ("3-7d", 3, 7),
+    ("7-14d", 7, 14),
+    ("14-30d", 14, 30),
+    ("30d+", 30, 10 ** 6),
+)
+
+
+def esc(v) -> str:
+    """Todo valor dinámico pasa por acá. Un título de caso trae el nombre y el
+    id de un cliente, y un `&` sin escapar rompe el correo en silencio."""
+    if v is None or v == "":
+        return "—"
+    return (str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _num(v, cero_es_raya=True):
+    """Los ceros se muestran como `—` salvo en los totales.
+
+    Una tabla llena de ceros esconde el número que importa; una con rayas deja
+    ver dónde hay algo."""
+    if v in (None, ""):
+        return "—"
+    if cero_es_raya and v == 0:
+        return "—"
+    return v
+
+
+# ── Piezas ───────────────────────────────────────────────────────────────
+
+def seccion(titulo: str) -> str:
+    return ('<tr><td style="padding:22px 24px 10px;">'
+            '<table width="100%" cellpadding="0" cellspacing="0" border="0"'
+            f' style="background:{NAVY};border-radius:8px;">'
+            f'<tr><td style="padding:11px 18px;{F}">'
+            f'<span style="font-size:13px;font-weight:700;color:#fff;{F}">'
+            f'{esc(titulo)}</span></td></tr></table></td></tr>')
+
+
+def fila(html: str) -> str:
+    return f'<tr><td style="padding:0 24px 18px;">{html}</td></tr>'
+
+
+def carta(titulo: str, contenido: str, boton_html: str = "") -> str:
+    t = (f'<div style="font-size:10px;font-weight:700;color:{AZUL};'
+         f'text-transform:uppercase;letter-spacing:.5px;border-left:3px solid {AZUL};'
+         f'padding-left:8px;{F}">{esc(titulo)}</div>')
+    if boton_html:
+        cabecera = ('<table width="100%" cellpadding="0" cellspacing="0" border="0"'
+                    ' style="margin-bottom:10px;"><tr>'
+                    f'<td valign="middle">{t}</td>'
+                    f'<td align="right" valign="middle">{boton_html}</td></tr></table>')
+    else:
+        cabecera = t.replace("padding-left:8px;", "padding-left:8px;margin-bottom:10px;")
+    return ('<table width="100%" cellpadding="0" cellspacing="0" border="0"'
+            f' style="border:1px solid {BORDE};border-radius:8px;background:#fff;">'
+            f'<tr><td style="padding:13px 14px;">{cabecera}{contenido}</td></tr></table>')
+
+
+def dos_columnas(izq: str, der: str) -> str:
+    return ('<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+            f'<td width="49%" valign="top">{izq}</td><td width="2%"></td>'
+            f'<td width="49%" valign="top">{der}</td></tr></table>')
+
+
+def boton(url: str, texto: str) -> str:
+    return (f'<a href="{url}" target="_blank" style="display:inline-block;'
+            'padding:5px 13px;background:#2d3748;color:#fff;border-radius:6px;'
+            f'font-size:11px;font-weight:600;text-decoration:none;{F}">'
+            f'{esc(texto)} &#8594;</a>')
+
+
+def th(t: str, align: str = "left") -> str:
+    return (f'<th style="padding:8px 10px;text-align:{align};font-size:10px;'
+            f'color:#fff;font-weight:600;background:{NAVY2};white-space:nowrap;{F}">'
+            f'{esc(t)}</th>')
+
+
+def td(v, align: str = "left", par: bool = False, extra: str = "") -> str:
+    fondo = "#f7fafc" if par else "#fff"
+    return (f'<td style="padding:7px 10px;text-align:{align};font-size:11px;'
+            f'color:{NAVY};background:{fondo};border-bottom:1px solid {BORDE};'
+            f'{extra}{F}">{esc(v)}</td>')
+
+
+def td_total(v, align: str = "left") -> str:
+    return (f'<td style="padding:7px 10px;text-align:{align};font-size:11px;'
+            f'color:{NAVY};font-weight:700;background:#edf2f7;'
+            f'border-top:2px solid #CBD5E0;{F}">{esc(v)}</td>')
+
+
+def tabla(cabeza: str, cuerpo: str) -> str:
+    return ('<table width="100%" cellpadding="0" cellspacing="0" border="0"'
+            f' style="border-collapse:collapse;border:1px solid {BORDE};">'
+            f'<thead>{cabeza}</thead><tbody>{cuerpo}</tbody></table>')
+
+
+def vacio(texto: str) -> str:
+    return (f'<p style="color:{GRIS};font-size:11px;padding:6px 0;'
+            f'font-style:italic;{F}">{esc(texto)}</p>')
+
+
+def badge_edad(dias) -> str:
+    """El T-N con su color. Es lo que deja barrer la tabla sin leerla."""
+    n = int(dias or 0)
+    fondo, color = SEMAFORO_VENCIDO
+    for tope, bg, c in SEMAFORO:
+        if n <= tope:
+            fondo, color = bg, c
+            break
+    return ('<span style="display:inline-block;padding:2px 8px;border-radius:12px;'
+            f'font-size:9px;font-weight:700;background:{fondo};color:{color};{F}">'
+            f'T-{n}</span>')
+
+
+# ── La matriz de KPIs ────────────────────────────────────────────────────
+
+def _celda_kpi(valor, color: str) -> str:
+    vacia = valor is None
+    return (f'<td style="padding:14px 8px;text-align:center;background:#fff;'
+            f'border-left:1px solid {BORDE};{F}">'
+            f'<div style="font-size:26px;font-weight:700;'
+            f'color:{GRIS if vacia else color};line-height:1.05;{F}">'
+            f'{esc("—" if vacia else valor)}</div></td>')
+
+
+def si_mayor_a_cero(alerta: str):
+    return lambda v: alerta if (v or 0) > 0 else NAVY
+
+
+def fijo(hex_: str):
+    return lambda v: hex_
+
+
+COLUMNAS_KPI = (
+    ("Casos", "total", fijo(NAVY)),
+    ("Abiertos", "abiertos", fijo(AZUL)),
+    ("Cerrados", "cerrados", fijo(VERDE)),
+    ("Sin tocar", "sin_tocar", si_mayor_a_cero(AMBAR)),
+    ("Vencidos", "vencidos", si_mayor_a_cero(ROJO)),
+)
+
+
+def matriz_kpi(filas: list) -> str:
+    """filas: [(etiqueta, indicadores)]. Una por equipo, más el total."""
+    cabeza = (f'<tr style="background:{NAVY};">'
+              f'<th style="padding:10px 8px;text-align:left;font-size:10px;color:#fff;'
+              f'font-weight:600;text-transform:uppercase;letter-spacing:.6px;{F}">'
+              '&nbsp;</th>')
+    for etiqueta, _, _ in COLUMNAS_KPI:
+        cabeza += (f'<th style="padding:10px 8px;text-align:center;font-size:10px;'
+                   f'color:#fff;font-weight:600;text-transform:uppercase;'
+                   f'letter-spacing:.6px;{F}">{esc(etiqueta)}</th>')
+    cabeza += "</tr>"
+
+    cuerpo = ""
+    for i, (etiqueta, datos) in enumerate(filas):
+        borde = f' style="border-bottom:1px solid {BORDE};"' if i < len(filas) - 1 else ""
+        cuerpo += (f"<tr{borde}>"
+                   f'<td style="padding:14px;background:{NAVY2};color:#fff;'
+                   f'font-size:11px;font-weight:700;letter-spacing:.6px;{F}">'
+                   f'{esc(etiqueta)}</td>')
+        for _, clave, color in COLUMNAS_KPI:
+            v = datos.get(clave)
+            cuerpo += _celda_kpi(v, color(v))
+        cuerpo += "</tr>"
+
+    return ('<table width="100%" cellpadding="0" cellspacing="0" border="0"'
+            f' style="border-collapse:collapse;border:1px solid {BORDE};'
+            'border-radius:8px;overflow:hidden;">'
+            f'<thead>{cabeza}</thead><tbody>{cuerpo}</tbody></table>')
+
+
+# ── El pivot por antigüedad ──────────────────────────────────────────────
+
+def _tramo(dias) -> str:
+    d = dias or 0
+    for nombre, desde, hasta in TRAMOS:
+        if desde <= d < hasta:
+            return nombre
+    return TRAMOS[-1][0]
+
+
+def pivot_antiguedad(abiertos: list, clave: str, etiqueta: str, equipos: dict,
+                     ahora=None) -> str:
+    """Los casos abiertos, repartidos por dimensión y antigüedad."""
+    if not abiertos:
+        return vacio("No hay casos abiertos en el recorte del informe.")
+
+    nombres = [t[0] for t in TRAMOS]
+    mapa: dict = {}
+    for c in abiertos:
+        analista = cuenta.normalizar_analista(c.get("assigned_to"))
+        if clave == "analista":
+            k = analista
+        else:
+            k = (cuenta.SIN_ASIGNAR if analista == cuenta.SIN_ASIGNAR
+                 else equipos.get(analista, cuenta.SIN_EQUIPO))
+        if k not in mapa:
+            mapa[k] = dict.fromkeys(nombres, 0)
+        dias = cuenta.dias_abierto(c, ahora)
+        mapa[k][_tramo(None if dias is None else int(dias))] += 1
+
+    totales = dict.fromkeys(nombres, 0)
+    total_general = 0
+    cuerpo = ""
+    # De mayor a menor: la fila que importa queda arriba.
+    orden = sorted(mapa.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))
+    for i, (k, valores) in enumerate(orden):
+        par = i % 2 == 1
+        suma = sum(valores.values())
+        total_general += suma
+        celdas = ""
+        for n in nombres:
+            totales[n] += valores[n]
+            celdas += td(_num(valores[n]), "right", par)
+        cuerpo += f"<tr>{td(k, 'left', par)}{celdas}{td(suma, 'right', par)}</tr>"
+
+    cuerpo += ("<tr>" + td_total("Total")
+               + "".join(td_total(totales[n], "right") for n in nombres)
+               + td_total(total_general, "right") + "</tr>")
+    cabeza = ("<tr>" + th(etiqueta)
+              + "".join(th(n, "right") for n in nombres)
+              + th("Total", "right") + "</tr>")
+    return tabla(cabeza, cuerpo)
+
+
+# ── Las cartas ───────────────────────────────────────────────────────────
+
+def _carta_tiempos(datos: dict) -> str:
+    """Cierre y antigüedad, por equipo.
+
+    El promedio va con la mediana al lado y no en su lugar: con un caso de 61
+    días entre 16, el promedio dice una cosa y la mediana otra, y mostrar uno
+    solo deja pensar que todos tardan lo mismo.
+    """
+    filas = ""
+    for i, e in enumerate(datos["equipos"]):
+        par = i % 2 == 1
+        filas += ("<tr>" + td(e["equipo"], "left", par)
+                  + td(_num(e["cierre_promedio"]), "right", par)
+                  + td(_num(e["cierre_mediana"]), "right", par)
+                  + td(_num(e["cierre_max"]), "right", par) + "</tr>")
+    g = datos["total_general"]
+    filas += ("<tr>" + td_total("Total")
+              + td_total(_num(g["cierre_promedio"]), "right")
+              + td_total(_num(g["cierre_mediana"]), "right")
+              + td_total(_num(g["cierre_max"]), "right") + "</tr>")
+    cabeza = ("<tr>" + th("Equipo") + th("Promedio", "right")
+              + th("Mediana", "right") + th("Máximo", "right") + "</tr>")
+    return carta("Días hasta el cierre", tabla(cabeza, filas))
+
+
+def _carta_antiguedad(datos: dict) -> str:
+    filas = ""
+    for i, e in enumerate(datos["equipos"]):
+        par = i % 2 == 1
+        filas += ("<tr>" + td(e["equipo"], "left", par)
+                  + td(_num(e["abiertos"]), "right", par)
+                  + td(_num(e["edad_promedio_abiertos"]), "right", par)
+                  + td(_num(e["mas_viejo_abierto"]), "right", par) + "</tr>")
+    g = datos["total_general"]
+    filas += ("<tr>" + td_total("Total")
+              + td_total(g["abiertos"], "right")
+              + td_total(_num(g["edad_promedio_abiertos"]), "right")
+              + td_total(_num(g["mas_viejo_abierto"]), "right") + "</tr>")
+    cabeza = ("<tr>" + th("Equipo") + th("Abiertos", "right")
+              + th("Edad prom.", "right") + th("Más viejo", "right") + "</tr>")
+    return carta("Antigüedad de los abiertos (días)", tabla(cabeza, filas))
+
+
+def _carta_analistas(datos: dict, url: str) -> str:
+    filas = ""
+    for i, a in enumerate(datos["analistas"]):
+        par = i % 2 == 1
+        filas += ("<tr>" + td(a["analista"], "left", par)
+                  + td(a["equipo"], "left", par)
+                  + td(a["total"], "right", par)
+                  + td(_num(a["abiertos"]), "right", par)
+                  + td(_num(a["cerrados"]), "right", par)
+                  + td(_num(a["sin_tocar"]), "right", par,
+                       f"color:{AMBAR};font-weight:700;" if a["sin_tocar"] else "")
+                  + td(_num(a["vencidos"]), "right", par,
+                       f"color:{ROJO};font-weight:700;" if a["vencidos"] else "")
+                  + td(_num(a["cierre_promedio"]), "right", par) + "</tr>")
+    if not filas:
+        return carta("Por analista", vacio("Sin casos en el recorte."))
+    cabeza = ("<tr>" + th("Analista") + th("Equipo")
+              + "".join(th(t, "right") for t in
+                        ("Casos", "Abiertos", "Cerrados", "Sin tocar",
+                         "Vencidos", "Cierre prom."))
+              + "</tr>")
+    return carta("Por analista", tabla(cabeza, filas),
+                 boton(url, "Ver los casos"))
+
+
+def _carta_viejos(abiertos: list, url: str, ahora=None, tope: int = 25) -> str:
+    """Los abiertos hace más de tres días, del más viejo al menos.
+
+    Se corta en 25 y se dice cuántos quedaron afuera. Un correo con 300 filas
+    no lo lee nadie y además revienta el límite de tamaño de Gmail; el listado
+    completo está en la pantalla, que es donde se puede trabajar.
+    """
+    viejos = []
+    for c in abiertos:
+        d = cuenta.dias_abierto(c, ahora)
+        if d is not None and d > 3:
+            viejos.append((int(d), c))
+    if not viejos:
+        return carta("Abiertos hace más de 3 días",
+                     vacio("Ninguno. Todos los casos abiertos tienen 3 días o menos."))
+    viejos.sort(key=lambda x: -x[0])
+
+    filas = ""
+    for i, (dias, c) in enumerate(viejos[:tope]):
+        par = i % 2 == 1
+        fondo = "#f7fafc" if par else "#fff"
+        filas += (
+            "<tr>"
+            f'<td style="padding:7px 10px;font-size:11px;background:{fondo};'
+            f'border-bottom:1px solid {BORDE};{F}">{badge_edad(dias)}</td>'
+            + td(c.get("title") or c.get("case_id"), "left", par)
+            + td(cuenta.normalizar_analista(c.get("assigned_to")), "left", par)
+            + td(str(c.get("created_at") or "")[:10], "left", par)
+            + td((c.get("sla_etiqueta") or c.get("sla_estado") or "—"), "left", par,
+                 f"color:{ROJO};font-weight:700;"
+                 if c.get("sla_estado") == "vencido" else "")
+            + "</tr>")
+    cabeza = ("<tr>" + th("Antigüedad") + th("Caso") + th("Analista")
+              + th("Creado") + th("Plazo") + "</tr>")
+    contenido = tabla(cabeza, filas)
+    if len(viejos) > tope:
+        contenido += (f'<p style="font-size:10px;color:{GRIS};margin:8px 0 0;{F}">'
+                      f'Se muestran los {tope} más viejos de {len(viejos)}. '
+                      'El resto está en la pantalla de casos.</p>')
+    return carta(f"Abiertos hace más de 3 días ({len(viejos)})", contenido,
+                 boton(url, "Detalle casos"))
+
+
+# ── El correo ────────────────────────────────────────────────────────────
+
+def _periodo(filtro: dict) -> str:
+    desde, hasta = filtro.get("desde") or "", filtro.get("hasta") or ""
+    if desde and hasta:
+        return f"casos creados entre {desde} y {hasta}"
+    if desde:
+        return f"casos creados desde {desde}"
+    if hasta:
+        return f"casos creados hasta {hasta}"
+    return "todos los casos vigentes"
+
+
+def asunto(datos: dict, hoy: str) -> str:
+    return f"Reporte de gestión de casos · {hoy} · Global66"
+
+
+def construir(datos: dict, url_casos: str, ahora=None, equipos: dict | None = None,
+              generado_por: str = "") -> str:
+    """El HTML completo del correo."""
+    equipos = equipos or {}
+    ahora = ahora or dt.datetime.utcnow()
+    hoy = ahora.strftime("%d-%m-%Y")
+    g = datos["total_general"]
+    abiertos = [c for c in datos["casos"] if not cuenta.esta_cerrado(c)]
+
+    filas_kpi = [("Todos", g)] + [(e["equipo"], e) for e in datos["equipos"]]
+
+    cuerpo = (
+        # ── Resumen ──
+        '<tr><td style="padding:8px 24px 16px;">' + matriz_kpi(filas_kpi) + "</td></tr>"
+
+        # ── Sección 1: los abiertos ──
+        + seccion("Casos abiertos")
+        + fila(carta("Por equipo y antigüedad",
+                     pivot_antiguedad(abiertos, "equipo", "Equipo", equipos, ahora)))
+        + fila(carta("Por analista y antigüedad",
+                     pivot_antiguedad(abiertos, "analista", "Analista", equipos, ahora)))
+        + fila(dos_columnas(_carta_tiempos(datos), _carta_antiguedad(datos)))
+        + fila(_carta_viejos(abiertos, url_casos, ahora))
+
+        # ── Sección 2: la carga ──
+        + seccion("Carga por analista")
+        + fila(_carta_analistas(datos, url_casos))
+    )
+
+    nota = ("Mide actividad registrada en la herramienta, no desempeño. "
+            "Un caso difícil y uno trivial cuentan lo mismo.")
+    pie_extra = (f" &middot; pedido por {esc(generado_por)}" if generado_por else "")
+
+    return (
+        '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+        '<title>Reporte de gestión de casos</title></head>'
+        '<body style="margin:0;padding:0;background:#f0f2f5;">'
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0"'
+        ' style="background:#f0f2f5;"><tr><td align="center" style="padding:24px 16px;">'
+        '<table width="860" cellpadding="0" cellspacing="0" border="0"'
+        ' style="background:#fff;border-radius:8px;border:1px solid #dde1e7;'
+        'max-width:100%;">'
+
+        # HEADER
+        f'<tr><td style="background:{NAVY};border-radius:8px 8px 0 0;'
+        'padding:22px 28px 20px;">'
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+        f'<td valign="middle"><div style="font-size:18px;font-weight:800;color:#fff;{F}">'
+        'Global66</div>'
+        '<div style="font-size:9px;font-weight:600;color:rgba(255,255,255,0.5);'
+        f'text-transform:uppercase;letter-spacing:1px;margin-top:2px;{F}">'
+        'Compliance &middot; Gestión de casos</div></td>'
+        '<td align="right" valign="middle"><div style="display:inline-block;'
+        'background:rgba(1,209,150,0.15);border:1px solid rgba(1,209,150,0.4);'
+        f'border-radius:20px;padding:4px 14px;font-size:10px;color:{VERDE_CLARO};'
+        f'font-weight:600;{F}">Generado &middot; {esc(hoy)}</div></td>'
+        '</tr></table>'
+        '<div style="margin-top:14px;padding-top:12px;'
+        'border-top:1px solid rgba(255,255,255,0.12);">'
+        f'<div style="font-size:17px;font-weight:800;color:#fff;{F}">'
+        'Reporte de gestión de casos</div>'
+        '<div style="font-size:10px;color:rgba(255,255,255,0.5);margin-top:3px;'
+        f'{F}">{esc(_periodo(datos["filtro"]))} &middot; {esc(nota)}</div>'
+        '</div></td></tr>'
+
+        # RESUMEN
+        '<tr><td style="padding:20px 24px 4px;">'
+        f'<div style="font-size:9px;font-weight:700;color:{GRIS};'
+        f'text-transform:uppercase;letter-spacing:1px;{F}">Resumen</div></td></tr>'
+        + cuerpo +
+
+        # FOOTER
+        f'<tr><td style="padding:18px 24px;text-align:center;'
+        f'border-top:1px solid {BORDE};">'
+        f'<p style="font-size:10px;color:{GRIS};margin:0;{F}">'
+        'Generado automáticamente &middot; '
+        f'<span style="color:{AZUL};font-weight:700;{F}">Global66 Compliance</span>'
+        f'{pie_extra}</p></td></tr>'
+        '</table></td></tr></table></body></html>')
+
+
+def texto_plano(datos: dict, hoy: str) -> str:
+    """El cuerpo alternativo. No es decorativo: un cliente que no muestra HTML
+    tiene que poder leer los números, no un correo en blanco."""
+    g = datos["total_general"]
+    lineas = [
+        f"Reporte de gestión de casos · {hoy} · Global66",
+        _periodo(datos["filtro"]).capitalize(),
+        "",
+        f"Casos: {g['total']} · abiertos: {g['abiertos']} · cerrados: {g['cerrados']}",
+        f"Sin tocar: {g['sin_tocar']} · vencidos: {g['vencidos']}",
+        "",
+        "Por equipo:",
+    ]
+    for e in datos["equipos"]:
+        lineas.append(f"  {e['equipo']}: {e['total']} casos "
+                      f"({e['abiertos']} abiertos, {e['vencidos']} vencidos)")
+    lineas += ["", "Mide actividad registrada en la herramienta, no desempeño."]
+    return "\n".join(lineas)
