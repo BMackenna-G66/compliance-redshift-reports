@@ -164,6 +164,10 @@ export function PedirDocumentos({ api, caso, perfil, email, alCerrar, alTerminar
         template_key: form.template_key,
         texto_libre: form.texto_libre,
         alert_data: form.alert_data,
+        // Quién manda. Queda escrito en el historial del caso: sin esto, el
+        // correo aparece sin autor y «¿quién le escribió esto al cliente?»
+        // se termina preguntando por chat.
+        user_email: email,
       });
       if (d?.error) throw new Error(d.error);
       alTerminar(`Correo enviado a ${form.correo}.`);
