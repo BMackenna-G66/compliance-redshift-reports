@@ -114,13 +114,21 @@ except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
     api_externa = None
     print(f"[api] api_externa no disponible, las rutas /v1 quedan fuera: {_e}")
 
-# El informe de gestión. Dos módulos: la cuenta y el dibujo.
+# El informe de gestión: la cuenta, y dos dibujos de los mismos números.
+# `informe_email` se importa aparte porque si faltara, el PDF —que ya está en
+# producción— tiene que seguir andando igual.
 try:
     import informe_casos
     import informe_pdf
 except Exception as _e:  # pragma: no cover
     informe_casos = informe_pdf = None
     print(f"[api] informe de gestión no disponible: {_e}")
+
+try:
+    import informe_email
+except Exception as _e:  # pragma: no cover
+    informe_email = None
+    print(f"[api] informe por correo no disponible: {_e}")
 
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
@@ -2543,6 +2551,10 @@ def handler(event, context):  # noqa: ARG001
         # GET /informes/gestion.pdf — el informe de gestión de casos.
         if method == "GET" and parts == ["informes", "gestion.pdf"]:
             return descargar_informe_gestion(event.get("queryStringParameters") or {})
+
+        # POST /informes/gestion/enviar — el mismo informe, por correo.
+        if method == "POST" and parts == ["informes", "gestion", "enviar"]:
+            return enviar_informe_gestion(body)
 
         # ── API externa de casos (/v1) ───────────────────────────────────
         # Va ANTES del resto del ruteo porque `/v1/...` no puede caer nunca en
@@ -8494,6 +8506,91 @@ def descargar_informe_gestion(q: dict):
     g = datos["total_general"]
     return resp(200, {"url": url, "archivo": nombre, "expira_en_minutos": 15,
                       "casos": g["total"], "equipos": len(datos["equipos"])})
+
+
+# El informe por correo sólo sale al dominio de la empresa.
+#
+# POR QUÉ ESTÁ ACÁ Y NO EN UNA CONFIGURACIÓN. Este endpoint arma un correo
+# con títulos de casos —que traen nombre e id de clientes reales— y lo manda
+# a donde le digan. La API todavía no tiene autenticación, así que sin este
+# corte cualquiera que conozca la URL se manda la cartera de casos a su
+# casilla. Un allowlist de dominio no reemplaza a la auth, pero cierra la
+# única puerta que este endpoint abre.
+DOMINIO_INTERNO = "@global66.com"
+MAX_DESTINATARIOS = 20
+
+
+def enviar_informe_gestion(body: dict):
+    """Arma el informe de gestión y lo manda por correo.
+
+    body: {para: [correo, ...], desde, hasta, analista, equipo, actor_email}
+    """
+    if not (informe_casos and informe_email):
+        return resp(503, {"error": "El informe no está disponible en este despliegue."})
+
+    crudos = body.get("para")
+    if isinstance(crudos, str):
+        crudos = [x for x in re.split(r"[,;\s]+", crudos) if x]
+    destinos = [str(x).strip().lower() for x in (crudos or []) if str(x).strip()]
+    if not destinos:
+        return resp(400, {"error": "para es requerido (lista de correos)"})
+    if len(destinos) > MAX_DESTINATARIOS:
+        return resp(400, {"error": f"demasiados destinatarios (máximo {MAX_DESTINATARIOS})"})
+    ajenos = [d for d in destinos if not d.endswith(DOMINIO_INTERNO)]
+    if ajenos:
+        return resp(400, {
+            "error": "El informe sólo se manda a correos "
+                     f"{DOMINIO_INTERNO}: trae datos de clientes.",
+            "rechazados": ajenos,
+        })
+
+    try:
+        r = get_cases(None, None, None)
+        casos = json.loads(r["body"]).get("cases", [])
+        datos = informe_casos.armar(
+            casos,
+            equipos=_equipos_por_analista(),
+            desde=str(body.get("desde") or "").strip(),
+            hasta=str(body.get("hasta") or "").strip(),
+            analista=str(body.get("analista") or "").strip(),
+            equipo=str(body.get("equipo") or "").strip(),
+        )
+        ahora = dt.datetime.utcnow()
+        html = informe_email.construir(
+            datos, url_casos=WATCHTOWER_URL, ahora=ahora,
+            equipos=_equipos_por_analista(),
+            generado_por=str(body.get("actor_email") or "").strip())
+        hoy = ahora.strftime("%d-%m-%Y")
+    except Exception as e:
+        print(f"[informe-correo] falló al armar: {type(e).__name__}: {e}")
+        return resp(500, {"error": f"No pude armar el informe: {str(e)[:200]}"})
+
+    # Uno por destinatario y no todos en el mismo `to`: si uno de los correos
+    # no existe, el resto igual lo recibe, y nadie ve la lista de los demás.
+    envios = []
+    for destino in destinos:
+        envio = _send_email(destino, informe_email.asunto(datos, hoy), html,
+                            from_addr=ALERT_DOCS_FROM_ADDR)
+        envios.append({"para": destino, "enviado": envio["sent"],
+                       "error": envio["error"] or ""})
+
+    g = datos["total_general"]
+    _safe_audit(user_email=str(body.get("actor_email") or "unknown"),
+                action="informe.gestion.enviar", entity_type="informe",
+                entity_id=hoy,
+                # `new_value` y no `details`: `_safe_audit` se traga cualquier
+                # otra clave con **_extra, así que el detalle se perdería sin
+                # que nada avise.
+                new_value={"destinatarios": destinos,
+                           "casos": g["total"],
+                           "enviados": sum(1 for e in envios if e["enviado"])})
+    return resp(200, {
+        "enviados": sum(1 for e in envios if e["enviado"]),
+        "detalle": envios,
+        "casos": g["total"],
+        "equipos": len(datos["equipos"]),
+        "asunto": informe_email.asunto(datos, hoy),
+    })
 
 
 # ---------------------------------------------------------------------------
