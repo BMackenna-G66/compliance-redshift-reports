@@ -3988,6 +3988,9 @@ def run_alert_prioritization_test(body: dict):
             # que se le escribió. Va como texto y no como HTML porque lo que
             # se audita es el contenido, no el diseño.
             "cuerpo_texto": _html_a_texto(html_body),
+            # Nadie apretó enviar: lo mandó el proceso. Se escribe igual para
+            # que el historial no tenga huecos y se lea de una sola forma.
+            "enviado_por": "proceso de priorización (prueba)",
             "created_at": _now_str(),
             "test_mode": True,
         })
@@ -4162,6 +4165,7 @@ def run_alert_prioritization_real(body: dict):
             # que se le escribió. Va como texto y no como HTML porque lo que
             # se audita es el contenido, no el diseño.
             "cuerpo_texto": _html_a_texto(html_body),
+            "enviado_por": "proceso de priorización",
             "created_at": _now_str(),
             "test_mode": False,
         })
@@ -4251,6 +4255,13 @@ def send_manual_document_request(body: dict):
     existing_case_id = body.get("case_id", "").strip()
     template_key = (body.get("template_key") or "").strip()
     texto_libre = body.get("texto_libre", "")
+    # Quién apretó enviar. Los dos frentes mandan `user_email`; la API externa
+    # ya traía el suyo como `actor_email` (`v1_comunicar`), así que se aceptan
+    # los dos o los envíos de terceros quedarían sin autor teniéndolo.
+    # Si no viene ninguno se dice que no se sabe, en vez de atribuírselo a
+    # nadie o —peor— a quien no fue.
+    enviado_por = str(body.get("user_email") or body.get("actor_email")
+                      or "").strip()[:200] or "(sin identificar)"
 
     # Se valida ANTES de crear el caso: si la dirección no sirve, el correo no
     # va a salir, y crear un caso más un registro de pedido fallido por algo
@@ -4321,6 +4332,21 @@ def send_manual_document_request(body: dict):
         "subject": subject,
         "sent": envio["sent"],
         "send_error": envio["error"],
+        # QUÉ DECÍA EL CORREO. Los dos flujos automáticos ya lo guardaban;
+        # este —el botón que usa el analista desde la alerta y desde el
+        # caso— no, y es por donde sale la enorme mayoría de los correos.
+        # El resultado era un historial que decía que se escribió pero no
+        # qué se dijo: para reconstruir un caso, eso es no tener nada.
+        #
+        # Va en texto y no en HTML porque lo que se audita es el contenido.
+        "cuerpo_texto": _html_a_texto(html_body),
+        # Y aparte lo que escribió la persona. El cuerpo renderizado lo
+        # incluye, pero mezclado con la plantilla; guardarlo suelto permite
+        # distinguir lo que puso el analista de lo que puso el sistema.
+        "texto_libre": texto_libre or "",
+        # QUIÉN LO MANDÓ. Sin esto el historial es anónimo, y «¿quién le
+        # escribió esto al cliente?» se contesta preguntando en un canal.
+        "enviado_por": enviado_por,
         "created_at": _now_str(),
         "manual": True,
     })
@@ -5584,6 +5610,9 @@ def _correos_del_caso(caso: dict, pedidos: list | None = None) -> list:
             "salio": bool(r.get("sent")),
             "error": r.get("send_error") or "",
             "cuerpo": r.get("cuerpo_texto") or "",
+            # Vacío en los envíos anteriores a que esto se guardara: se deja
+            # vacío y la pantalla lo dice, en vez de inventar un autor.
+            "enviado_por": r.get("enviado_por") or "",
             "request_id": r.get("request_id", ""),
         })
 

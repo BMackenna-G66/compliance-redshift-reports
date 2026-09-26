@@ -5004,6 +5004,10 @@
                     x-text="m.direccion === 'enviado' ? '↗ Enviado' : '↘ Recibido'"></span>
                   <span class="text-[11px] text-slate-500"
                     x-text="(m.direccion === 'enviado' ? 'a ' + m.para : 'de ' + m.de)"></span>
+                  <!-- Quién lo mandó. Sólo en los salientes: en los entrantes
+                       el autor ya es el cliente y repetirlo sería ruido. -->
+                  <span x-show="m.direccion === 'enviado' && m.enviado_por"
+                    class="text-[11px] text-slate-600" x-text="'· por ' + m.enviado_por"></span>
                   <span class="text-[11px] text-slate-600 ml-auto" x-text="(m.cuando||'').slice(0,16)"></span>
                 </div>
                 <!-- Un envío que falló también es historia: explica un silencio. -->
@@ -5014,7 +5018,7 @@
                    x-text="m.cuerpo.length > 400 ? m.cuerpo.slice(0,400) + '…' : m.cuerpo"></p>
                 <p x-show="m.direccion === 'enviado' && !m.cuerpo"
                    class="text-[11px] text-slate-600 italic mt-1">
-                  (el cuerpo no se guardaba cuando se envió este correo)
+                  (envío anterior a que se guardara el cuerpo)
                 </p>
                 <div x-show="(m.documentos||[]).length" class="flex flex-wrap gap-1 mt-1.5">
                   <template x-for="(d,j) in (m.documentos||[])" :key="'d'+i+'_'+j">
@@ -5299,6 +5303,8 @@
                       x-text="m.direccion === 'enviado' ? '↗ Enviado' : '↘ Recibido'"></span>
                     <span class="text-[11px] text-slate-500"
                       x-text="(m.direccion === 'enviado' ? 'a ' + m.para : 'de ' + m.de)"></span>
+                    <span x-show="m.direccion === 'enviado' && m.enviado_por"
+                      class="text-[11px] text-slate-600" x-text="'· por ' + m.enviado_por"></span>
                     <!-- De qué caso salió: en una ficha que junta varios, sin
                          esto no se sabe a cuál pertenece cada correo. -->
                     <span x-show="m.case_title" class="text-[11px] px-1.5 py-0.5 rounded bg-slate-700/70 text-slate-400 truncate max-w-[220px]"
@@ -5312,7 +5318,7 @@
                      x-text="m.cuerpo.length > 300 ? m.cuerpo.slice(0,300) + '…' : m.cuerpo"></p>
                   <p x-show="m.direccion === 'enviado' && !m.cuerpo"
                      class="text-[11px] text-slate-600 italic mt-1">
-                    (el cuerpo no se guardaba cuando se envió este correo)
+                    (envío anterior a que se guardara el cuerpo)
                   </p>
                   <div x-show="(m.documentos||[]).length" class="flex flex-wrap gap-1 mt-1.5">
                     <template x-for="(d,j) in (m.documentos||[])" :key="'fd'+i+'_'+j">
@@ -10401,6 +10407,10 @@
           template_key: this.docRequestModal.template_key,
           texto_libre: this.docRequestModal.texto_libre,
           alert_data: this.docRequestModal.alert_data || {},
+          // Quién manda. Queda escrito en el historial del caso: sin esto, el
+          // correo aparece sin autor y «¿quién le escribió esto al cliente?»
+          // se termina preguntando por chat.
+          user_email: this.currentUserEmail,
         });
         this.docRequestModal.sending = false;
         if (d?.case_id) {

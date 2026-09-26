@@ -32,6 +32,11 @@ export function Correos({ correos, mostrarCaso = false, alAbrirCaso = null }) {
             {entrante ? 'Recibido' : 'Enviado'}
           </strong>
           {' · '}{entrante ? `de ${m.de || '—'}` : `a ${m.para || '—'}`}
+          {/* Quién lo mandó. Va sólo en los salientes: en los entrantes el
+              autor ya es el cliente, y repetirlo sería ruido. */}
+          {!entrante && m.enviado_por && (
+            <>{' · '}<span style={{ color: 'var(--texto-mute)' }}>por {m.enviado_por}</span></>
+          )}
           {mostrarCaso && m.case_title && (
             alAbrirCaso ? (
               <button className="wt-enlace" onClick={() => alAbrirCaso(m.case_id)}
@@ -62,7 +67,7 @@ export function Correos({ correos, mostrarCaso = false, alAbrirCaso = null }) {
         {texto && <p className="wt-correo-cuerpo">{texto}{recortado && '…'}</p>}
         {!m.cuerpo && !entrante && (
           <p style={{ margin: 0, fontSize: 'var(--texto-xs)', color: 'var(--texto-mute)' }}>
-            (el cuerpo no se guardaba cuando se envió este correo)
+            (envío anterior a que se guardara el cuerpo)
           </p>
         )}
 
