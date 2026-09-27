@@ -53,8 +53,7 @@ def armar(casos, equipos=None):
 
 def html_de(casos, equipos=None):
     datos = armar(casos, equipos)
-    return E.construir(datos, url_casos="https://ejemplo/", ahora=AHORA,
-                       equipos=equipos or {})
+    return E.construir(datos, url_casos="https://ejemplo/", ahora=AHORA)
 
 
 class EsCorreoYNoPagina(unittest.TestCase):
@@ -129,7 +128,7 @@ class ElTramoDeMasDeTreintaDias(unittest.TestCase):
         # fila sumaría 0 y el caso desaparecería sin avisar.
         datos = armar([caso(created_at="2026-08-17 10:00:00")])
         abiertos = [c for c in datos["casos"] if not informe_casos.esta_cerrado(c)]
-        tabla = E.pivot_antiguedad(abiertos, "analista", "Analista", {}, AHORA)
+        tabla = E.pivot_antiguedad(abiertos, AHORA)
         self.assertIn(">1<", tabla)
 
     def test_cada_tramo_agarra_su_rango(self):
@@ -151,7 +150,7 @@ class ElTramoDeMasDeTreintaDias(unittest.TestCase):
                  for m in (7, 8, 9) for d in (1, 5, 9)]
         datos = armar(casos)
         abiertos = [c for c in datos["casos"] if not informe_casos.esta_cerrado(c)]
-        tabla = E.pivot_antiguedad(abiertos, "analista", "Analista", {}, AHORA)
+        tabla = E.pivot_antiguedad(abiertos, AHORA)
         # La última celda de la fila Total es el gran total.
         import re
         totales = re.findall(r'background:#edf2f7[^>]*>([^<]*)<', tabla)
@@ -197,6 +196,58 @@ class LaCartaDeViejos(unittest.TestCase):
                       created_at="2026-07-01 10:00:00")]
         carta = E._carta_viejos(casos, "https://ejemplo/", AHORA)
         self.assertLess(carta.index("EL VIEJO"), carta.index("EL NUEVO"))
+
+
+class ElResumenEsPorPersona(unittest.TestCase):
+    """La matriz de arriba va por persona y no por equipo.
+
+    El equipo promedia y esconde: un equipo con 33 abiertos puede ser una
+    persona con 15 y cuatro con cuatro, y el informe existe para que eso se
+    note. El correo es el identificador porque es lo único que no se escribe
+    de dos formas distintas.
+    """
+
+    CASOS = [
+        caso(case_id=f"a{i}", assigned_to="ana.perez@global66.com")
+        for i in range(3)
+    ] + [
+        caso(case_id="b1", assigned_to="luis.gomez@global66.com"),
+        caso(case_id="c1", assigned_to=""),
+    ]
+    EQUIPOS = {"ana.perez@global66.com": "KYT",
+               "luis.gomez@global66.com": "KYT"}
+
+    def test_las_filas_son_los_correos(self):
+        h = html_de(self.CASOS, self.EQUIPOS)
+        resumen = h[:h.index("Casos abiertos")]
+        self.assertIn("ana.perez@global66.com", resumen)
+        self.assertIn("luis.gomez@global66.com", resumen)
+
+    def test_el_equipo_no_es_una_fila_del_resumen(self):
+        """Las dos personas son de KYT. Si «KYT» apareciera como fila, es que
+        alguien volvió a agrupar y los números se promediaron otra vez."""
+        h = html_de(self.CASOS, self.EQUIPOS)
+        resumen = h[:h.index("Casos abiertos")]
+        self.assertNotIn(">KYT<", resumen)
+
+    def test_el_total_general_sigue_arriba(self):
+        h = html_de(self.CASOS, self.EQUIPOS)
+        resumen = h[:h.index("Casos abiertos")]
+        self.assertIn(">Todos<", resumen)
+        self.assertLess(resumen.index(">Todos<"),
+                        resumen.index("ana.perez@global66.com"))
+
+    def test_los_sin_asignar_tienen_su_propia_fila(self):
+        """No son de nadie. Meterlos dentro de alguien haría desaparecer la
+        alerta, que es lo único accionable de esa fila."""
+        h = html_de(self.CASOS, self.EQUIPOS)
+        self.assertIn(informe_casos.SIN_ASIGNAR, h)
+
+    def test_ya_no_hay_pivot_por_equipo(self):
+        """Se sacó a pedido: quedaba duplicado con el de persona."""
+        h = html_de(self.CASOS, self.EQUIPOS)
+        self.assertNotIn("POR EQUIPO Y ANTIGÜEDAD", h.upper())
+        self.assertIn("POR PERSONA Y ANTIGÜEDAD", h.upper())
 
 
 class LaAdvertenciaVaEnElCorreo(unittest.TestCase):
