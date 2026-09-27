@@ -133,6 +133,20 @@ def td(v, align: str = "left", par: bool = False, extra: str = "") -> str:
             f'{extra}{F}">{esc(v)}</td>')
 
 
+def td_html(html: str, align: str = "left", par: bool = False) -> str:
+    """Igual que `td`, pero el contenido ya viene armado y escapado.
+
+    Lo usan las celdas con una dirección de correo: ahí adentro va un `<a>`
+    propio para que el cliente no lo pinte de azul con subrayado."""
+    fondo = "#f7fafc" if par else "#fff"
+    return (f'<td style="padding:7px 10px;text-align:{align};font-size:11px;'
+            f'background:{fondo};border-bottom:1px solid {BORDE};{F}">{html}</td>')
+
+
+def td_persona(correo, par: bool = False) -> str:
+    return td_html(correo_texto(correo, NAVY), "left", par)
+
+
 def td_total(v, align: str = "left") -> str:
     return (f'<td style="padding:7px 10px;text-align:{align};font-size:11px;'
             f'color:{NAVY};font-weight:700;background:#edf2f7;'
@@ -148,6 +162,37 @@ def tabla(cabeza: str, cuerpo: str) -> str:
 def vacio(texto: str) -> str:
     return (f'<p style="color:{GRIS};font-size:11px;padding:6px 0;'
             f'font-style:italic;{F}">{esc(texto)}</p>')
+
+
+def nombre_de(correo: str) -> str:
+    """«francia.villalobos@global66.com» → «Francia Villalobos».
+
+    El correo entero en negrita blanca ocupa media fila y no se lee. El nombre
+    arriba y la dirección chiquita abajo dicen lo mismo y se barren de un
+    vistazo."""
+    c = str(correo or "").strip()
+    if "@" not in c:
+        return c or "—"
+    return " ".join(p.capitalize() for p in c.split("@")[0].replace("_", ".").split(".") if p)
+
+
+def correo_texto(correo: str, color: str, extra: str = "") -> str:
+    """La dirección, envuelta en un enlace con el color que le corresponde.
+
+    NO ES DECORACIÓN. Gmail y Outlook detectan las direcciones sueltas y las
+    convierten en enlaces con SU estilo: azul y subrayado. Sobre el navy de la
+    fila eso queda azul sobre azul y no se lee — que es exactamente cómo se
+    veía este informe en la casilla.
+
+    Envolverlo uno mismo en un `<a>` con el color puesto evita que el cliente
+    lo vuelva a enlazar, y de paso el clic escribe a la persona, que es lo que
+    uno quiere hacer con ese dato.
+    """
+    c = str(correo or "").strip()
+    if "@" not in c:
+        return f'<span style="color:{color};{extra}{F}">{esc(c or "—")}</span>'
+    return (f'<a href="mailto:{esc(c)}" style="color:{color};text-decoration:none;'
+            f'{extra}{F}">{esc(c)}</a>')
 
 
 def badge_edad(dias) -> str:
@@ -206,10 +251,22 @@ def matriz_kpi(filas: list) -> str:
     cuerpo = ""
     for i, (etiqueta, datos) in enumerate(filas):
         borde = f' style="border-bottom:1px solid {BORDE};"' if i < len(filas) - 1 else ""
+        # El nombre arriba y la dirección chiquita abajo. El correo entero en
+        # negrita ocupaba media fila, y el cliente además lo pintaba de azul
+        # sobre el navy: ilegible.
+        if "@" in str(etiqueta):
+            titulo = (f'<div style="font-size:12px;font-weight:700;color:#fff;'
+                      f'{F}">{esc(nombre_de(etiqueta))}</div>'
+                      '<div style="font-size:9px;margin-top:2px;'
+                      f'{F}">'
+                      + correo_texto(etiqueta, "rgba(255,255,255,0.55)")
+                      + '</div>')
+        else:
+            titulo = (f'<div style="font-size:12px;font-weight:700;color:#fff;'
+                      f'letter-spacing:.6px;{F}">{esc(etiqueta)}</div>')
         cuerpo += (f"<tr{borde}>"
-                   f'<td style="padding:14px;background:{NAVY2};color:#fff;'
-                   f'font-size:11px;font-weight:700;letter-spacing:.6px;{F}">'
-                   f'{esc(etiqueta)}</td>')
+                   f'<td style="padding:12px 14px;background:{NAVY2};{F}">'
+                   f'{titulo}</td>')
         for _, clave, color in COLUMNAS_KPI:
             v = datos.get(clave)
             cuerpo += _celda_kpi(v, color(v))
@@ -266,7 +323,8 @@ def pivot_antiguedad(abiertos: list, ahora=None) -> str:
         for n in nombres:
             totales[n] += valores[n]
             celdas += td(_num(valores[n]), "right", par)
-        cuerpo += f"<tr>{td(k, 'left', par)}{celdas}{td(suma, 'right', par)}</tr>"
+        cuerpo += (f"<tr>{td_persona(k, par)}{celdas}"
+                   f"{td(suma, 'right', par)}</tr>")
 
     cuerpo += ("<tr>" + td_total("Total")
                + "".join(td_total(totales[n], "right") for n in nombres)
@@ -325,7 +383,7 @@ def _carta_analistas(datos: dict, url: str) -> str:
     filas = ""
     for i, a in enumerate(datos["analistas"]):
         par = i % 2 == 1
-        filas += ("<tr>" + td(a["analista"], "left", par)
+        filas += ("<tr>" + td_persona(a["analista"], par)
                   + td(a["equipo"], "left", par)
                   + td(a["total"], "right", par)
                   + td(_num(a["abiertos"]), "right", par)
@@ -372,7 +430,7 @@ def _carta_viejos(abiertos: list, url: str, ahora=None, tope: int = 25) -> str:
             f'<td style="padding:7px 10px;font-size:11px;background:{fondo};'
             f'border-bottom:1px solid {BORDE};{F}">{badge_edad(dias)}</td>'
             + td(c.get("title") or c.get("case_id"), "left", par)
-            + td(cuenta.normalizar_analista(c.get("assigned_to")), "left", par)
+            + td_persona(cuenta.normalizar_analista(c.get("assigned_to")), par)
             + td(str(c.get("created_at") or "")[:10], "left", par)
             + td((c.get("sla_etiqueta") or c.get("sla_estado") or "—"), "left", par,
                  f"color:{ROJO};font-weight:700;"
@@ -436,7 +494,10 @@ def construir(datos: dict, url_casos: str, ahora=None, generado_por: str = "") -
 
     nota = ("Mide actividad registrada en la herramienta, no desempeño. "
             "Un caso difícil y uno trivial cuentan lo mismo.")
-    pie_extra = (f" &middot; pedido por {esc(generado_por)}" if generado_por else "")
+    # También acá: suelta, el cliente la pinta de azul y subrayada en medio
+    # de una línea gris de 10px.
+    pie_extra = (" &middot; pedido por " + correo_texto(generado_por, GRIS)
+                 if generado_por else "")
 
     return (
         '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
