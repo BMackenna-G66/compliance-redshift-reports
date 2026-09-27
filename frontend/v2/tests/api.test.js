@@ -114,6 +114,26 @@ describe('las peticiones', () => {
     assert.equal(enviado.texto, 'hola');
   });
 
+  it('un DELETE sin cuerpo igual lleva el actor', async () => {
+    // Antes el cuerpo sólo se armaba si había algo que mandar, así que
+    // `api.del('/cases/1')` salía pelado. El backend, que identifica a quien
+    // actúa por `actor_email`, lo rechazaba con «reservada para
+    // administradores» — a todo el mundo, administradores incluidos. El botón
+    // estaba, el permiso estaba, y el borrado no se podía hacer.
+    const a = api('admin');
+    await a.del('/cases/1');
+    assert.ok(llamadas[0].opts.body, 'el DELETE salió sin cuerpo');
+    assert.equal(JSON.parse(llamadas[0].opts.body).actor_email,
+                 'quien@global66.com');
+  });
+
+  it('el GET sigue sin cuerpo', async () => {
+    // Un GET con cuerpo no es válido y algunos clientes lo tiran.
+    const a = api('analyst');
+    await a.get('/cases');
+    assert.equal(llamadas[0].opts.body, undefined);
+  });
+
   it('quien llama puede pisar el actor_email si de verdad lo necesita', async () => {
     const a = api('analyst');
     await a.post('/x', { actor_email: 'otro@global66.com' });
