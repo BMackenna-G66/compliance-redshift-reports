@@ -250,6 +250,56 @@ class ElResumenEsPorPersona(unittest.TestCase):
         self.assertIn("POR PERSONA Y ANTIGÜEDAD", h.upper())
 
 
+class ElClienteNoRepintaLosCorreos(unittest.TestCase):
+    """Gmail y Outlook detectan las direcciones sueltas y las convierten en
+    enlaces con SU estilo: azul y subrayado. Sobre el navy de la fila del
+    resumen eso queda azul sobre azul y no se lee — así se veía este informe
+    en la casilla, aunque en el navegador estaba perfecto.
+
+    La defensa es envolverlas uno mismo en un `<a>` con el color puesto: lo
+    que ya es un enlace, el cliente no lo vuelve a enlazar.
+    """
+
+    CASOS = [caso(assigned_to="ana.perez@global66.com"),
+             caso(case_id="x", assigned_to="",
+                  created_at="2026-09-01 10:00:00")]
+
+    def test_ninguna_direccion_queda_suelta(self):
+        h = html_de(self.CASOS)
+        # Cada aparición del correo tiene que estar dentro de un <a> propio.
+        sueltas = h.count("ana.perez@global66.com") - h.count(
+            'href="mailto:ana.perez@global66.com"')
+        self.assertEqual(sueltas, h.count('>ana.perez@global66.com</a>'),
+                         "hay direcciones fuera de un <a>: el cliente las va "
+                         "a pintar de azul")
+
+    def test_el_enlace_lleva_su_color_y_sin_subrayado(self):
+        h = html_de(self.CASOS)
+        i = h.index('href="mailto:ana.perez@global66.com"')
+        self.assertIn("text-decoration:none", h[i:i + 220])
+        self.assertIn("color:", h[i:i + 220])
+
+    def test_en_el_resumen_va_el_nombre_y_la_direccion_chica(self):
+        h = html_de(self.CASOS)
+        resumen = h[:h.index("Casos abiertos")]
+        self.assertIn("Ana Perez", resumen)
+        self.assertIn("mailto:ana.perez@global66.com", resumen)
+
+    def test_el_nombre_sale_de_la_direccion(self):
+        self.assertEqual(E.nombre_de("francia.villalobos@global66.com"),
+                         "Francia Villalobos")
+        self.assertEqual(E.nombre_de("hebert.tello@global66.com"),
+                         "Hebert Tello")
+
+    def test_lo_que_no_es_una_direccion_no_se_enlaza(self):
+        """`(sin asignar)` no es nadie: un mailto ahí sería un enlace roto."""
+        salida = E.correo_texto(informe_casos.SIN_ASIGNAR, "#fff")
+        self.assertNotIn("mailto", salida)
+        self.assertIn(informe_casos.SIN_ASIGNAR, salida)
+        self.assertEqual(E.nombre_de(informe_casos.SIN_ASIGNAR),
+                         informe_casos.SIN_ASIGNAR)
+
+
 class LaAdvertenciaVaEnElCorreo(unittest.TestCase):
     """El informe mide actividad, no desempeño. Si eso no viaja con los
     números, el que lo recibe va a leer una tabla de rendimiento."""
