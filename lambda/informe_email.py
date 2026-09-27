@@ -231,21 +231,23 @@ def _tramo(dias) -> str:
     return TRAMOS[-1][0]
 
 
-def pivot_antiguedad(abiertos: list, clave: str, etiqueta: str, equipos: dict,
-                     ahora=None) -> str:
-    """Los casos abiertos, repartidos por dimensión y antigüedad."""
+def pivot_antiguedad(abiertos: list, ahora=None) -> str:
+    """Los casos abiertos de cada persona, repartidos por antigüedad.
+
+    Por persona y no por equipo: el equipo promedia y esconde justo lo que hay
+    que ver. Un equipo con 33 abiertos «repartidos» puede ser una persona con
+    15 y cuatro con cuatro, y el informe existe para que eso se note.
+
+    Los sin asignar quedan en su propia fila y no se reparten: no son de
+    nadie, y meterlos dentro de alguien haría desaparecer la alerta.
+    """
     if not abiertos:
         return vacio("No hay casos abiertos en el recorte del informe.")
 
     nombres = [t[0] for t in TRAMOS]
     mapa: dict = {}
     for c in abiertos:
-        analista = cuenta.normalizar_analista(c.get("assigned_to"))
-        if clave == "analista":
-            k = analista
-        else:
-            k = (cuenta.SIN_ASIGNAR if analista == cuenta.SIN_ASIGNAR
-                 else equipos.get(analista, cuenta.SIN_EQUIPO))
+        k = cuenta.normalizar_analista(c.get("assigned_to"))
         if k not in mapa:
             mapa[k] = dict.fromkeys(nombres, 0)
         dias = cuenta.dias_abierto(c, ahora)
@@ -269,7 +271,7 @@ def pivot_antiguedad(abiertos: list, clave: str, etiqueta: str, equipos: dict,
     cuerpo += ("<tr>" + td_total("Total")
                + "".join(td_total(totales[n], "right") for n in nombres)
                + td_total(total_general, "right") + "</tr>")
-    cabeza = ("<tr>" + th(etiqueta)
+    cabeza = ("<tr>" + th("Persona")
               + "".join(th(n, "right") for n in nombres)
               + th("Total", "right") + "</tr>")
     return tabla(cabeza, cuerpo)
@@ -404,16 +406,18 @@ def asunto(datos: dict, hoy: str) -> str:
     return f"Reporte de gestión de casos · {hoy} · Global66"
 
 
-def construir(datos: dict, url_casos: str, ahora=None, equipos: dict | None = None,
-              generado_por: str = "") -> str:
+def construir(datos: dict, url_casos: str, ahora=None, generado_por: str = "") -> str:
     """El HTML completo del correo."""
-    equipos = equipos or {}
     ahora = ahora or dt.datetime.utcnow()
     hoy = ahora.strftime("%d-%m-%Y")
     g = datos["total_general"]
     abiertos = [c for c in datos["casos"] if not cuenta.esta_cerrado(c)]
 
-    filas_kpi = [("Todos", g)] + [(e["equipo"], e) for e in datos["equipos"]]
+    # La matriz va POR PERSONA, con el correo como identificador. El equipo
+    # promedia y esconde: un equipo con 33 abiertos puede ser una persona con
+    # 15 y cuatro con cuatro, y eso es justo lo que hay que ver. El total
+    # general queda arriba de todo para no perder la referencia.
+    filas_kpi = [("Todos", g)] + [(a["analista"], a) for a in datos["analistas"]]
 
     cuerpo = (
         # ── Resumen ──
@@ -421,10 +425,7 @@ def construir(datos: dict, url_casos: str, ahora=None, equipos: dict | None = No
 
         # ── Sección 1: los abiertos ──
         + seccion("Casos abiertos")
-        + fila(carta("Por equipo y antigüedad",
-                     pivot_antiguedad(abiertos, "equipo", "Equipo", equipos, ahora)))
-        + fila(carta("Por analista y antigüedad",
-                     pivot_antiguedad(abiertos, "analista", "Analista", equipos, ahora)))
+        + fila(carta("Por persona y antigüedad", pivot_antiguedad(abiertos, ahora)))
         + fila(dos_columnas(_carta_tiempos(datos), _carta_antiguedad(datos)))
         + fila(_carta_viejos(abiertos, url_casos, ahora))
 

@@ -8558,7 +8558,6 @@ def enviar_informe_gestion(body: dict):
         ahora = dt.datetime.utcnow()
         html = informe_email.construir(
             datos, url_casos=WATCHTOWER_URL, ahora=ahora,
-            equipos=_equipos_por_analista(),
             generado_por=str(body.get("actor_email") or "").strip())
         hoy = ahora.strftime("%d-%m-%Y")
     except Exception as e:
