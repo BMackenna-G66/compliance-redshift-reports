@@ -64,12 +64,18 @@ export function crearApi({ base, perfil, email }) {
         credentials: 'omit',
         headers: { 'Content-Type': 'application/json' },
       };
-      if (cuerpo) {
-        // La API identifica a quien actúa por este campo. Ponerlo acá y no en
-        // cada llamada es la única forma de que no se olvide en una — que ya
-        // pasó: una nota quedó guardada sin autor porque el campo viajaba con
-        // otro nombre.
-        opts.body = JSON.stringify({ actor_email: email() || '', ...cuerpo });
+      // La API identifica a quien actúa por este campo. Ponerlo acá y no en
+      // cada llamada es la única forma de que no se olvide en una — que ya
+      // pasó: una nota quedó guardada sin autor porque el campo viajaba con
+      // otro nombre.
+      //
+      // Y VA EN TODO LO QUE ESCRIBE, no sólo cuando hay cuerpo. `api.del()`
+      // sin cuerpo mandaba la petición pelada, así que «Eliminar el caso»
+      // llegaba sin actor y el backend la rechazaba con «reservada para
+      // administradores» — a todo el mundo, administradores incluidos. El
+      // botón estaba, el permiso estaba, y el borrado no se podía hacer.
+      if (cuerpo || metodo !== 'GET') {
+        opts.body = JSON.stringify({ actor_email: email() || '', ...(cuerpo || {}) });
       }
       r = await fetch(raiz + ruta, opts);
     } catch {
