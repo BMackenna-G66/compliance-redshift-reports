@@ -425,3 +425,111 @@ class ElBorradorNoSeLogueaNiSeGuardaEnDynamo(unittest.TestCase):
         self.assertEqual(cuerpo.count('status="ERROR"'), 1)
         j = cuerpo.index('status="ERROR"')
         self.assertIn("except gereo.ErrorGereo", cuerpo[:j])
+
+
+# ── La fase 5: proteger el backend de GEREO ──────────────────────────────
+
+class NoSeLeCaeEncimaAGereo(unittest.TestCase):
+    """«El mismo backend atiende la pantalla de los analistas; un loop sin
+    freno se la degrada», dice el documento. Un ROS consulta la base, evalúa
+    reglas y redacta: dos o tres en paralelo ya se sienten del otro lado."""
+
+    def _con_corridas(self, items):
+        visto = {}
+
+        class _Tabla:
+            def scan(self, **kw):
+                return {"Items": items}
+
+            def put_item(self, Item):
+                visto["run"] = Item
+
+        class _Lambda:
+            def invoke(self, **kw):
+                visto["invoke"] = kw
+                return {}
+
+        orig = {n: getattr(A, n) for n in
+                ("runs_table", "lambda_client", "_safe_audit")}
+        A.runs_table, A.lambda_client = _Tabla(), _Lambda()
+        A._safe_audit = lambda **k: None
+        try:
+            r = A.generar_borrador_ros(
+                {"pais": "Chile", "customer_id": "1", "tipo_cliente": "B2C",
+                 "fecha_inicio": "01/2025"})
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+        return r["statusCode"], json.loads(r["body"]), visto
+
+    def _hace(self, minutos):
+        import datetime as _dt
+        return (_dt.datetime.utcnow() - _dt.timedelta(minutes=minutos)).isoformat()
+
+    def test_con_el_tope_lleno_no_lanza_otra(self):
+        items = [{"run_id": str(i), "started_at": self._hace(2)}
+                 for i in range(A.GEREO_MAX_EN_CURSO)]
+        codigo, d, visto = self._con_corridas(items)
+        self.assertEqual(codigo, 429)
+        self.assertNotIn("invoke", visto, "no tenía que lanzar la corrida")
+        self.assertEqual(d["en_curso"], A.GEREO_MAX_EN_CURSO)
+
+    def test_por_debajo_del_tope_sí(self):
+        codigo, _, visto = self._con_corridas(
+            [{"run_id": "1", "started_at": self._hace(2)}])
+        self.assertEqual(codigo, 202)
+        self.assertIn("invoke", visto)
+
+    def test_una_corrida_muerta_no_bloquea_para_siempre(self):
+        """`RUNNING` se escribe ANTES de empezar a trabajar: si la Lambda
+        muere, nadie escribe DONE ni ERROR y la corrida queda con cara de
+        estar avanzando. Sin la ventana, dos corridas muertas dejarían el
+        módulo trabado sin que nadie entienda por qué."""
+        viejas = [{"run_id": str(i), "started_at": self._hace(600)}
+                  for i in range(A.GEREO_MAX_EN_CURSO + 3)]
+        codigo, _, visto = self._con_corridas(viejas)
+        self.assertEqual(codigo, 202)
+        self.assertIn("invoke", visto)
+
+    def test_si_no_se_puede_contar_se_deja_pasar(self):
+        """Bloquear por no poder mirar sería peor que dejar correr una de
+        más: nadie podría generar un ROS por un problema de la tabla."""
+        class _Rota:
+            def scan(self, **kw):
+                raise RuntimeError("DynamoDB caído")
+        orig = A.runs_table
+        A.runs_table = _Rota()
+        try:
+            self.assertEqual(A._gereo_en_curso(), 0)
+        finally:
+            A.runs_table = orig
+
+
+class SoloElQuinientosTresSeReintentaEnLaLambdaLarga(unittest.TestCase):
+
+    def _cuerpo(self):
+        fuente = (Path(A.__file__).parent / "handler.py").read_text(encoding="utf-8")
+        i = fuente.index("def _gereo_ros(")
+        return fuente[i:fuente.index("\ndef ", i + 10)]
+
+    def test_hay_reintento_con_esperas_crecientes(self):
+        cuerpo = self._cuerpo()
+        self.assertIn("ESPERAS", cuerpo)
+        self.assertIn("time.sleep", cuerpo)
+
+    def test_lo_que_no_es_reintentable_corta_al_primer_intento(self):
+        """Un 404 y un 422 no mejoran insistiendo, y reintentarlos esconde el
+        error real detrás de tres intentos."""
+        cuerpo = self._cuerpo()
+        self.assertIn("if not e.reintentable:", cuerpo)
+        i = cuerpo.index("if not e.reintentable:")
+        self.assertIn("break", cuerpo[i:i + 120])
+
+    def test_las_esperas_caben_en_el_tiempo_de_la_lambda(self):
+        """Si la suma pasara los 900 s, el último reintento moriría por
+        timeout y la corrida quedaría en RUNNING para siempre."""
+        import re
+        m = re.search(r"ESPERAS = \(([^)]*)\)", self._cuerpo())
+        esperas = [int(x) for x in m.group(1).replace(" ", "").split(",") if x]
+        # 90 s de timeout por intento, más las esperas entre ellos.
+        self.assertLess(sum(esperas) + 90 * (len(esperas) + 1), 900)
