@@ -31,6 +31,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+for _k in ("RUNS_TABLE", "CATALOG_TABLE", "REPORT_LAMBDA", "S3_BUCKET"):
+    os.environ.setdefault(_k, "test")
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+
 import gereo as G  # noqa: E402
 
 
@@ -308,3 +312,116 @@ class ElPaisYElReguladorSonLoMismo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ── La fase 2: la generación asíncrona ───────────────────────────────────
+
+import api_handler as A  # noqa: E402
+
+
+class LaGeneracionEsAsincronica(unittest.TestCase):
+    """Un ROS tarda decenas de segundos. El API Gateway corta a los 29 y la
+    Lambda de la API a los 60: si se llamara ahí, fallaría siempre y el
+    analista vería un timeout sin saber si el análisis corrió."""
+
+    def _llamar(self, cuerpo):
+        visto = {}
+        orig = {n: getattr(A, n) for n in
+                ("runs_table", "lambda_client", "_safe_audit")}
+
+        class _Tabla:
+            def put_item(self, Item):
+                visto["run"] = Item
+
+        class _Lambda:
+            def invoke(self, **kw):
+                visto["invoke"] = kw
+                return {}
+
+        A.runs_table, A.lambda_client = _Tabla(), _Lambda()
+        A._safe_audit = lambda **k: visto.setdefault("audit", k)
+        try:
+            r = A.generar_borrador_ros(cuerpo)
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+        return r["statusCode"], json.loads(r["body"]), visto
+
+    BUENO = {"pais": "Chile", "customer_id": "2402916", "tipo_cliente": "B2C",
+             "fecha_inicio": "01/2025", "actor_email": "ana@global66.com"}
+
+    def test_devuelve_202_y_una_corrida(self):
+        codigo, d, visto = self._llamar(dict(self.BUENO))
+        self.assertEqual(codigo, 202)
+        self.assertTrue(d["run_id"])
+        self.assertEqual(visto["run"]["report_name"], "gereo_ros")
+
+    def test_delega_en_la_lambda_larga_y_no_espera(self):
+        _, _, visto = self._llamar(dict(self.BUENO))
+        self.assertEqual(visto["invoke"]["InvocationType"], "Event")
+        carga = json.loads(visto["invoke"]["Payload"])
+        self.assertEqual(carga["report_name"], "gereo_ros")
+        self.assertEqual(carga["pedido"]["customer_id"], "2402916")
+
+    def test_un_pedido_invalido_no_lanza_nada(self):
+        """La matriz por país se valida acá: si no, se gasta una corrida y un
+        viaje a la base de GEREO para que nos diga lo que ya sabíamos."""
+        malo = dict(self.BUENO, pais="Colombia", clientes_asociados=["9"])
+        codigo, d, visto = self._llamar(malo)
+        self.assertEqual(codigo, 422)
+        self.assertNotIn("invoke", visto, "no tenía que lanzar la corrida")
+        self.assertIn("único cliente", d["error"])
+
+    def test_queda_registrado_quien_lo_pidio(self):
+        """GEREO anota la llamada como «nuestro sistema»: si detrás hubo una
+        persona, la constancia tiene que quedar de este lado."""
+        _, _, visto = self._llamar(dict(self.BUENO))
+        self.assertEqual(visto["audit"]["user_email"], "ana@global66.com")
+        self.assertEqual(visto["audit"]["action"], "gereo.ros.generar")
+
+    def test_el_pedido_que_viaja_ya_viene_normalizado(self):
+        _, _, visto = self._llamar(dict(self.BUENO, tipo_cliente="natural"))
+        carga = json.loads(visto["invoke"]["Payload"])
+        self.assertEqual(carga["pedido"]["tipo_cliente"], "B2C")
+
+
+class ElBorradorNoSeLogueaNiSeGuardaEnDynamo(unittest.TestCase):
+    """El borrador trae nombre, documento, dirección y teléfono de personas
+    reales. Va a S3, bajo el mismo estándar que los casos. En DynamoDB —que
+    es lo que sondea la pantalla— va sólo el estado y dónde quedó."""
+
+    def _fuente(self):
+        return (Path(A.__file__).parent / "handler.py").read_text(encoding="utf-8")
+
+    def test_la_corrida_no_guarda_el_documento(self):
+        fuente = self._fuente()
+        i = fuente.index("def _gereo_ros(")
+        cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
+        self.assertIn("s3.put_object", cuerpo)
+        # Lo que va a Dynamo son claves de estado, nunca el documento.
+        for prohibido in ("ros_doc=", "documento=", "borrador=d"):
+            self.assertNotIn(prohibido, cuerpo)
+
+    def test_el_log_no_imprime_el_documento(self):
+        fuente = self._fuente()
+        i = fuente.index("def _gereo_ros(")
+        cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
+        for linea in cuerpo.splitlines():
+            if "logger." not in linea:
+                continue
+            for prohibido in ("%s\", d", "d)", "{d}", "ros_doc"):
+                if prohibido == "d)" and "d.get(" in linea:
+                    continue
+                self.assertNotIn(prohibido, linea,
+                                 f"esta línea loguea el documento: {linea.strip()}")
+
+    def test_una_detencion_termina_en_done_y_no_en_error(self):
+        """Contarla como fallida llenaría el tablero de errores que son la
+        regla de negocio funcionando."""
+        fuente = self._fuente()
+        i = fuente.index("def _gereo_ros(")
+        cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
+        # El único ERROR es el de `ErrorGereo`; la detención sigue de largo.
+        self.assertEqual(cuerpo.count('status="ERROR"'), 1)
+        j = cuerpo.index('status="ERROR"')
+        self.assertIn("except gereo.ErrorGereo", cuerpo[:j])

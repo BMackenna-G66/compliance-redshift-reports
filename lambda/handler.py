@@ -1196,6 +1196,49 @@ def post_slack(summary: dict, params: dict, s3_url: str, report_name: str) -> No
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+def _gereo_ros(event: dict, run_id: str | None) -> dict:
+    """Pide el borrador del ROS a GEREO y lo deja guardado.
+
+    LO QUE SE GUARDA Y LO QUE NO. El borrador va a S3, en el mismo depósito y
+    bajo el mismo estándar que los casos —trae nombre, documento, dirección y
+    teléfono de personas reales—. En DynamoDB, que es lo que lee la pantalla
+    mientras sondea, va sólo el estado y dónde quedó: ahí no entra un dato
+    personal.
+
+    UNA DETENCIÓN NO ES UN ERROR. Si el cliente es de otro país, GEREO
+    responde 200 y no hay reporte. La corrida termina en DONE con
+    `detenido: true`, no en ERROR: marcarla como fallida llenaría el tablero
+    de errores que son la regla de negocio funcionando.
+    """
+    import gereo
+
+    pedido = event.get("pedido") or {}
+    _update_run(run_id, status="RUNNING")
+    try:
+        d = gereo.generar_ros(pedido)
+    except gereo.ErrorGereo as e:
+        # El mensaje de GEREO no trae datos personales (es «no existe el
+        # cliente», «esa opción no se admite»), así que se puede mostrar.
+        logger.warning("GEREO rechazó el pedido: %s (%s)", e.mensaje, e.codigo)
+        _update_run(run_id, status="ERROR", error_message=e.mensaje[:500],
+                    completed_at=dt.datetime.utcnow().isoformat())
+        return {"ok": False, **e.como_dict()}
+
+    clave = f"gereo/borradores/{run_id}.json"
+    s3.put_object(Bucket=S3_BUCKET, Key=clave,
+                  Body=json.dumps(d, ensure_ascii=False).encode("utf-8"),
+                  ContentType="application/json")
+
+    _update_run(run_id, status="DONE", s3_key=clave,
+                completed_at=dt.datetime.utcnow().isoformat(),
+                row_count=len(d.get("senales") or []))
+    # Ni el documento ni sus partes se loguean: el log vive años.
+    logger.info("GEREO ok · detenido=%s · advertencias=%d · senales=%d",
+                d.get("detenido"), len(d.get("advertencias") or []),
+                len(d.get("senales") or []))
+    return {"ok": True, "detenido": d.get("detenido"), "s3_key": clave}
+
+
 def handler(event, context):  # noqa: ARG001
     logger.info("Event: %s", json.dumps(event, default=str))
 
@@ -1210,6 +1253,16 @@ def handler(event, context):  # noqa: ARG001
     # el resto del flujo de reportes (encendido de clúster, Excel, etc.).
     if report_name == "poll_document_replies":
         return _poll_document_replies()
+
+    # ── GEREO: el borrador del ROS ────────────────────────────────────────
+    # Vive acá y no en la API porque un ROS tarda decenas de segundos: no
+    # entra en los 29 del API Gateway ni en los 60 de la Lambda de la API.
+    # Esta tiene 900, que es de sobra.
+    #
+    # No toca Redshift ni el ciclo normal de reportes: llama a GEREO, guarda
+    # el borrador y marca la corrida.
+    if report_name == "gereo_ros":
+        return _gereo_ros(event, run_id)
 
     # ── Módulo Relevo: ingesta de correo de corresponsales ────────────────
     # Reemplaza el demonio launchd del Mac. EventBridge lo dispara cada 5 min.
