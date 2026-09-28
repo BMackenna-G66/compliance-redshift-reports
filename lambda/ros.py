@@ -216,10 +216,16 @@ def crear(datos, caso, alertas, folios_existentes=None, momento=None, leer_fila=
         # El lugar del plazo, vacío a propósito: se decidió no llevar cuenta
         # regresiva por ahora, y dejarlo acá evita rehacer el modelo después.
         "vence_at": "",
-        # Para cuando exista el servicio externo: los que vengan de allá se
-        # van a distinguir de los de acá sin migrar nada.
+        # De dónde salió: los que vienen de GEREO se distinguen de los de
+        # acá sin migrar nada. Era el lugar que este modelo dejó preparado.
         "origen": _texto(datos.get("origen")) or "watchtower",
-        "externo_id": "",
+        "externo_id": _texto(datos.get("externo_id")),
+        # El borrador que trajo GEREO, si vino por ahí. Va en su propio
+        # campo y NO en `narrativa`: el texto que firma el oficial lo pone
+        # una persona, con un clic que queda registrado. Un borrador
+        # generado que alguien firma sin leer es el accidente a evitar, y
+        # eso no cambia porque el generador sea bueno.
+        "borrador_gereo": datos.get("borrador_gereo") or None,
         "creado_por": _texto(datos.get("creado_por")),
         "creado_at": t,
         "actualizado_at": t,
