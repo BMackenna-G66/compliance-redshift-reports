@@ -236,13 +236,17 @@ COLUMNAS_KPI = (
 )
 
 
-def matriz_kpi(filas: list) -> str:
-    """filas: [(etiqueta, indicadores)]. Una por equipo, más el total."""
+def matriz_kpi(filas: list, columnas: tuple = None) -> str:
+    """filas: [(etiqueta, indicadores)]. Una por persona, más el total.
+
+    `columnas` se pasa porque los dos informes miden cosas distintas con la
+    misma tabla: casos o alertas. Por omisión, las de casos."""
+    columnas = columnas or COLUMNAS_KPI
     cabeza = (f'<tr style="background:{NAVY};">'
               f'<th style="padding:10px 8px;text-align:left;font-size:10px;color:#fff;'
               f'font-weight:600;text-transform:uppercase;letter-spacing:.6px;{F}">'
               '&nbsp;</th>')
-    for etiqueta, _, _ in COLUMNAS_KPI:
+    for etiqueta, _, _ in columnas:
         cabeza += (f'<th style="padding:10px 8px;text-align:center;font-size:10px;'
                    f'color:#fff;font-weight:600;text-transform:uppercase;'
                    f'letter-spacing:.6px;{F}">{esc(etiqueta)}</th>')
@@ -267,7 +271,7 @@ def matriz_kpi(filas: list) -> str:
         cuerpo += (f"<tr{borde}>"
                    f'<td style="padding:12px 14px;background:{NAVY2};{F}">'
                    f'{titulo}</td>')
-        for _, clave, color in COLUMNAS_KPI:
+        for _, clave, color in columnas:
             v = datos.get(clave)
             cuerpo += _celda_kpi(v, color(v))
         cuerpo += "</tr>"
@@ -288,26 +292,23 @@ def _tramo(dias) -> str:
     return TRAMOS[-1][0]
 
 
-def pivot_antiguedad(abiertos: list, ahora=None) -> str:
-    """Los casos abiertos de cada persona, repartidos por antigüedad.
+def pivot(pares: list, etiqueta: str, vacio_texto: str,
+          persona: bool = True) -> str:
+    """El reparto por antigüedad de una lista de `(clave, días)`.
 
-    Por persona y no por equipo: el equipo promedia y esconde justo lo que hay
-    que ver. Un equipo con 33 abiertos «repartidos» puede ser una persona con
-    15 y cuatro con cuatro, y el informe existe para que eso se note.
-
-    Los sin asignar quedan en su propia fila y no se reparten: no son de
-    nadie, y meterlos dentro de alguien haría desaparecer la alerta.
+    Genérico porque lo usan dos informes con dimensiones distintas —casos por
+    persona, alertas por persona y por regla— y la tabla es la misma. Lo que
+    cambia es cómo se dibuja la primera columna: un correo se envuelve en un
+    `<a>` para que el cliente no lo pinte de azul, un nombre de regla no.
     """
-    if not abiertos:
-        return vacio("No hay casos abiertos en el recorte del informe.")
+    if not pares:
+        return vacio(vacio_texto)
 
     nombres = [t[0] for t in TRAMOS]
     mapa: dict = {}
-    for c in abiertos:
-        k = cuenta.normalizar_analista(c.get("assigned_to"))
+    for k, dias in pares:
         if k not in mapa:
             mapa[k] = dict.fromkeys(nombres, 0)
-        dias = cuenta.dias_abierto(c, ahora)
         mapa[k][_tramo(None if dias is None else int(dias))] += 1
 
     totales = dict.fromkeys(nombres, 0)
@@ -323,16 +324,32 @@ def pivot_antiguedad(abiertos: list, ahora=None) -> str:
         for n in nombres:
             totales[n] += valores[n]
             celdas += td(_num(valores[n]), "right", par)
-        cuerpo += (f"<tr>{td_persona(k, par)}{celdas}"
-                   f"{td(suma, 'right', par)}</tr>")
+        primera = td_persona(k, par) if persona else td(k, "left", par)
+        cuerpo += f"<tr>{primera}{celdas}{td(suma, 'right', par)}</tr>"
 
     cuerpo += ("<tr>" + td_total("Total")
                + "".join(td_total(totales[n], "right") for n in nombres)
                + td_total(total_general, "right") + "</tr>")
-    cabeza = ("<tr>" + th("Persona")
+    cabeza = ("<tr>" + th(etiqueta)
               + "".join(th(n, "right") for n in nombres)
               + th("Total", "right") + "</tr>")
     return tabla(cabeza, cuerpo)
+
+
+def pivot_antiguedad(abiertos: list, ahora=None) -> str:
+    """Los casos abiertos de cada persona, repartidos por antigüedad.
+
+    Por persona y no por equipo: el equipo promedia y esconde justo lo que hay
+    que ver. Un equipo con 33 abiertos «repartidos» puede ser una persona con
+    15 y cuatro con cuatro, y el informe existe para que eso se note.
+
+    Los sin asignar quedan en su propia fila y no se reparten: no son de
+    nadie, y meterlos dentro de alguien haría desaparecer la alerta.
+    """
+    pares = [(cuenta.normalizar_analista(c.get("assigned_to")),
+              cuenta.dias_abierto(c, ahora)) for c in abiertos]
+    return pivot(pares, "Persona",
+                 "No hay casos abiertos en el recorte del informe.")
 
 
 # ── Las cartas ───────────────────────────────────────────────────────────
@@ -564,4 +581,223 @@ def texto_plano(datos: dict, hoy: str) -> str:
         lineas.append(f"  {e['equipo']}: {e['total']} casos "
                       f"({e['abiertos']} abiertos, {e['vencidos']} vencidos)")
     lineas += ["", "Mide actividad registrada en la herramienta, no desempeño."]
+    return "\n".join(lineas)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# EL INFORME DE ALERTAS
+# ─────────────────────────────────────────────────────────────────────────
+# Mismo dibujo, otra pregunta. Reusa todas las piezas de arriba porque los
+# dos correos tienen que verse como el mismo producto: si cada informe trae
+# su propia tabla y su propio azul, en tres meses hay cinco diseños.
+# ═════════════════════════════════════════════════════════════════════════
+
+import informe_alertas as cuenta_alertas  # noqa: E402
+
+COLUMNAS_KPI_ALERTAS = (
+    ("Alertas", "total", fijo(NAVY)),
+    ("Con caso", "con_caso", fijo(VERDE)),
+    ("Sin caso", "sin_caso", si_mayor_a_cero(AMBAR)),
+    ("Prioridad alta", "alta", fijo(AZUL)),
+    ("Sin caso +30d", "sin_caso_viejas", si_mayor_a_cero(ROJO)),
+)
+
+
+def _carta_reglas(datos: dict) -> str:
+    """Qué regla acumula. Una regla que dispara mucho y termina en pocos casos
+    es una regla mal calibrada, no un equipo lento — y eso sólo se ve poniendo
+    las dos columnas juntas."""
+    filas = ""
+    for i, r in enumerate(datos["reglas"]):
+        par = i % 2 == 1
+        filas += ("<tr>" + td(r["regla"], "left", par)
+                  + td(r["total"], "right", par)
+                  + td(_num(r["con_caso"]), "right", par)
+                  + td(_num(r["sin_caso"]), "right", par,
+                       f"color:{AMBAR};font-weight:700;" if r["sin_caso"] else "")
+                  + td(f'{r["pct_con_caso"]}%', "right", par)
+                  + td(_num(r["mas_vieja"]), "right", par) + "</tr>")
+    g = datos["total_general"]
+    filas += ("<tr>" + td_total("Total") + td_total(g["total"], "right")
+              + td_total(_num(g["con_caso"]), "right")
+              + td_total(_num(g["sin_caso"]), "right")
+              + td_total(f'{g["pct_con_caso"]}%', "right")
+              + td_total(_num(g["mas_vieja"]), "right") + "</tr>")
+    cabeza = ("<tr>" + th("Regla")
+              + "".join(th(t, "right") for t in
+                        ("Alertas", "Con caso", "Sin caso", "% a caso",
+                         "Más vieja"))
+              + "</tr>")
+    return carta("Por regla", tabla(cabeza, filas))
+
+
+def _carta_sin_caso(alertas: list, url: str, ahora=None, tope: int = 25) -> str:
+    """Las que nadie convirtió en caso, de la más vieja a la menos.
+
+    Es lo accionable del informe: una alerta sin caso y con semanas encima es
+    trabajo que no empezó, no trabajo atrasado."""
+    viejas = []
+    for a in alertas:
+        if cuenta_alertas.tiene_caso(a):
+            continue
+        d = cuenta_alertas.dias_abierta(a, ahora)
+        if d is not None:
+            viejas.append((int(d), a))
+    if not viejas:
+        return carta("Sin caso", vacio("Todas las alertas terminaron en un caso."))
+    viejas.sort(key=lambda x: -x[0])
+
+    filas = ""
+    for i, (dias, a) in enumerate(viejas[:tope]):
+        par = i % 2 == 1
+        fondo = "#f7fafc" if par else "#fff"
+        filas += ("<tr>"
+                  f'<td style="padding:7px 10px;font-size:11px;background:{fondo};'
+                  f'border-bottom:1px solid {BORDE};{F}">{badge_edad(dias)}</td>'
+                  + td(a.get("report_name") or "(sin regla)", "left", par)
+                  + td(a.get("entity_value") or "—", "left", par)
+                  + td_persona(cuenta_alertas.normalizar_analista(
+                      a.get("assigned_to")), par)
+                  + td((a.get("priority") or "—"), "left", par)
+                  + "</tr>")
+    cabeza = ("<tr>" + th("Antigüedad") + th("Regla") + th("Entidad")
+              + th("Asignada a") + th("Prioridad") + "</tr>")
+    contenido = tabla(cabeza, filas)
+    if len(viejas) > tope:
+        contenido += (f'<p style="font-size:10px;color:{GRIS};margin:8px 0 0;{F}">'
+                      f'Se muestran las {tope} más viejas de {len(viejas)}. '
+                      'El resto está en la bandeja.</p>')
+    return carta(f"Sin caso ({len(viejas)})", contenido, boton(url, "Ver la bandeja"))
+
+
+def _nota_de_lo_que_no_se_mide(datos: dict) -> str:
+    """Lo que la herramienta NO registra, dicho en el correo.
+
+    Sin esto, quien lo lee supone que «gestionadas» es cero porque nadie
+    gestionó, cuando en realidad es cero porque nadie lo marca. Un cero que
+    significa «no lo medimos» es peor que una columna ausente."""
+    n = len(datos["alertas"])
+    return carta("Lo que este informe no mide",
+                 f'<p style="font-size:11px;color:{NAVY};margin:0;line-height:1.6;{F}">'
+                 'No hay columnas de <strong>gestionadas</strong>, '
+                 '<strong>cerradas</strong> ni <strong>cumplimiento de SLA</strong> '
+                 'porque la herramienta todavía no registra eso: '
+                 f'<strong>{n}</strong> de {n} alertas están en estado '
+                 '<span style="font-family:Menlo,Consolas,monospace;">active</span> '
+                 'y ninguna tiene marca de '
+                 'revisión. Mostrarlas en cero se leería como «nadie gestionó '
+                 'nada», que no es lo que dice el dato. Lo que sí se mide es '
+                 'quién la tiene, hace cuánto entró y si terminó en un caso.'
+                 '</p>')
+
+
+def asunto_alertas(hoy: str) -> str:
+    return f"Reporte de alertas · {hoy} · Global66"
+
+
+def construir_alertas(datos: dict, url_bandeja: str, ahora=None,
+                      generado_por: str = "") -> str:
+    ahora = ahora or dt.datetime.utcnow()
+    hoy = ahora.strftime("%d-%m-%Y")
+    g = datos["total_general"]
+    alertas = datos["alertas"]
+
+    filas_kpi = [("Todas", g)] + [(p["persona"], p) for p in datos["personas"]]
+
+    pares_persona = [(cuenta_alertas.normalizar_analista(a.get("assigned_to")),
+                      cuenta_alertas.dias_abierta(a, ahora)) for a in alertas]
+    pares_regla = [(a.get("report_name") or "(sin regla)",
+                    cuenta_alertas.dias_abierta(a, ahora)) for a in alertas]
+
+    cuerpo = (
+        '<tr><td style="padding:8px 24px 16px;">'
+        + matriz_kpi(filas_kpi, COLUMNAS_KPI_ALERTAS) + "</td></tr>"
+
+        + seccion("Alertas abiertas")
+        + fila(carta("Por persona y antigüedad",
+                     pivot(pares_persona, "Persona",
+                           "No hay alertas en el recorte del informe.")))
+        + fila(carta("Por regla y antigüedad",
+                     pivot(pares_regla, "Regla",
+                           "No hay alertas en el recorte del informe.",
+                           persona=False)))
+        + fila(_carta_reglas(datos))
+
+        + seccion("Lo que falta convertir en caso")
+        + fila(_carta_sin_caso(alertas, url_bandeja, ahora))
+        + fila(_nota_de_lo_que_no_se_mide(datos))
+    )
+
+    nota = ("Mide lo que la herramienta registra: quién tiene cada alerta, "
+            "hace cuánto entró y si terminó en un caso.")
+    pie_extra = (" &middot; pedido por " + correo_texto(generado_por, GRIS)
+                 if generado_por else "")
+
+    return (
+        '<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">'
+        '<title>Reporte de alertas</title></head>'
+        '<body style="margin:0;padding:0;background:#f0f2f5;">'
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0"'
+        ' style="background:#f0f2f5;"><tr><td align="center" style="padding:24px 16px;">'
+        '<table width="860" cellpadding="0" cellspacing="0" border="0"'
+        ' style="background:#fff;border-radius:8px;border:1px solid #dde1e7;'
+        'max-width:100%;">'
+        f'<tr><td style="background:{NAVY};border-radius:8px 8px 0 0;'
+        'padding:22px 28px 20px;">'
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+        f'<td valign="middle"><div style="font-size:18px;font-weight:800;color:#fff;{F}">'
+        'Global66</div>'
+        '<div style="font-size:9px;font-weight:600;color:rgba(255,255,255,0.5);'
+        f'text-transform:uppercase;letter-spacing:1px;margin-top:2px;{F}">'
+        'Compliance &middot; Alertas</div></td>'
+        '<td align="right" valign="middle"><div style="display:inline-block;'
+        'background:rgba(1,209,150,0.15);border:1px solid rgba(1,209,150,0.4);'
+        f'border-radius:20px;padding:4px 14px;font-size:10px;color:{VERDE_CLARO};'
+        f'font-weight:600;{F}">Generado &middot; {esc(hoy)}</div></td>'
+        '</tr></table>'
+        '<div style="margin-top:14px;padding-top:12px;'
+        'border-top:1px solid rgba(255,255,255,0.12);">'
+        f'<div style="font-size:17px;font-weight:800;color:#fff;{F}">'
+        'Reporte de alertas</div>'
+        '<div style="font-size:10px;color:rgba(255,255,255,0.5);margin-top:3px;'
+        f'{F}">{esc(_periodo_alertas(datos["filtro"]))} &middot; {esc(nota)}</div>'
+        '</div></td></tr>'
+        '<tr><td style="padding:20px 24px 4px;">'
+        f'<div style="font-size:9px;font-weight:700;color:{GRIS};'
+        f'text-transform:uppercase;letter-spacing:1px;{F}">Resumen</div></td></tr>'
+        + cuerpo +
+        f'<tr><td style="padding:18px 24px;text-align:center;'
+        f'border-top:1px solid {BORDE};">'
+        f'<p style="font-size:10px;color:{GRIS};margin:0;{F}">'
+        'Generado automáticamente &middot; '
+        f'<span style="color:{AZUL};font-weight:700;{F}">Global66 Compliance</span>'
+        f'{pie_extra}</p></td></tr>'
+        '</table></td></tr></table></body></html>')
+
+
+def _periodo_alertas(filtro: dict) -> str:
+    desde, hasta = filtro.get("desde") or "", filtro.get("hasta") or ""
+    if desde and hasta:
+        return f"alertas creadas entre {desde} y {hasta}"
+    if desde:
+        return f"alertas creadas desde {desde}"
+    if hasta:
+        return f"alertas creadas hasta {hasta}"
+    return "todas las alertas abiertas"
+
+
+def texto_plano_alertas(datos: dict, hoy: str) -> str:
+    g = datos["total_general"]
+    lineas = [
+        f"Reporte de alertas · {hoy} · Global66", "",
+        f"Alertas: {g['total']} · con caso: {g['con_caso']} "
+        f"({g['pct_con_caso']}%) · sin caso: {g['sin_caso']}",
+        f"Sin caso hace más de 30 días: {g['sin_caso_viejas']}", "",
+        "Por persona:",
+    ]
+    for p in datos["personas"]:
+        lineas.append(f"  {p['persona']}: {p['total']} alertas "
+                      f"({p['sin_caso']} sin caso)")
+    lineas += ["", "No se miden gestionadas ni SLA: la herramienta todavía no "
+               "registra la revisión de una alerta."]
     return "\n".join(lineas)
