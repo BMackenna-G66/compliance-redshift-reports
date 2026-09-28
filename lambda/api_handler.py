@@ -125,6 +125,12 @@ except Exception as _e:  # pragma: no cover
     print(f"[api] informe de gestión no disponible: {_e}")
 
 try:
+    import gereo
+except Exception as _e:  # pragma: no cover
+    gereo = None
+    print(f"[api] cliente de GEREO no disponible: {_e}")
+
+try:
     import informe_alertas
     import informe_email
 except Exception as _e:  # pragma: no cover
@@ -2560,6 +2566,21 @@ def handler(event, context):  # noqa: ARG001
             return execute_report(body)
 
         # ── ROS / UAF ────────────────────────────────────────────────────
+        # GET /gereo/salud — ¿la clave sirve y qué países hay habilitados?
+        # Es el healthcheck de la integración: si empieza a dar 401, nos
+        # revocaron o rotaron la clave.
+        if method == "GET" and parts == ["gereo", "salud"]:
+            if not gereo:
+                return resp(503, {"error": "El cliente de GEREO no está "
+                                           "disponible en este despliegue."})
+            try:
+                return resp(200, {"gereo": gereo.salud(), "conectado": True})
+            except gereo.ErrorGereo as e:
+                # 200 con `conectado: false`: que GEREO no conteste no es un
+                # error DE ESTA API, y la pantalla tiene que poder dibujar el
+                # estado en vez de romperse.
+                return resp(200, {"conectado": False, **e.como_dict()})
+
         if parts and parts[0] == "ros":
             if not ros_mod:
                 return resp(503, {"error": "El registro de ROS no está disponible en este despliegue."})
