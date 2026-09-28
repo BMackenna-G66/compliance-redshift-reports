@@ -126,8 +126,9 @@ except Exception as _e:  # pragma: no cover
 
 try:
     import gereo
+    import ros_gereo
 except Exception as _e:  # pragma: no cover
-    gereo = None
+    gereo = ros_gereo = None
     print(f"[api] cliente de GEREO no disponible: {_e}")
 
 try:
@@ -3354,6 +3355,25 @@ def crear_ros(body: dict):
     existentes = [r.get("folio", "") for r in _crm_list("ros")]
     datos = dict(body)
     datos["creado_por"] = (body.get("creado_por") or body.get("actor_email") or "").strip()
+
+    # Si el ROS sale de una corrida de GEREO, se adjunta el borrador. Va a su
+    # propio campo: la narrativa que firma el oficial la escribe una persona,
+    # y que el generador sea bueno no cambia eso.
+    run_id = str(body.get("gereo_run_id") or "").strip()
+    if run_id and ros_gereo:
+        try:
+            obj = s3.get_object(Bucket=S3_BUCKET,
+                                Key=f"gereo/borradores/{run_id}.json")
+            respuesta = json.loads(obj["Body"].read())
+        except Exception as e:                                   # noqa: BLE001
+            return resp(400, {"error": "No encontré el borrador de esa corrida "
+                                       f"de GEREO ({type(e).__name__})."})
+        if respuesta.get("detenido"):
+            return resp(400, {"error": "Esa corrida no generó reporte: "
+                                       + str(respuesta.get("mensaje") or "")})
+        datos["borrador_gereo"] = ros_gereo.armar_borrador(respuesta, run_id)
+        datos["externo_id"] = ros_gereo.identificador(respuesta, run_id)
+        datos["origen"] = "gereo"
     try:
         reporte = ros_mod.crear(datos, caso, alertas, existentes, leer_fila=_fila)
     except ValueError as e:
