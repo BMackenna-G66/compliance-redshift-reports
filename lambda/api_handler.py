@@ -125,9 +125,10 @@ except Exception as _e:  # pragma: no cover
     print(f"[api] informe de gestión no disponible: {_e}")
 
 try:
+    import informe_alertas
     import informe_email
 except Exception as _e:  # pragma: no cover
-    informe_email = None
+    informe_alertas = informe_email = None
     print(f"[api] informe por correo no disponible: {_e}")
 
 dynamodb = boto3.resource("dynamodb")
@@ -1875,6 +1876,87 @@ def buscar_cuentas(filtros: dict, limite: int = 200):
     })
 
 
+def _destinatarios(body: dict):
+    """Los correos a los que se manda, o una respuesta de error.
+
+    Compartido por los dos informes: la regla de a quién se le puede mandar
+    no puede depender de cuál informe es.
+    """
+    crudos = body.get("para")
+    if isinstance(crudos, str):
+        crudos = [x for x in re.split(r"[,;\s]+", crudos) if x]
+    destinos = [str(x).strip().lower() for x in (crudos or []) if str(x).strip()]
+    if not destinos:
+        return None, resp(400, {"error": "para es requerido (lista de correos)"})
+    if len(destinos) > MAX_DESTINATARIOS:
+        return None, resp(400, {"error": f"demasiados destinatarios (máximo {MAX_DESTINATARIOS})"})
+    ajenos = [d for d in destinos if not d.endswith(DOMINIO_INTERNO)]
+    if ajenos:
+        return None, resp(400, {
+            "error": f"El informe sólo se manda a correos {DOMINIO_INTERNO}: "
+                     "trae datos de clientes.",
+            "rechazados": ajenos,
+        })
+    return destinos, None
+
+
+def enviar_informe_alertas(body: dict):
+    """Arma el informe de alertas y lo manda por correo.
+
+    body: {para: [correo, ...], desde, hasta, persona, regla, actor_email}
+    """
+    if not (informe_alertas and informe_email):
+        return resp(503, {"error": "El informe no está disponible en este despliegue."})
+
+    destinos, error = _destinatarios(body)
+    if error:
+        return error
+
+    try:
+        # `active` explícito: `get_alerts` compara contra el estado y con
+        # None no coincidiría ninguna. Y son las abiertas las que importan:
+        # el informe es sobre lo que falta hacer.
+        r = get_alerts("active")
+        alertas = json.loads(r["body"]).get("alerts", [])
+        ahora = dt.datetime.utcnow()
+        datos = informe_alertas.armar(
+            alertas,
+            desde=str(body.get("desde") or "").strip(),
+            hasta=str(body.get("hasta") or "").strip(),
+            persona=str(body.get("persona") or "").strip(),
+            regla=str(body.get("regla") or "").strip(),
+            ahora=ahora)
+        html = informe_email.construir_alertas(
+            datos, url_bandeja=WATCHTOWER_URL, ahora=ahora,
+            generado_por=str(body.get("actor_email") or "").strip())
+        hoy = ahora.strftime("%d-%m-%Y")
+    except Exception as e:
+        print(f"[informe-alertas] falló al armar: {type(e).__name__}: {e}")
+        return resp(500, {"error": f"No pude armar el informe: {str(e)[:200]}"})
+
+    envios = []
+    for destino in destinos:
+        envio = _send_email(destino, informe_email.asunto_alertas(hoy), html,
+                            from_addr=ALERT_DOCS_FROM_ADDR)
+        envios.append({"para": destino, "enviado": envio["sent"],
+                       "error": envio["error"] or ""})
+
+    g = datos["total_general"]
+    _safe_audit(user_email=str(body.get("actor_email") or "unknown"),
+                action="informe.alertas.enviar", entity_type="informe",
+                entity_id=hoy,
+                new_value={"destinatarios": destinos, "alertas": g["total"],
+                           "enviados": sum(1 for e in envios if e["enviado"])})
+    return resp(200, {
+        "enviados": sum(1 for e in envios if e["enviado"]),
+        "detalle": envios,
+        "alertas": g["total"],
+        "sin_caso": g["sin_caso"],
+        "asunto": informe_email.asunto_alertas(hoy),
+    })
+
+
+
 # ---------------------------------------------------------------------------
 # AUDIT LOG
 # ---------------------------------------------------------------------------
@@ -2555,6 +2637,10 @@ def handler(event, context):  # noqa: ARG001
         # POST /informes/gestion/enviar — el mismo informe, por correo.
         if method == "POST" and parts == ["informes", "gestion", "enviar"]:
             return enviar_informe_gestion(body)
+
+        # POST /informes/alertas/enviar — el informe de alertas, por correo.
+        if method == "POST" and parts == ["informes", "alertas", "enviar"]:
+            return enviar_informe_alertas(body)
 
         # ── API externa de casos (/v1) ───────────────────────────────────
         # Va ANTES del resto del ruteo porque `/v1/...` no puede caer nunca en
