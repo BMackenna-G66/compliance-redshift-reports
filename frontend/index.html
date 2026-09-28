@@ -10755,9 +10755,12 @@
         const f = this.crmUserModal.form;
         try {
           if (this.crmUserModal.mode === 'create') {
-            await this.api('POST', '/users', { email: f.email, full_name: f.full_name, role_id: f.role_id, equipo: f.equipo || '' });
+            // Administrar usuarios es administrar permisos: la API pide saber
+            // quién actúa. Sin esto el panel responde «reservada para
+            // administradores» aunque quien lo usa lo sea.
+            await this.api('POST', '/users', { email: f.email, full_name: f.full_name, role_id: f.role_id, equipo: f.equipo || '', actor_email: this.currentUserEmail });
           } else {
-            await this.api('POST', `/users/${this.crmUserModal.userId}`, { full_name: f.full_name, role_id: f.role_id, is_active: f.is_active, equipo: f.equipo || '' });
+            await this.api('POST', `/users/${this.crmUserModal.userId}`, { full_name: f.full_name, role_id: f.role_id, is_active: f.is_active, equipo: f.equipo || '', actor_email: this.currentUserEmail });
           }
           this.crmUserModal = { open: false };
           await this.loadCrmAnalysts();
@@ -10812,7 +10815,7 @@
       async deactivateCrmUser(userId) {
         if (!confirm('¿Desactivar este analista?')) return;
         try {
-          await this.api('DELETE', `/users/${userId}`);
+          await this.api('DELETE', `/users/${userId}`, { actor_email: this.currentUserEmail });
           await this.loadCrmAnalysts();
         } catch(e) {}
       },

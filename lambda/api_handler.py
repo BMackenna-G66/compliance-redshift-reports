@@ -2922,7 +2922,7 @@ def handler(event, context):  # noqa: ARG001
             return update_user(parts[1], body)
         # DELETE /users/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "users":
-            return deactivate_user(parts[1])
+            return deactivate_user(parts[1], body)
 
         # GET /roles
         if method == "GET" and parts == ["roles"]:
@@ -5146,11 +5146,35 @@ def update_case_assign(case_id: str, body: dict):
 # store, no es admin.
 _ADMIN_ROLE_NAMES = {"ADMIN", "SUPER_ADMIN", "SUPERADMIN"}
 
+# ADMINISTRADORES DE ARRANQUE. Son admin siempre, aunque el store diga otra
+# cosa o no se pueda leer.
+#
+# POR QUÉ EXISTEN. Desde que administrar usuarios pide ser admin, el sistema
+# puede quedarse sin nadie que pueda arreglarlo: basta un rol mal cargado o
+# una desactivación de más para que no quede quién reparta permisos, y la
+# única salida sería editar S3 a mano. Medido el 27-09-2026, antes de este
+# cambio: de 12 usuarios, CERO tenían rol admin.
+#
+# Se puede mover a la variable de entorno ADMINS_FIJOS (separados por coma)
+# sin tocar el código. El valor por omisión queda igual en el repo a
+# propósito: si la variable se borra por accidente, el sistema sigue teniendo
+# a alguien que puede entrar, que es justo lo que esto evita.
+_ADMINS_FIJOS = {
+    e.strip().lower()
+    for e in os.environ.get(
+        "ADMINS_FIJOS", "benjamin.mackenna@global66.com").split(",")
+    if e.strip()
+}
+
 
 def _is_admin_email(email: str) -> bool:
     email = (email or "").strip().lower()
     if not email:
         return False
+    # Antes de mirar el store: el arranque no depende de que el store esté
+    # bien, porque su razón de ser es justamente que puede no estarlo.
+    if email in _ADMINS_FIJOS:
+        return True
     try:
         for u in _crm_list("users"):
             if (u.get("email") or "").strip().lower() != email:
@@ -5162,6 +5186,14 @@ def _is_admin_email(email: str) -> bool:
     except Exception:
         return False
     return False
+
+
+def _actor(body: dict) -> str:
+    """Quién dice ser el que llama. Para el registro de auditoría.
+
+    Las tres funciones de usuarios anotaban `"admin"` a secas, que no dice
+    nada: lo único que interesa de un cambio de permisos es quién lo hizo."""
+    return (body or {}).get("actor_email", "").strip().lower() or "unknown"
 
 
 def _require_admin(body: dict):
@@ -7935,7 +7967,18 @@ def get_roles():
     return resp(200, {"roles": ROLES})
 
 
+# Administrar usuarios ES administrar permisos.
+#
+# Sin este corte, cualquiera que conociera la URL podía darse el rol de
+# administrador con un PUT y después borrar casos: el guard de las acciones
+# de admin quedaba decorativo, porque la puerta para volverse admin estaba
+# abierta al lado. `GET /users` sigue sin pedir nada —es el padrón que usa la
+# propia pantalla para dibujarse— pero escribir en él, no.
+
 def create_user(body: dict):
+    denied = _require_admin(body)
+    if denied:
+        return denied
     email = str(body.get("email", "")).strip().lower()[:255]
     full_name = str(body.get("full_name", "")).strip()[:255]
     role_id = int(body.get("role_id", 1))
@@ -7950,11 +7993,14 @@ def create_user(body: dict):
         "created_at": _now_str(),
         "last_login_at": "",
     })
-    _safe_audit(user_email="admin", action="create_user", entity_type="user", entity_id=email)
+    _safe_audit(user_email=_actor(body), action="create_user", entity_type="user", entity_id=email)
     return resp(201, {"message": "Usuario creado", "email": email})
 
 
 def update_user(user_id: str, body: dict):
+    denied = _require_admin(body)
+    if denied:
+        return denied
     # user_id is the email (what get_users returns as id).
     changes = {}
     if "full_name" in body:
@@ -7969,14 +8015,18 @@ def update_user(user_id: str, body: dict):
         return resp(400, {"error": "nothing to update"})
     if _crm_update("users", user_id, changes) is None:
         return resp(404, {"error": f"User '{user_id}' not found"})
-    _safe_audit(user_email="admin", action="update_user", entity_type="user", entity_id=user_id)
+    _safe_audit(user_email=_actor(body), action="update_user", entity_type="user", entity_id=user_id)
     return resp(200, {"message": "Usuario actualizado"})
 
 
-def deactivate_user(user_id: str):
+def deactivate_user(user_id: str, body: dict | None = None):
+    body = body or {}
+    denied = _require_admin(body)
+    if denied:
+        return denied
     if _crm_update("users", user_id, {"is_active": False}) is None:
         return resp(404, {"error": f"User '{user_id}' not found"})
-    _safe_audit(user_email="admin", action="deactivate_user", entity_type="user", entity_id=user_id)
+    _safe_audit(user_email=_actor(body), action="deactivate_user", entity_type="user", entity_id=user_id)
     return resp(200, {"message": "Usuario desactivado"})
 
 
