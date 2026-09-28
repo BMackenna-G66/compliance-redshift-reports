@@ -125,6 +125,12 @@ except Exception as _e:  # pragma: no cover
     print(f"[api] informe de gestión no disponible: {_e}")
 
 try:
+    import gereo
+except Exception as _e:  # pragma: no cover
+    gereo = None
+    print(f"[api] cliente de GEREO no disponible: {_e}")
+
+try:
     import informe_alertas
     import informe_email
 except Exception as _e:  # pragma: no cover
@@ -2560,6 +2566,31 @@ def handler(event, context):  # noqa: ARG001
             return execute_report(body)
 
         # ── ROS / UAF ────────────────────────────────────────────────────
+        # GET /gereo/salud — ¿la clave sirve y qué países hay habilitados?
+        # Es el healthcheck de la integración: si empieza a dar 401, nos
+        # revocaron o rotaron la clave.
+        if method == "GET" and parts == ["gereo", "salud"]:
+            if not gereo:
+                return resp(503, {"error": "El cliente de GEREO no está "
+                                           "disponible en este despliegue."})
+            try:
+                return resp(200, {"gereo": gereo.salud(), "conectado": True})
+            except gereo.ErrorGereo as e:
+                # 200 con `conectado: false`: que GEREO no conteste no es un
+                # error DE ESTA API, y la pantalla tiene que poder dibujar el
+                # estado en vez de romperse.
+                return resp(200, {"conectado": False, **e.como_dict()})
+
+        # POST /ros/generar — le pide a GEREO el borrador del ROS.
+        # Va por la Lambda larga: un ROS tarda decenas de segundos y no entra
+        # en los 29 del API Gateway. Devuelve run_id; la pantalla sondea.
+        if method == "POST" and parts == ["ros", "generar"]:
+            return generar_borrador_ros(body)
+
+        # GET /ros/borrador/{run_id} — el borrador que dejó la corrida.
+        if method == "GET" and len(parts) == 3 and parts[0] == "ros" and parts[1] == "borrador":
+            return leer_borrador_ros(parts[2])
+
         if parts and parts[0] == "ros":
             if not ros_mod:
                 return resp(503, {"error": "El registro de ROS no está disponible en este despliegue."})
@@ -8593,6 +8624,73 @@ def v1_alertas_por_regla(event: dict, q: dict):
         return resp(502, {"error": f"No pude consultar Redshift: {detalle[:200]}"})
     return resp(200, {"regla": regla, "total": len(filas),
                       "alertas": [api_externa.alerta_publica(f) for f in filas]})
+
+
+# ---------------------------------------------------------------------------
+# GEREO — el borrador del ROS
+# ---------------------------------------------------------------------------
+
+def generar_borrador_ros(body: dict):
+    """Lanza la generación del borrador y devuelve la corrida.
+
+    No llama a GEREO acá: tarda decenas de segundos y el API Gateway corta a
+    los 29. Se valida lo que se puede validar sin red —la matriz por país— y
+    se delega en la Lambda de 900 s.
+    """
+    if not gereo:
+        return resp(503, {"error": "El cliente de GEREO no está disponible "
+                                   "en este despliegue."})
+    faltan = gereo.validar(body)
+    if faltan:
+        # 422 y no 400: es el mismo código con el que GEREO rechaza una
+        # opción que el país no admite, y quien llama ya lo distingue.
+        return resp(422, {"error": "; ".join(faltan), "campo": ""})
+
+    run_id = str(uuid.uuid4())
+    ahora_iso = dt.datetime.utcnow().isoformat()
+    quien = str(body.get("actor_email") or body.get("user_email") or "").strip()[:200]
+    try:
+        runs_table.put_item(Item={
+            "run_id": run_id,
+            "report_name": "gereo_ros",
+            "status": "RUNNING",
+            "started_at": ahora_iso,
+            "user_email": quien,
+            "ttl": int((dt.datetime.utcnow() + dt.timedelta(days=90)).timestamp()),
+        })
+        lambda_client.invoke(
+            FunctionName=REPORT_LAMBDA_NAME,
+            InvocationType="Event",
+            Payload=json.dumps({"report_name": "gereo_ros", "run_id": run_id,
+                                "pedido": gereo.cuerpo_para(body)}),
+        )
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[gereo] no pude lanzar la corrida: {type(e).__name__}: {e}")
+        return resp(500, {"error": f"No pude lanzar la generación: {str(e)[:200]}"})
+
+    # GEREO registra la llamada como «nuestro sistema». Si detrás hubo una
+    # persona, la constancia tiene que quedar de este lado.
+    _safe_audit(user_email=quien or "unknown", action="gereo.ros.generar",
+                entity_type="ros", entity_id=str(body.get("customer_id") or ""),
+                new_value={"pais": body.get("pais"), "run_id": run_id})
+    return resp(202, {"run_id": run_id, "estado": "RUNNING",
+                      "aviso": "Un ROS tarda decenas de segundos. "
+                               "Consultá /runs/{run_id} hasta que diga DONE."})
+
+
+def leer_borrador_ros(run_id: str):
+    """El borrador que dejó la corrida, desde S3."""
+    clave = f"gereo/borradores/{run_id}.json"
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=clave)
+        return resp(200, json.loads(obj["Body"].read()))
+    except s3.exceptions.NoSuchKey:
+        return resp(404, {"error": "No hay borrador para esa corrida. "
+                                   "Puede que todavía esté corriendo o que "
+                                   "haya terminado en error."})
+    except Exception as e:                                       # noqa: BLE001
+        return resp(500, {"error": f"No pude leer el borrador: {str(e)[:200]}"})
+
 
 
 def _equipos_por_analista() -> dict:
