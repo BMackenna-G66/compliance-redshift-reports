@@ -1934,22 +1934,20 @@ def enviar_informe_alertas(body: dict):
         print(f"[informe-alertas] falló al armar: {type(e).__name__}: {e}")
         return resp(500, {"error": f"No pude armar el informe: {str(e)[:200]}"})
 
-    envios = []
-    for destino in destinos:
-        envio = _send_email(destino, informe_email.asunto_alertas(hoy), html,
-                            from_addr=ALERT_DOCS_FROM_ADDR)
-        envios.append({"para": destino, "enviado": envio["sent"],
-                       "error": envio["error"] or ""})
+    # Un solo correo, igual que el de gestión.
+    envio = _send_email(destinos, informe_email.asunto_alertas(hoy), html,
+                        from_addr=ALERT_DOCS_FROM_ADDR)
 
     g = datos["total_general"]
     _safe_audit(user_email=str(body.get("actor_email") or "unknown"),
                 action="informe.alertas.enviar", entity_type="informe",
                 entity_id=hoy,
                 new_value={"destinatarios": destinos, "alertas": g["total"],
-                           "enviados": sum(1 for e in envios if e["enviado"])})
+                           "enviado": envio["sent"]})
     return resp(200, {
-        "enviados": sum(1 for e in envios if e["enviado"]),
-        "detalle": envios,
+        "enviado": envio["sent"],
+        "destinatarios": destinos,
+        "aviso": envio.get("error") or "",
         "alertas": g["total"],
         "sin_caso": g["sin_caso"],
         "asunto": informe_email.asunto_alertas(hoy),
@@ -7774,16 +7772,27 @@ def _send_email(
     # El corte va ACÁ, en el único lugar por donde sale todo correo del
     # sistema: los cinco que llaman a esta función quedan cubiertos de una, y
     # el que se agregue mañana también.
-    destino, problema = _direccion_de_envio(to)
-    if problema:
-        print(f"[email] NO ENVIADO — {problema}")
-        return {"sent": False, "error": f"No se envió: {problema}."}
+    # `to` puede ser una dirección o una lista. Un informe que va a diecisiete
+    # personas tiene que salir en UN correo: diecisiete conexiones SMTP
+    # seguidas no entran en el minuto que dura la Lambda —se cortó a la
+    # catorceava, con dos personas sin recibirlo y catorce con duplicado— y
+    # además así todos se ven en el mismo hilo y pueden responderse.
+    crudos = [to] if isinstance(to, str) else list(to or [])
+    destinos, malas = [], []
+    for x in crudos:
+        d, problema = _direccion_de_envio(x)
+        (malas.append(f"{x}: {problema}") if problema else destinos.append(d))
+    if not destinos:
+        detalle = "; ".join(malas) or "sin destinatarios"
+        print(f"[email] NO ENVIADO — {detalle}")
+        return {"sent": False, "error": f"No se envió: {detalle}."}
+    destino = ", ".join(destinos)
 
     gmail_password = _get_gmail_password()
     if not gmail_password:
         msg_err = ("No hay app password de Gmail configurada (ni en Secrets Manager "
                    f"'{GMAIL_PASSWORD_SECRET_NAME}' ni en la variable GMAIL_APP_PASSWORD)")
-        print(f"[email] NO ENVIADO a {to}: {msg_err}")
+        print(f"[email] NO ENVIADO a {destino}: {msg_err}")
         return {"sent": False, "error": msg_err}
 
     import smtplib
@@ -7809,15 +7818,22 @@ def _send_email(
     msg["From"] = sender
     # La cabecera puede llevar «Nombre <dir>»; el sobre, no. Son dos cosas
     # distintas y SMTP sólo admite la dirección pelada en `RCPT TO`.
-    msg["To"] = to
+    #
+    # Va `destino` y no `to`: desde que `to` puede ser una lista, ponerlo
+    # crudo escribiría el repr de Python en la cabecera del correo.
+    msg["To"] = destino
     try:
         # 8s era muy justo: el handshake TLS + login contra Gmail desde una
         # Lambda fría se pasaba del límite y el correo se perdía sin aviso.
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as server:
             server.login(GMAIL_USER, gmail_password)
-            server.sendmail(sender, [destino], msg.as_string())
-        print(f"[email] enviado a {destino} (asunto: {subject!r})")
-        return {"sent": True, "error": None}
+            server.sendmail(sender, destinos, msg.as_string())
+        print(f"[email] enviado a {len(destinos)} destinatario(s): {destino} "
+              f"(asunto: {subject!r})")
+        # Si alguna dirección no pasó la validación se dice, aunque el resto
+        # haya salido: «enviado» a secas escondería que a alguien no le llegó.
+        return {"sent": True, "error": "; ".join(malas) or None,
+                "destinatarios": destinos}
     except Exception as e:
         detalle = f"{type(e).__name__}: {e}"
         print(f"[email] FALLÓ el envío a {destino}: {detalle}")
@@ -8700,14 +8716,12 @@ def enviar_informe_gestion(body: dict):
         print(f"[informe-correo] falló al armar: {type(e).__name__}: {e}")
         return resp(500, {"error": f"No pude armar el informe: {str(e)[:200]}"})
 
-    # Uno por destinatario y no todos en el mismo `to`: si uno de los correos
-    # no existe, el resto igual lo recibe, y nadie ve la lista de los demás.
-    envios = []
-    for destino in destinos:
-        envio = _send_email(destino, informe_email.asunto(datos, hoy), html,
-                            from_addr=ALERT_DOCS_FROM_ADDR)
-        envios.append({"para": destino, "enviado": envio["sent"],
-                       "error": envio["error"] or ""})
+    # UN SOLO CORREO con todos en el `Para`, no uno por persona. Es lo que se
+    # pidió —el equipo se ve en el mismo hilo y puede responderse— y de paso
+    # es lo único que entra en el minuto que dura la Lambda: diecisiete
+    # conexiones SMTP seguidas se cortaban a la catorceava.
+    envio = _send_email(destinos, informe_email.asunto(datos, hoy), html,
+                        from_addr=ALERT_DOCS_FROM_ADDR)
 
     g = datos["total_general"]
     _safe_audit(user_email=str(body.get("actor_email") or "unknown"),
@@ -8716,12 +8730,12 @@ def enviar_informe_gestion(body: dict):
                 # `new_value` y no `details`: `_safe_audit` se traga cualquier
                 # otra clave con **_extra, así que el detalle se perdería sin
                 # que nada avise.
-                new_value={"destinatarios": destinos,
-                           "casos": g["total"],
-                           "enviados": sum(1 for e in envios if e["enviado"])})
+                new_value={"destinatarios": destinos, "casos": g["total"],
+                           "enviado": envio["sent"]})
     return resp(200, {
-        "enviados": sum(1 for e in envios if e["enviado"]),
-        "detalle": envios,
+        "enviado": envio["sent"],
+        "destinatarios": destinos,
+        "aviso": envio.get("error") or "",
         "casos": g["total"],
         "equipos": len(datos["equipos"]),
         "asunto": informe_email.asunto(datos, hoy),
