@@ -8650,6 +8650,43 @@ def v1_alertas_por_regla(event: dict, q: dict):
 # GEREO — el borrador del ROS
 # ---------------------------------------------------------------------------
 
+# EL BACKEND DE GEREO ES COMPARTIDO. El documento de integración lo dice:
+# «Procesos masivos, de a uno y con pausa. El mismo backend atiende la
+# pantalla de los analistas; un loop sin freno se la degrada.» Un ROS consulta
+# la base, evalúa reglas y redacta: dos o tres en paralelo ya se sienten del
+# otro lado.
+GEREO_MAX_EN_CURSO = 2
+
+# Una corrida más vieja que esto NO cuenta para el tope.
+#
+# POR QUÉ. `RUNNING` se escribe antes de empezar a trabajar: si la Lambda
+# muere, nadie escribe DONE ni ERROR y la corrida queda con cara de estar
+# avanzando para siempre. Sin esta ventana, dos corridas muertas dejarían el
+# módulo bloqueado sin que nadie entienda por qué. Ya pasó con las tandas del
+# análisis individual.
+GEREO_VENTANA_MIN = 20
+
+
+def _gereo_en_curso() -> int:
+    """Cuántas generaciones están corriendo de verdad ahora mismo."""
+    from boto3.dynamodb.conditions import Attr                   # noqa: PLC0415
+    corte = (dt.datetime.utcnow()
+             - dt.timedelta(minutes=GEREO_VENTANA_MIN)).isoformat()
+    try:
+        r = runs_table.scan(
+            ProjectionExpression="run_id, started_at",
+            FilterExpression=(Attr("report_name").eq("gereo_ros")
+                              & Attr("status").eq("RUNNING")),
+        )
+    except Exception as e:                                       # noqa: BLE001
+        # Si no se puede contar, se deja pasar: bloquear por no poder mirar
+        # sería peor que dejar correr una de más.
+        print(f"[gereo] no pude contar las corridas en curso: {type(e).__name__}")
+        return 0
+    return sum(1 for x in r.get("Items", [])
+               if str(x.get("started_at") or "") > corte)
+
+
 def generar_borrador_ros(body: dict):
     """Lanza la generación del borrador y devuelve la corrida.
 
@@ -8665,6 +8702,16 @@ def generar_borrador_ros(body: dict):
         # 422 y no 400: es el mismo código con el que GEREO rechaza una
         # opción que el país no admite, y quien llama ya lo distingue.
         return resp(422, {"error": "; ".join(faltan), "campo": ""})
+
+    en_curso = _gereo_en_curso()
+    if en_curso >= GEREO_MAX_EN_CURSO:
+        return resp(429, {
+            "error": f"Ya hay {en_curso} generación(es) de ROS en curso. "
+                     "El mismo backend atiende la pantalla de los analistas "
+                     "de GEREO, así que se hace de a poco: esperá a que "
+                     "termine alguna.",
+            "en_curso": en_curso, "maximo": GEREO_MAX_EN_CURSO,
+        })
 
     run_id = str(uuid.uuid4())
     ahora_iso = dt.datetime.utcnow().isoformat()

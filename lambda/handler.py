@@ -1214,15 +1214,36 @@ def _gereo_ros(event: dict, run_id: str | None) -> dict:
 
     pedido = event.get("pedido") or {}
     _update_run(run_id, status="RUNNING")
-    try:
-        d = gereo.generar_ros(pedido)
-    except gereo.ErrorGereo as e:
+
+    # SÓLO EL 503 SE REINTENTA, y espaciado. Es lo que dice el documento: un
+    # 404 («ese cliente no existe») y un 422 («esa opción no se admite») no
+    # mejoran insistiendo, y reintentarlos esconde el error real detrás de
+    # tres intentos. Un timeout tampoco se reintenta a ciegas: el análisis
+    # puede haber corrido igual del otro lado.
+    #
+    # Las esperas van creciendo y caben de sobra en los 900 s de esta Lambda.
+    ESPERAS = (20, 60, 120)
+    ultimo = None
+    for intento, espera in enumerate((0, *ESPERAS), start=1):
+        if espera:
+            logger.info("GEREO no disponible; reintento %d en %ds", intento, espera)
+            time.sleep(espera)
+        try:
+            d = gereo.generar_ros(pedido)
+            ultimo = None
+            break
+        except gereo.ErrorGereo as e:
+            ultimo = e
+            if not e.reintentable:
+                break
+    if ultimo is not None:
         # El mensaje de GEREO no trae datos personales (es «no existe el
         # cliente», «esa opción no se admite»), así que se puede mostrar.
-        logger.warning("GEREO rechazó el pedido: %s (%s)", e.mensaje, e.codigo)
-        _update_run(run_id, status="ERROR", error_message=e.mensaje[:500],
+        logger.warning("GEREO rechazó el pedido: %s (%s)", ultimo.mensaje,
+                       ultimo.codigo)
+        _update_run(run_id, status="ERROR", error_message=ultimo.mensaje[:500],
                     completed_at=dt.datetime.utcnow().isoformat())
-        return {"ok": False, **e.como_dict()}
+        return {"ok": False, **ultimo.como_dict()}
 
     clave = f"gereo/borradores/{run_id}.json"
     s3.put_object(Bucket=S3_BUCKET, Key=clave,
