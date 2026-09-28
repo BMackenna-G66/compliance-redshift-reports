@@ -200,10 +200,11 @@ class ElCorreoNoSaleDelDominio(unittest.TestCase):
         self.assertEqual(codigo, 400)
         self.assertEqual(correo.enviados, [])
 
-    def test_uno_por_destinatario(self):
+    def test_un_solo_correo_con_todos(self):
         _, d, correo = llamar({"para": ["ana@global66.com", "luis@global66.com"]})
-        self.assertEqual(len(correo.enviados), 2)
-        self.assertEqual(d["enviados"], 2)
+        self.assertEqual(len(correo.enviados), 1, "tiene que ser un solo envío")
+        self.assertEqual(d["destinatarios"],
+                         ["ana@global66.com", "luis@global66.com"])
 
     def test_la_respuesta_dice_cuantas_alertas_y_cuantas_sin_caso(self):
         _, d, _ = llamar({"para": ["ana@global66.com"]})

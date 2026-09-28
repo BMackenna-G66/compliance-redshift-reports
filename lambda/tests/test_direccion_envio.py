@@ -155,29 +155,44 @@ class LoQueNoEsUnaDireccion(unittest.TestCase):
 class ElCorteEstaEnElLugarCorrecto(unittest.TestCase):
     """Que la validación viva en `_send_email` y no en cada uno de los que llaman."""
 
-    def test_send_email_valida_antes_de_conectarse(self):
+    def _cuerpo(self):
         texto = API.read_text(encoding="utf-8")
         i = texto.index("def _send_email(")
-        cuerpo = texto[i:texto.index("\ndef ", i + 10)]
-        self.assertIn("_direccion_de_envio(to)", cuerpo,
+        return texto[i:texto.index("\ndef ", i + 10)]
+
+    def test_send_email_valida_antes_de_conectarse(self):
+        cuerpo = self._cuerpo()
+        self.assertIn("_direccion_de_envio(", cuerpo,
                       "_send_email tiene que validar el destinatario")
         # La validación va antes de pedir la contraseña y de abrir la conexión.
-        self.assertLess(cuerpo.index("_direccion_de_envio(to)"),
+        self.assertLess(cuerpo.index("_direccion_de_envio("),
                         cuerpo.index("_get_gmail_password()"),
                         "se valida antes de ir a buscar la app password")
-        self.assertLess(cuerpo.index("_direccion_de_envio(to)"),
+        self.assertLess(cuerpo.index("_direccion_de_envio("),
                         cuerpo.index("SMTP_SSL"),
                         "se valida antes de abrir la conexión")
 
-    def test_el_sobre_lleva_la_direccion_limpia(self):
-        """`sendmail` tiene que recibir la dirección normalizada, no el crudo.
+    def test_el_sobre_y_la_cabecera_llevan_lo_normalizado(self):
+        """Ni el sobre ni la cabecera pueden llevar `to` crudo.
 
-        Si recibiera `to`, «Ana <ana@x.com>» volvería a romper en `RCPT TO`.
+        Con `to` crudo, «Ana <ana@x.com>» rompe en `RCPT TO` —que es el
+        incidente que originó este archivo— y, desde que `to` puede ser una
+        lista, la cabecera del correo se llenaría con el repr de Python.
         """
-        texto = API.read_text(encoding="utf-8")
-        i = texto.index("def _send_email(")
-        cuerpo = texto[i:texto.index("\ndef ", i + 10)]
-        self.assertIn("server.sendmail(sender, [destino]", cuerpo)
+        cuerpo = self._cuerpo()
+        self.assertIn("server.sendmail(sender, destinos", cuerpo)
+        self.assertIn('msg["To"] = destino', cuerpo)
+        self.assertNotIn('msg["To"] = to', cuerpo)
+
+    def test_manda_un_solo_correo_aunque_haya_varios_destinatarios(self):
+        """Uno por persona no entra en el minuto que dura la Lambda: con 17
+        se cortó en la catorceava, dejando a dos sin recibirlo y a catorce
+        con duplicado. Y el equipo pidió verse en el mismo hilo."""
+        cuerpo = self._cuerpo()
+        self.assertEqual(cuerpo.count("SMTP_SSL"), 1,
+                         "una sola conexión por llamada")
+        self.assertIn("isinstance(to, str)", cuerpo,
+                      "_send_email tiene que aceptar una lista")
 
     def test_el_pedido_manual_corta_antes_de_crear_el_caso(self):
         """Si el correo no puede salir, no se crea un caso ni un pedido fallido."""

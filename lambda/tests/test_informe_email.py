@@ -370,19 +370,23 @@ class ElCorreoNoSaleDelDominio(unittest.TestCase):
 
 class ComoSeManda(unittest.TestCase):
 
-    def test_uno_por_destinatario(self):
-        """Si uno de los correos no existe, el resto igual lo recibe. Y nadie
-        ve la lista de los demás."""
+    def test_un_solo_correo_con_todos(self):
+        """Pedido por el equipo: verse en el mismo hilo y poder responderse.
+        Y es lo único que entra en el minuto que dura la Lambda — con 17
+        destinatarios, uno por persona se cortó en la catorceava."""
         _, d, correo = llamar(
             {"para": ["ana@global66.com", "luis@global66.com"]})
-        self.assertEqual(len(correo.enviados), 2)
-        self.assertEqual({e["to"] for e in correo.enviados},
-                         {"ana@global66.com", "luis@global66.com"})
-        self.assertEqual(d["enviados"], 2)
+        self.assertEqual(len(correo.enviados), 1, "tiene que ser un solo envío")
+        self.assertEqual(correo.enviados[0]["to"],
+                         ["ana@global66.com", "luis@global66.com"])
+        self.assertTrue(d["enviado"])
+        self.assertEqual(d["destinatarios"],
+                         ["ana@global66.com", "luis@global66.com"])
 
     def test_acepta_una_lista_escrita_a_mano(self):
-        _, _, correo = llamar({"para": "ana@global66.com, luis@global66.com"})
-        self.assertEqual(len(correo.enviados), 2)
+        _, d, correo = llamar({"para": "ana@global66.com, luis@global66.com"})
+        self.assertEqual(len(correo.enviados), 1)
+        self.assertEqual(len(d["destinatarios"]), 2)
 
     def test_el_asunto_lleva_la_fecha(self):
         _, d, _ = llamar({"para": ["ana@global66.com"]})
