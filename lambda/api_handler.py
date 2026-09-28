@@ -8677,6 +8677,11 @@ def _gereo_en_curso() -> int:
             ProjectionExpression="run_id, started_at",
             FilterExpression=(Attr("report_name").eq("gereo_ros")
                               & Attr("status").eq("RUNNING")),
+            # Lectura consistente: el `scan` normal es de consistencia
+            # eventual y puede no ver la corrida que se acaba de crear. Con
+            # dos clics seguidos eso deja pasar las dos, que es justo lo que
+            # este tope existe para evitar.
+            ConsistentRead=True,
         )
     except Exception as e:                                       # noqa: BLE001
         # Si no se puede contar, se deja pasar: bloquear por no poder mirar
