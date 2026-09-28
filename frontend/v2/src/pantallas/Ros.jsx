@@ -28,6 +28,7 @@ import {
   montosDe, nombreEstado, nombreRegulador, periodoTexto,
 } from '../comun/ros.js';
 import { soloLectura } from '../permisos.js';
+import { Gereo } from './ros/Gereo.jsx';
 
 function Estado({ r }) {
   const c = colorDe(r.estado);
@@ -45,6 +46,10 @@ function Crear({ api, reguladores, email, alCrear, alCerrar }) {
   const [caseId, setCaseId] = useState('');
   const [regulador, setRegulador] = useState('');
   const [tipologia, setTipologia] = useState('');
+  // El borrador de GEREO es opcional: el ROS se puede crear sin él, como
+  // siempre. Si vino, viaja su corrida y el backend lo adjunta.
+  const [gereoRunId, setGereoRunId] = useState('');
+  const [narrativaBase, setNarrativaBase] = useState('');
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState('');
 
@@ -62,7 +67,9 @@ function Crear({ api, reguladores, email, alCrear, alCerrar }) {
     setGuardando(true); setError('');
     try {
       await alCrear({ case_id: caseId, regulador, tipologia: tipologia.trim(),
-                      creado_por: email });
+                      creado_por: email,
+                      ...(gereoRunId ? { gereo_run_id: gereoRunId } : {}),
+                      ...(narrativaBase ? { narrativa: narrativaBase } : {}) });
     } catch (err) {
       setError(err?.message || 'No se pudo crear el reporte.');
     } finally {
@@ -114,6 +121,31 @@ function Crear({ api, reguladores, email, alCrear, alCerrar }) {
                  value={tipologia} onChange={(e) => setTipologia(e.target.value)}
                  placeholder="Estructuración, pitufeo, uso de terceros…" />
         </label>
+
+        {/* ── El borrador de GEREO, opcional ─────────────────────────
+            Va acá y no en otra pantalla porque es parte de armar el mismo
+            reporte: el analista elige el caso y el regulador, y si quiere,
+            trae el análisis ya hecho antes de crear el borrador. */}
+        <details style={{ marginTop: 'var(--e-4)' }}>
+          <summary style={{ cursor: 'pointer', fontSize: 'var(--texto-sm)',
+                            color: 'var(--g66-azul-texto)' }}>
+            Traer el borrador desde GEREO <span style={{ color: 'var(--texto-mute)' }}>
+              (opcional)</span>
+          </summary>
+          <div style={{ marginTop: 'var(--e-3)' }}>
+            <Gereo api={api} regulador={regulador} email={email}
+                   customerId={(casos.find((c) => c.case_id === caseId) || {}).entity_id}
+                   alGenerar={setGereoRunId}
+                   alUsarNarrativa={(texto) => setNarrativaBase(texto)} />
+            {narrativaBase && (
+              <p className="wt-nota" style={{ marginTop: 'var(--e-3)' }}>
+                El texto de GEREO va a quedar como <strong>punto de partida</strong> de
+                la narrativa. Revisalo y corregilo en el detalle antes de mandar el
+                reporte a revisión: lo que se firma es lo que quede escrito ahí.
+              </p>
+            )}
+          </div>
+        </details>
 
         {/* Se dice ANTES de crear, no después: la evidencia la junta el
             backend y la narrativa la escribe una persona. */}
