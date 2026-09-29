@@ -112,6 +112,20 @@ class RelevoTambienAvisa(unittest.TestCase):
         self.assertIn("volver a autorizar", cuerpo)
         self.assertIn("GmailError", cuerpo)
 
+    def test_un_correo_borrado_no_frena_el_lote(self):
+        """El historial de Gmail lista lo que pasó, no lo que sigue
+        existiendo. Si alguien borró un correo después de que entrara,
+        pedirlo da 404; tratarlo como falla dura dejaba el lote entero sin
+        guardar y la marca sin avanzar, así que la corrida siguiente
+        reintentaba lo mismo. Trabado para siempre por un correo que ya no
+        existe — se ve apenas se recupera un período largo."""
+        gmail = (RAIZ / "relevo" / "gmail.py").read_text(encoding="utf-8")
+        i = gmail.index("def bajar(")
+        cuerpo = gmail[i:gmail.index("\ndef ", i + 10)]
+        self.assertIn("except GmailError", cuerpo)
+        self.assertIn('"404" in str(e)', cuerpo)
+        self.assertIn("continue", cuerpo)
+
     def test_se_puede_recuperar_un_periodo_perdido(self):
         """Un resync ancla en el presente y saltea lo que no bajó. Para un
         canal que estuvo caído, eso es perder la semana en silencio."""
