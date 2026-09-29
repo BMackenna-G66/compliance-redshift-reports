@@ -1264,7 +1264,7 @@ def _gereo_ros(event: dict, run_id: str | None) -> dict:
     return {"ok": True, "detenido": d.get("detenido"), "s3_key": clave}
 
 
-def _avisar_escucha_caida(detalle: str) -> None:
+def _avisar_escucha_caida(detalle: str, es_prueba: bool = False) -> None:
     """Avisa que la escucha de respuestas dejó de funcionar.
 
     NO VA AL CANAL DEL EQUIPO, a pedido: esto es una falla de infraestructura
@@ -1287,6 +1287,8 @@ def _avisar_escucha_caida(detalle: str) -> None:
     marca = "avisos/escucha-respuestas-caida.txt"
     ahora = dt.datetime.utcnow()
     try:
+        if es_prueba:
+            raise LookupError("una prueba no respeta el freno de una vez por hora")
         obj = s3.get_object(Bucket=S3_BUCKET, Key=marca)
         ultimo = dt.datetime.fromisoformat(obj["Body"].read().decode().strip())
         if (ahora - ultimo).total_seconds() < 3600:
@@ -1294,8 +1296,10 @@ def _avisar_escucha_caida(detalle: str) -> None:
     except Exception:                                            # noqa: BLE001
         pass
 
+    titulo = ("*PRUEBA · así se ve el aviso de escucha caída*" if es_prueba
+              else "*La escucha de respuestas de clientes está caída*")
     texto = (
-        "*La escucha de respuestas de clientes está caída*\n"
+        f"{titulo}\n"
         f"`{detalle[:300]}`\n"
         "Mientras siga así, lo que responden los clientes NO entra a los "
         "casos y los expedientes dicen «no respondió». Se revisa cada 10 "
@@ -1323,15 +1327,18 @@ def _avisar_escucha_caida(detalle: str) -> None:
     if not avisado and AVISO_FALLA_EMAIL:
         cuerpo = (
             '<p style="font-family:Arial,sans-serif;font-size:14px;">'
-            "<strong>La escucha de respuestas de clientes está caída.</strong><br>"
+            f"<strong>{'PRUEBA — así se ve el aviso. No hay ninguna falla real.' if es_prueba else 'La escucha de respuestas de clientes está caída.'}</strong><br>"
             f"<code>{detalle[:300]}</code><br><br>"
             "Mientras siga así, lo que responden los clientes no entra a los "
             "casos y los expedientes dicen «no respondió».</p>")
-        r = _send_email_gmail(AVISO_FALLA_EMAIL,
-                              "[WatchTower] Escucha de respuestas caída", cuerpo)
+        asunto = ("[WatchTower] PRUEBA — así se ve el aviso de escucha caída"
+                  if es_prueba else "[WatchTower] Escucha de respuestas caída")
+        r = _send_email_gmail(AVISO_FALLA_EMAIL, asunto, cuerpo)
         avisado = bool(r.get("sent"))
 
-    if avisado:
+    if avisado and not es_prueba:
+        # Una prueba NO escribe la marca: si no, probar el aviso taparía la
+        # falla real de la hora siguiente.
         try:
             s3.put_object(Bucket=S3_BUCKET, Key=marca,
                           Body=ahora.isoformat().encode())
@@ -1351,6 +1358,20 @@ def handler(event, context):  # noqa: ARG001
     # No usa Redshift ni el ciclo normal de runs — es un job de polling IMAP
     # disparado por EventBridge cada ~10 min. Retorna directo, sin pasar por
     # el resto del flujo de reportes (encendido de clúster, Excel, etc.).
+    # Probar el aviso SIN romper la recepción.
+    #
+    # LA LECCIÓN DEL INCIDENTE no fue que se cayó la contraseña: fue que el
+    # aviso no existía y nadie lo notó en ocho días. Un aviso que nunca se
+    # probó es un aviso que no se sabe si funciona, y eso se descubre el día
+    # que hace falta. Esto lo dispara a pedido, marcado como prueba y
+    # saltando el freno de una vez por hora.
+    if report_name == "probar_aviso_falla":
+        _avisar_escucha_caida(
+            "PRUEBA — no hay ninguna falla real. Disparado a mano para "
+            "comprobar que el aviso llega a donde tiene que llegar.",
+            es_prueba=True)
+        return {"status": "ok", "aviso": "disparado"}
+
     if report_name == "poll_document_replies":
         r = _poll_document_replies() or {}
         # EL SILENCIO ERA EL PROBLEMA, no la contraseña. Esto corre cada 10
