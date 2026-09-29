@@ -119,7 +119,38 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
         i = fuente.index("def _avisar_escucha_caida(")
         cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
         j = cuerpo.index("put_object")
-        self.assertIn("if avisado:", cuerpo[:j])
+        # La propiedad, no el texto: la escritura de la marca está detrás de
+        # `avisado`, se escriba esa condición como se escriba.
+        guarda = cuerpo[:j].rsplit("if avisado", 1)
+        self.assertEqual(len(guarda), 2, "la marca no está detrás de `avisado`")
+        self.assertNotIn("put_object", guarda[1])
+
+    def test_una_prueba_no_silencia_la_falla_real(self):
+        """Probar el aviso escribía la marca de «ya avisé esta hora», así que
+        una prueba taparía una caída de verdad en los 60 minutos siguientes.
+        Es la clase de detalle que convierte una herramienta de diagnóstico en
+        un agujero."""
+        fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
+        i = fuente.index("def _avisar_escucha_caida(")
+        cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
+        j = cuerpo.index("put_object")
+        self.assertIn("not es_prueba", cuerpo[:j])
+
+    def test_se_puede_probar_el_aviso_sin_romper_la_recepcion(self):
+        """La lección del incidente no fue la contraseña: fue que el aviso no
+        existía y nadie lo notó en ocho días. Un aviso que nunca se probó es
+        un aviso del que no se sabe si funciona."""
+        fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
+        self.assertIn('report_name == "probar_aviso_falla"', fuente)
+        i = fuente.index('report_name == "probar_aviso_falla"')
+        self.assertIn("es_prueba=True", fuente[i:i + 500])
+
+    def test_el_mensaje_de_prueba_se_anuncia_como_prueba(self):
+        """Nadie tiene que entrar en pánico por una prueba."""
+        fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
+        i = fuente.index("def _avisar_escucha_caida(")
+        cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
+        self.assertIn("PRUEBA", cuerpo)
 
     def test_el_aviso_no_se_repite_cada_diez_minutos(self):
         """Un canal caído días generaría cientos de mensajes y el canal de
