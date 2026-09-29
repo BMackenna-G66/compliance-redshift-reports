@@ -126,6 +126,24 @@ class RelevoTambienAvisa(unittest.TestCase):
         self.assertIn('"404" in str(e)', cuerpo)
         self.assertIn("continue", cuerpo)
 
+    def test_agotar_los_reintentos_levanta_en_vez_de_devolver_None(self):
+        """`intento < 5` con `range(5)` nunca es falso en la última vuelta,
+        así que al agotarse los reintentos la función se caía del bucle y
+        devolvía None. El llamador reventaba mucho más lejos con «'NoneType'
+        object has no attribute 'get'», un mensaje que no dice ni que fue
+        Gmail ni que fue la cuota. Se ve sólo bajo rate limit sostenido —
+        justo cuando se recupera un backlog grande."""
+        gmail = (RAIZ / "relevo" / "gmail.py").read_text(encoding="utf-8")
+        i = gmail.index("def _get(")
+        cuerpo = gmail[i:gmail.index("\n    #", i + 10)]
+        self.assertIn("sin reintentos", cuerpo)
+        # El raise final está FUERA del for: es el que faltaba.
+        for linea in cuerpo.splitlines():
+            if linea.startswith("        raise GmailError("):
+                break
+        else:
+            self.fail("no hay raise al nivel de la función: sigue devolviendo None")
+
     def test_se_puede_recuperar_un_periodo_perdido(self):
         """Un resync ancla en el presente y saltea lo que no bajó. Para un
         canal que estuvo caído, eso es perder la semana en silencio."""
