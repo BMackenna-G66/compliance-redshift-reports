@@ -71,6 +71,52 @@ class LaClaveSeLimpiaComoLaDeSMTP(unittest.TestCase):
         self.assertTrue("replace(" in smtp or "split()" in smtp)
 
 
+class RelevoTambienAvisa(unittest.TestCase):
+    """La misma lógica y el mismo desenlace: Relevo estuvo SIETE DÍAS sin
+    bajar un correo, fallando en cada corrida, con la única huella de un
+    `"error": "..."` escondido dentro de un JSON en una línea de INFO."""
+
+    def _fuente(self):
+        return (RAIZ / "handler.py").read_text(encoding="utf-8")
+
+    def test_un_error_de_ingesta_se_loguea_como_error(self):
+        fuente = self._fuente()
+        i = fuente.index('if (resultado or {}).get("error")')
+        self.assertIn("logger.error", fuente[i:i + 300])
+
+    def test_y_avisa(self):
+        fuente = self._fuente()
+        i = fuente.index('if (resultado or {}).get("error")')
+        self.assertIn("_avisar_falla", fuente[i:i + 400])
+
+    def test_el_400_de_gmail_ya_no_traba_para_siempre(self):
+        """Sólo se contemplaba el 404. Un 400 se propagaba y la ingesta
+        quedaba reintentando lo mismo cada 5 minutos, sin salida."""
+        gmail = (RAIZ / "relevo" / "gmail.py").read_text(encoding="utf-8")
+        i = gmail.index("def historial(")
+        cuerpo = gmail[i:gmail.index("\n    def ", i + 10)]
+        self.assertIn('"400" in str(e)', cuerpo)
+        self.assertIn('"404" in str(e)', cuerpo)
+
+    def test_se_puede_recuperar_un_periodo_perdido(self):
+        """Un resync ancla en el presente y saltea lo que no bajó. Para un
+        canal que estuvo caído, eso es perder la semana en silencio."""
+        ing = (RAIZ / "relevo" / "ingesta.py").read_text(encoding="utf-8")
+        self.assertIn("desde_fecha", ing)
+        self.assertIn("listar_ids(f\"after:", ing)
+
+    def test_la_recuperacion_no_mueve_la_marca(self):
+        """Si la moviera, arrastraría el punto de partida del camino normal a
+        donde terminó el barrido y abriría un hueco nuevo."""
+        ing = (RAIZ / "relevo" / "ingesta.py").read_text(encoding="utf-8")
+        i = ing.index("if desde_fecha:")
+        bloque = ing[i:i + 800]
+        self.assertIn("hid_nuevo", bloque)
+        # La marca sólo avanza con `hid_nuevo`, y la recuperación lo deja en
+        # None: la propiedad es que no se le asigne nada ahí.
+        self.assertNotIn("hid_nuevo =", bloque.split("if desde_fecha:")[1])
+
+
 class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
     """Ocho días sin que nadie se entere fue el problema de fondo."""
 
@@ -85,7 +131,7 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
 
     def test_y_avisa_por_slack(self):
         cuerpo = self._despacho()
-        self.assertIn("_avisar_escucha_caida", cuerpo)
+        self.assertIn("_avisar_falla", cuerpo)
 
     def test_el_resultado_bueno_tambien_queda_registrado(self):
         """Sin esto, «no pasó nada» y «no corrió» se ven igual en el log."""
@@ -97,7 +143,7 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
         persona, y en un canal compartido se vuelve ruido que todos aprenden
         a saltear — que es cómo se pierden ocho días."""
         fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
-        i = fuente.index("def _avisar_escucha_caida(")
+        i = fuente.index("def _avisar_falla(")
         cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
         self.assertNotIn("SLACK_SECRET_ARN", cuerpo,
                          "está usando el webhook del canal del equipo")
@@ -107,7 +153,7 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
         """Quedarse sin webhook no puede significar quedarse sin aviso: ese
         es exactamente el modo de falla que este aviso existe para tapar."""
         fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
-        i = fuente.index("def _avisar_escucha_caida(")
+        i = fuente.index("def _avisar_falla(")
         cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
         self.assertIn("AVISO_FALLA_EMAIL", cuerpo)
         self.assertIn("_send_email_gmail", cuerpo)
@@ -116,7 +162,7 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
         """Si no se pudo avisar, no se anota: si no, el primer intento
         fallido silenciaría la hora siguiente."""
         fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
-        i = fuente.index("def _avisar_escucha_caida(")
+        i = fuente.index("def _avisar_falla(")
         cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
         j = cuerpo.index("put_object")
         # La propiedad, no el texto: la escritura de la marca está detrás de
@@ -131,7 +177,7 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
         Es la clase de detalle que convierte una herramienta de diagnóstico en
         un agujero."""
         fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
-        i = fuente.index("def _avisar_escucha_caida(")
+        i = fuente.index("def _avisar_falla(")
         cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
         j = cuerpo.index("put_object")
         self.assertIn("not es_prueba", cuerpo[:j])
@@ -148,7 +194,7 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
     def test_el_mensaje_de_prueba_se_anuncia_como_prueba(self):
         """Nadie tiene que entrar en pánico por una prueba."""
         fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
-        i = fuente.index("def _avisar_escucha_caida(")
+        i = fuente.index("def _avisar_falla(")
         cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
         self.assertIn("PRUEBA", cuerpo)
 
@@ -157,7 +203,7 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
         avisos se volvería ruido que nadie mira — otra forma de no
         enterarse."""
         fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
-        i = fuente.index("def _avisar_escucha_caida(")
+        i = fuente.index("def _avisar_falla(")
         cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
         self.assertIn("3600", cuerpo)
 
@@ -165,7 +211,7 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
         """Si Slack falla, la escucha tiene que seguir: el aviso es
         secundario al trabajo."""
         fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
-        i = fuente.index("def _avisar_escucha_caida(")
+        i = fuente.index("def _avisar_falla(")
         cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
         self.assertIn("except Exception", cuerpo)
 

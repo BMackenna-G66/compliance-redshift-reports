@@ -67,7 +67,7 @@ def cliente():
     return G.Gmail(c["client_id"], c["client_secret"], c["refresh_token"], c["usuario"])
 
 
-def correr(maximo=None, forzar_resync=False):
+def correr(maximo=None, forzar_resync=False, desde_fecha=None):
     """Una vuelta de ingesta. Devuelve el resumen, nunca levanta por un correo.
 
     Camino normal: pedir a Gmail lo nuevo desde el historyId guardado, bajar
@@ -89,9 +89,27 @@ def correr(maximo=None, forzar_resync=False):
         r["error"] = str(e)[:300]
         return r
 
+    # RECUPERAR UN PERÍODO PERDIDO. Cuando la ingesta estuvo caída, el
+    # camino normal —«lo nuevo desde el historyId»— no sirve: ese punto de
+    # partida es justamente lo que se rompió. Acá se pide por fecha.
+    #
+    # Es una operación a mano, no el camino de todos los días: se pasa
+    # `desde_fecha` en formato Gmail (aaaa/mm/dd) al invocar la Lambda.
     hid = None if forzar_resync else estado.leer(CLAVE_HISTORIAL)
+    ids = hid_nuevo = None
 
-    if not hid:
+    if desde_fecha:
+        try:
+            ids = g.listar_ids(f"after:{desde_fecha}")
+        except Exception as e:
+            r["error"] = f"no pude listar desde {desde_fecha}: {str(e)[:200]}"
+            return r
+        r["recuperacion_desde"] = desde_fecha
+        # `hid_nuevo` queda en None a propósito: una recuperación NO mueve la
+        # marca. Si la moviera, arrastraría el punto de partida del camino
+        # normal a donde terminó este barrido y abriría un hueco nuevo.
+
+    if ids is None and not hid:
         # Sin punto de partida: se ancla en el presente y se sale.
         try:
             hid = str(g.perfil()["historyId"])
@@ -103,11 +121,12 @@ def correr(maximo=None, forzar_resync=False):
                  nota="primera corrida: marca anclada, la próxima trae lo incremental")
         return r
 
-    try:
-        ids, hid_nuevo = g.historial(hid)
-    except Exception as e:
-        r["error"] = f"history.list falló: {str(e)[:200]}"
-        return r
+    if ids is None:
+        try:
+            ids, hid_nuevo = g.historial(hid)
+        except Exception as e:
+            r["error"] = f"history.list falló: {str(e)[:200]}"
+            return r
 
     if ids is None:
         # 404: el historyId venció (Gmail los retiene ~una semana). Se

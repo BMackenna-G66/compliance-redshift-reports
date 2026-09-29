@@ -1264,7 +1264,7 @@ def _gereo_ros(event: dict, run_id: str | None) -> dict:
     return {"ok": True, "detenido": d.get("detenido"), "s3_key": clave}
 
 
-def _avisar_escucha_caida(detalle: str, es_prueba: bool = False) -> None:
+def _avisar_falla(proceso: str, detalle: str, es_prueba: bool = False) -> None:
     """Avisa que la escucha de respuestas dejó de funcionar.
 
     NO VA AL CANAL DEL EQUIPO, a pedido: esto es una falla de infraestructura
@@ -1284,7 +1284,7 @@ def _avisar_escucha_caida(detalle: str, es_prueba: bool = False) -> None:
     Se avisa UNA VEZ POR HORA, no cada diez minutos: un canal caído durante
     días generaría cientos de mensajes, y un privado inundado se silencia.
     """
-    marca = "avisos/escucha-respuestas-caida.txt"
+    marca = f"avisos/falla-{proceso.split()[0].lower()}.txt"
     ahora = dt.datetime.utcnow()
     try:
         if es_prueba:
@@ -1296,14 +1296,13 @@ def _avisar_escucha_caida(detalle: str, es_prueba: bool = False) -> None:
     except Exception:                                            # noqa: BLE001
         pass
 
-    titulo = ("*PRUEBA · así se ve el aviso de escucha caída*" if es_prueba
-              else "*La escucha de respuestas de clientes está caída*")
+    titulo = (f"*PRUEBA · así se ve el aviso de falla* — {proceso}" if es_prueba
+              else f"*Proceso caído: {proceso}*")
     texto = (
         f"{titulo}\n"
         f"`{detalle[:300]}`\n"
-        "Mientras siga así, lo que responden los clientes NO entra a los "
-        "casos y los expedientes dicen «no respondió». Se revisa cada 10 "
-        "minutos; este aviso se repite como máximo una vez por hora."
+        "Mientras siga así, ese correo NO entra al sistema. Este aviso se "
+        "repite como máximo una vez por hora."
     )
 
     avisado = False
@@ -1327,12 +1326,11 @@ def _avisar_escucha_caida(detalle: str, es_prueba: bool = False) -> None:
     if not avisado and AVISO_FALLA_EMAIL:
         cuerpo = (
             '<p style="font-family:Arial,sans-serif;font-size:14px;">'
-            f"<strong>{'PRUEBA — así se ve el aviso. No hay ninguna falla real.' if es_prueba else 'La escucha de respuestas de clientes está caída.'}</strong><br>"
+            f"<strong>{'PRUEBA — así se ve el aviso. No hay ninguna falla real.' if es_prueba else 'Proceso caído: ' + proceso}</strong><br>"
             f"<code>{detalle[:300]}</code><br><br>"
-            "Mientras siga así, lo que responden los clientes no entra a los "
-            "casos y los expedientes dicen «no respondió».</p>")
-        asunto = ("[WatchTower] PRUEBA — así se ve el aviso de escucha caída"
-                  if es_prueba else "[WatchTower] Escucha de respuestas caída")
+            "Mientras siga así, ese correo no entra al sistema.</p>")
+        asunto = (f"[WatchTower] PRUEBA — aviso de falla ({proceso})"
+                  if es_prueba else f"[WatchTower] Proceso caído: {proceso}")
         r = _send_email_gmail(AVISO_FALLA_EMAIL, asunto, cuerpo)
         avisado = bool(r.get("sent"))
 
@@ -1366,7 +1364,8 @@ def handler(event, context):  # noqa: ARG001
     # que hace falta. Esto lo dispara a pedido, marcado como prueba y
     # saltando el freno de una vez por hora.
     if report_name == "probar_aviso_falla":
-        _avisar_escucha_caida(
+        _avisar_falla(
+            event.get("proceso") or "Escucha de respuestas de clientes",
             "PRUEBA — no hay ninguna falla real. Disparado a mano para "
             "comprobar que el aviso llega a donde tiene que llegar.",
             es_prueba=True)
@@ -1383,7 +1382,8 @@ def handler(event, context):  # noqa: ARG001
         # Un canal de contacto con clientes que se corta tiene que gritar.
         if r.get("status") == "error":
             logger.error("Escucha de respuestas CAÍDA: %s", r.get("error"))
-            _avisar_escucha_caida(str(r.get("error") or ""))
+            _avisar_falla("Escucha de respuestas de clientes",
+                          str(r.get("error") or ""))
         else:
             logger.info("Escucha de respuestas: %s", json.dumps(r, default=str))
         return r
@@ -1416,8 +1416,20 @@ def handler(event, context):  # noqa: ARG001
             resultado = ingesta.correr(
                 maximo=event.get("maximo"),
                 forzar_resync=bool(event.get("forzar_resync")),
+                # Recuperar un período perdido: `{"desde_fecha": "2026/09/21"}`.
+                desde_fecha=event.get("desde_fecha"),
             )
-            logger.info("Relevo ingesta: %s", json.dumps(resultado, default=str))
+            # UN ERROR ADENTRO DE UN JSON EN UN INFO ES UN ERROR INVISIBLE.
+            # Relevo estuvo SIETE DÍAS sin bajar un correo, fallando en cada
+            # corrida, y la única huella era `"error": "..."` escondido en
+            # una línea de INFO que nadie lee. Mismo patrón que la escucha de
+            # respuestas, mismo desenlace.
+            if (resultado or {}).get("error"):
+                logger.error("Relevo ingesta CAÍDA: %s", resultado["error"])
+                _avisar_falla("Relevo · ingesta de correo de corresponsales",
+                              str(resultado["error"]))
+            else:
+                logger.info("Relevo ingesta: %s", json.dumps(resultado, default=str))
             return resultado
         except Exception as e:
             logger.exception("Relevo ingesta falló")
