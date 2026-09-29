@@ -104,6 +104,7 @@ class Gmail:
         if params:
             url += "?" + urllib.parse.urlencode(params, doseq=True)
         pedido = urllib.request.Request(url, headers={"Authorization": f"Bearer {self._token()}"})
+        ultimo = None
         for intento in range(5):
             try:
                 with urllib.request.urlopen(pedido, timeout=60) as r:
@@ -114,12 +115,24 @@ class Gmail:
                 # Sin esto, el servicio 24/7 se cae con un error duro en el
                 # momento en que baja muchos cuerpos seguidos.
                 cuota = e.code == 403 and b"Quota exceeded" in cuerpo
-                if (e.code in (429, 500, 502, 503) or cuota) and intento < 5:
+                ultimo = e, cuerpo
+                if (e.code in (429, 500, 502, 503) or cuota) and intento < 4:
                     espera = 2 ** intento * (15 if cuota else 1)   # la cuota es por minuto
                     time.sleep(espera)
                     continue
                 raise GmailError(
                     f"{e.code} en {ruta}: {cuerpo[:300].decode('utf-8', 'replace')}") from e
+        # SIN ESTE RAISE la función se caía del bucle y devolvía None.
+        #
+        # `intento < 5` nunca era falso en la última vuelta (range(5) llega a
+        # 4), así que al agotar los reintentos no se levantaba nada: el
+        # llamador recibía None y reventaba mucho más lejos con «'NoneType'
+        # object has no attribute 'get'», un mensaje que no dice ni que fue
+        # Gmail ni que fue la cuota. Se ve sólo bajo rate limit sostenido —
+        # es decir, justo cuando se recupera un backlog grande.
+        raise GmailError(
+            f"me quedé sin reintentos en {ruta}: "
+            f"{ultimo[1][:200].decode('utf-8', 'replace')}") from ultimo[0]
 
     # --------------------------------------------------------------- lectura
     def perfil(self):
