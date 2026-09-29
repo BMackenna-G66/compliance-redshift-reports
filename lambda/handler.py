@@ -1260,6 +1260,46 @@ def _gereo_ros(event: dict, run_id: str | None) -> dict:
     return {"ok": True, "detenido": d.get("detenido"), "s3_key": clave}
 
 
+def _avisar_escucha_caida(detalle: str) -> None:
+    """Avisa por Slack que la escucha de respuestas dejó de funcionar.
+
+    Best-effort y con memoria: se avisa UNA VEZ POR HORA y no cada diez
+    minutos. Un canal caído durante días generaría cientos de mensajes y el
+    canal de avisos se volvería ruido que nadie mira — que es otra forma de
+    no enterarse.
+    """
+    if not SLACK_SECRET_ARN:
+        return
+    marca = f"avisos/escucha-respuestas-caida.txt"
+    ahora = dt.datetime.utcnow()
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=marca)
+        ultimo = dt.datetime.fromisoformat(obj["Body"].read().decode().strip())
+        if (ahora - ultimo).total_seconds() < 3600:
+            return
+    except Exception:                                            # noqa: BLE001
+        pass
+
+    try:
+        webhook = secrets.get_secret_value(
+            SecretId=SLACK_SECRET_ARN)["SecretString"].strip()
+        texto = (
+            "*La escucha de respuestas de clientes está caída*\n"
+            f"`{detalle[:300]}`\n"
+            "Mientras siga así, lo que responden los clientes NO entra a los "
+            "casos. Se revisa cada 10 minutos; este aviso se repite como "
+            "máximo una vez por hora."
+        )
+        req = urllib.request.Request(
+            webhook, data=json.dumps({"text": texto}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).read()
+        s3.put_object(Bucket=S3_BUCKET, Key=marca,
+                      Body=ahora.isoformat().encode())
+    except Exception as e:                                       # noqa: BLE001
+        logger.warning("No pude avisar de la escucha caída: %s", e)
+
+
 def handler(event, context):  # noqa: ARG001
     logger.info("Event: %s", json.dumps(event, default=str))
 
@@ -1273,7 +1313,20 @@ def handler(event, context):  # noqa: ARG001
     # disparado por EventBridge cada ~10 min. Retorna directo, sin pasar por
     # el resto del flujo de reportes (encendido de clúster, Excel, etc.).
     if report_name == "poll_document_replies":
-        return _poll_document_replies()
+        r = _poll_document_replies() or {}
+        # EL SILENCIO ERA EL PROBLEMA, no la contraseña. Esto corre cada 10
+        # minutos y devolvía el error sin que nadie lo viera: la app password
+        # de la casilla se cayó y estuvo OCHO DÍAS sin traer una sola
+        # respuesta de cliente, con la única huella de que la invocación
+        # duraba 488 ms en vez de segundos.
+        #
+        # Un canal de contacto con clientes que se corta tiene que gritar.
+        if r.get("status") == "error":
+            logger.error("Escucha de respuestas CAÍDA: %s", r.get("error"))
+            _avisar_escucha_caida(str(r.get("error") or ""))
+        else:
+            logger.info("Escucha de respuestas: %s", json.dumps(r, default=str))
+        return r
 
     # ── GEREO: el borrador del ROS ────────────────────────────────────────
     # Vive acá y no en la API porque un ROS tarda decenas de segundos: no

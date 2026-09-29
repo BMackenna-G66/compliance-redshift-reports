@@ -6646,11 +6646,25 @@ def delete_case_attachment(case_id: str, attachment_id: str):
 # Escucha de respuestas del cliente (documentos por correo)
 # ---------------------------------------------------------------------------
 def _get_imap_password() -> str:
+    """App password de la casilla que recibe las respuestas.
+
+    SE LE SACAN TODOS LOS ESPACIOS, no sólo los de las puntas. Google muestra
+    la clave en 4 grupos de 4 ("abcd efgh ijkl mnop") y es naturalísimo
+    guardarla tal cual; IMAP la rechaza así, con el mismo
+    `AUTHENTICATIONFAILED` que da una clave revocada. Quien la carga ve que
+    «no funciona» y concluye que Google se la revocó de nuevo.
+
+    `_get_gmail_password()` ya hacía esto para SMTP. Esta función no, y es la
+    que se toca justo cuando hay que recuperar el canal caído.
+
+    NO se cachea a propósito: se lee en cada corrida, así que cargar la clave
+    nueva en el secreto alcanza — no hace falta redesplegar.
+    """
     if not DOC_REPLY_IMAP_SECRET_ARN:
         return ""
     try:
         val = secrets_client.get_secret_value(SecretId=DOC_REPLY_IMAP_SECRET_ARN)
-        return val["SecretString"].strip()
+        return "".join((val["SecretString"] or "").split())
     except Exception:
         return ""
 
