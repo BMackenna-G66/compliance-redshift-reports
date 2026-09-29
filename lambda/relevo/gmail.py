@@ -75,8 +75,26 @@ class Gmail:
         datos = urllib.parse.urlencode({
             "client_id": self.cid, "client_secret": self.sec,
             "refresh_token": self.ref, "grant_type": "refresh_token"}).encode()
-        with urllib.request.urlopen(urllib.request.Request(TOKEN_URL, data=datos), timeout=30) as r:
-            j = json.load(r)
+        # EL ERROR DE ACÁ TIENE QUE DECIR QUE ES DE ACÁ. Sin este try, un 400
+        # de Google —`invalid_grant`, el refresh token revocado o vencido—
+        # sube como un `HTTPError` crudo, se cuela por los `except GmailError`
+        # de más arriba y el llamador lo etiqueta con el nombre de la
+        # operación que ni llegó a intentarse. Así, siete días de «history.list
+        # falló» que no tenían nada que ver con history.list.
+        try:
+            with urllib.request.urlopen(urllib.request.Request(TOKEN_URL, data=datos),
+                                        timeout=30) as r:
+                j = json.load(r)
+        except urllib.error.HTTPError as e:
+            cuerpo = e.read().decode("utf-8", "replace")
+            if "invalid_grant" in cuerpo:
+                raise GmailError(
+                    "el refresh token de Gmail no sirve más (revocado o "
+                    "vencido): hay que volver a autorizar la cuenta "
+                    f"{self.usuario}") from e
+            raise GmailError(
+                f"no pude renovar el token de Gmail ({e.code}): "
+                f"{cuerpo[:200]}") from e
         self._tok = j["access_token"]
         self._vence = time.time() + int(j.get("expires_in", 3600))
         return self._tok
@@ -134,17 +152,17 @@ class Gmail:
             try:
                 r = self._get("history", **p)
             except GmailError as e:
-                # 404: el historyId es más viejo de lo que Gmail retiene.
-                # 400: el historyId no le sirve (corrupto, de otra casilla, o
-                #      de un formato que ya no acepta).
+                # SÓLO el 404: el historyId es más viejo de lo que Gmail
+                # retiene y hay que resincronizar.
                 #
-                # LOS DOS SON LO MISMO desde acá: no hay punto de partida y no
-                # se puede pedir «lo nuevo». Antes sólo se contemplaba el 404 y
-                # el 400 se propagaba, así que la ingesta quedaba trabada para
-                # siempre reintentando lo mismo cada 5 minutos — pasó: SIETE
-                # DÍAS, del 22 al 29 de septiembre de 2026, sin bajar un solo
-                # correo y sin que nada lo dijera.
-                if "404" in str(e) or "400" in str(e):
+                # Un 400 NO se trata así, aunque tiente. El 29-09-2026 la
+                # ingesta llevaba siete días devolviendo «history.list falló:
+                # HTTP Error 400» y parecía un historyId inservible; era el
+                # refresh token revocado, que fallaba antes de la petición. Si
+                # el 400 disparara un resync, una credencial muerta se vería
+                # como una resincronización de rutina y el canal seguiría
+                # caído, ahora en silencio y sin dejar rastro.
+                if "404" in str(e):
                     return None, None
                 raise
             for h in r.get("history", []):

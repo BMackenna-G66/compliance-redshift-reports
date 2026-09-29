@@ -89,14 +89,28 @@ class RelevoTambienAvisa(unittest.TestCase):
         i = fuente.index('if (resultado or {}).get("error")')
         self.assertIn("_avisar_falla", fuente[i:i + 400])
 
-    def test_el_400_de_gmail_ya_no_traba_para_siempre(self):
-        """Sólo se contemplaba el 404. Un 400 se propagaba y la ingesta
-        quedaba reintentando lo mismo cada 5 minutos, sin salida."""
+    def test_un_400_no_se_confunde_con_un_historyId_vencido(self):
+        """Tentador y equivocado. La ingesta llevaba siete días devolviendo
+        «history.list falló: HTTP Error 400» y parecía un historyId
+        inservible; era el refresh token revocado. Si el 400 disparara un
+        resync, una credencial muerta se vería como una resincronización de
+        rutina y el canal seguiría caído, ahora sin dejar rastro."""
         gmail = (RAIZ / "relevo" / "gmail.py").read_text(encoding="utf-8")
         i = gmail.index("def historial(")
         cuerpo = gmail[i:gmail.index("\n    def ", i + 10)]
-        self.assertIn('"400" in str(e)', cuerpo)
         self.assertIn('"404" in str(e)', cuerpo)
+        self.assertNotIn('"400" in str(e)', cuerpo)
+
+    def test_un_token_revocado_lo_dice_con_su_nombre(self):
+        """Sin esto, el 400 del endpoint de token sube como HTTPError crudo,
+        se cuela por los `except GmailError` y el llamador lo etiqueta con el
+        nombre de una operación que ni llegó a intentarse."""
+        gmail = (RAIZ / "relevo" / "gmail.py").read_text(encoding="utf-8")
+        i = gmail.index("def _token(")
+        cuerpo = gmail[i:gmail.index("\n    def ", i + 10)]
+        self.assertIn("invalid_grant", cuerpo)
+        self.assertIn("volver a autorizar", cuerpo)
+        self.assertIn("GmailError", cuerpo)
 
     def test_se_puede_recuperar_un_periodo_perdido(self):
         """Un resync ancla en el presente y saltea lo que no bajó. Para un
