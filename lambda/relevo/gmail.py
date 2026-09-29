@@ -332,11 +332,24 @@ def bajar(gmail, reglas, ids, siempre_cuerpo=False, avisar=None):
     con_cuerpo = _necesita_cuerpo(reglas)
     fuera = []
     for i, mid in enumerate(ids, 1):
-        m = a_mensaje(gmail.mensaje(mid, con_cuerpo=siempre_cuerpo))
-        if not siempre_cuerpo:
-            p, _, _ = identificar(m, reglas)
-            if p and p["id"] in con_cuerpo:
-                m = a_mensaje(gmail.mensaje(mid, con_cuerpo=True))
+        # UN MENSAJE QUE YA NO ESTÁ NO PUEDE FRENAR AL LOTE. El historial de
+        # Gmail lista lo que pasó, no lo que sigue existiendo: si alguien
+        # borró un correo después de que entrara, pedirlo da 404. Tratarlo
+        # como falla dura dejaba el lote entero sin guardar y la marca sin
+        # avanzar, así que la corrida siguiente reintentaba exactamente lo
+        # mismo — trabado para siempre por un correo que ya no existe. Se ve
+        # apenas se recupera un período largo, que es cuando más borrados
+        # hubo en el medio.
+        try:
+            m = a_mensaje(gmail.mensaje(mid, con_cuerpo=siempre_cuerpo))
+            if not siempre_cuerpo:
+                p, _, _ = identificar(m, reglas)
+                if p and p["id"] in con_cuerpo:
+                    m = a_mensaje(gmail.mensaje(mid, con_cuerpo=True))
+        except GmailError as e:
+            if "404" in str(e):
+                continue
+            raise
         fuera.append(m)
         if avisar and i % 25 == 0:
             avisar(i, len(ids))
