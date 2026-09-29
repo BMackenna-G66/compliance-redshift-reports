@@ -110,6 +110,10 @@ S3_BUCKET = os.environ["S3_BUCKET"]
 SES_FROM = os.environ["SES_FROM_ADDRESS"]
 SES_TO = [e.strip() for e in os.environ["SES_TO_ADDRESSES"].split(",") if e.strip()]
 SLACK_SECRET_ARN = os.environ.get("SLACK_WEBHOOK_SECRET_ARN", "")
+# Avisos de FALLA de infraestructura. Van al privado de quien los resuelve y
+# NO al canal del equipo: ahí se vuelven ruido que todos aprenden a saltear.
+SLACK_DM_SECRET_ARN = os.environ.get("SLACK_DM_SECRET_ARN", "")
+AVISO_FALLA_EMAIL = os.environ.get("AVISO_FALLA_EMAIL", "")
 REPORT_NAME = os.environ.get("REPORT_NAME", "high_risk_countries")
 AUTO_PAUSE = os.environ.get("AUTO_PAUSE", "true").lower() == "true"
 RUNS_TABLE_NAME = os.environ.get("RUNS_TABLE", "")
@@ -1261,16 +1265,26 @@ def _gereo_ros(event: dict, run_id: str | None) -> dict:
 
 
 def _avisar_escucha_caida(detalle: str) -> None:
-    """Avisa por Slack que la escucha de respuestas dejó de funcionar.
+    """Avisa que la escucha de respuestas dejó de funcionar.
 
-    Best-effort y con memoria: se avisa UNA VEZ POR HORA y no cada diez
-    minutos. Un canal caído durante días generaría cientos de mensajes y el
-    canal de avisos se volvería ruido que nadie mira — que es otra forma de
-    no enterarse.
+    NO VA AL CANAL DEL EQUIPO, a pedido: esto es una falla de infraestructura
+    que resuelve una persona, y en un canal compartido se vuelve ruido que
+    todos aprenden a saltear — que es cómo se pierden ocho días.
+
+    Tres destinos, en orden, y el del grupo no está entre ellos:
+
+      1. El webhook PRIVADO, si está cargado. Un webhook de Slack está atado
+         al lugar donde se creó, así que para que llegue a un privado hay que
+         crearlo apuntando ahí; por eso es un secreto aparte y no el de
+         siempre.
+      2. Si no, un correo a `AVISO_FALLA_EMAIL`. Feo pero funciona, y evita
+         que quedarse sin webhook signifique quedarse sin aviso.
+      3. Si tampoco, el ERROR del log y nada más.
+
+    Se avisa UNA VEZ POR HORA, no cada diez minutos: un canal caído durante
+    días generaría cientos de mensajes, y un privado inundado se silencia.
     """
-    if not SLACK_SECRET_ARN:
-        return
-    marca = f"avisos/escucha-respuestas-caida.txt"
+    marca = "avisos/escucha-respuestas-caida.txt"
     ahora = dt.datetime.utcnow()
     try:
         obj = s3.get_object(Bucket=S3_BUCKET, Key=marca)
@@ -1280,24 +1294,49 @@ def _avisar_escucha_caida(detalle: str) -> None:
     except Exception:                                            # noqa: BLE001
         pass
 
-    try:
-        webhook = secrets.get_secret_value(
-            SecretId=SLACK_SECRET_ARN)["SecretString"].strip()
-        texto = (
-            "*La escucha de respuestas de clientes está caída*\n"
-            f"`{detalle[:300]}`\n"
-            "Mientras siga así, lo que responden los clientes NO entra a los "
-            "casos. Se revisa cada 10 minutos; este aviso se repite como "
-            "máximo una vez por hora."
-        )
-        req = urllib.request.Request(
-            webhook, data=json.dumps({"text": texto}).encode(),
-            headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10).read()
-        s3.put_object(Bucket=S3_BUCKET, Key=marca,
-                      Body=ahora.isoformat().encode())
-    except Exception as e:                                       # noqa: BLE001
-        logger.warning("No pude avisar de la escucha caída: %s", e)
+    texto = (
+        "*La escucha de respuestas de clientes está caída*\n"
+        f"`{detalle[:300]}`\n"
+        "Mientras siga así, lo que responden los clientes NO entra a los "
+        "casos y los expedientes dicen «no respondió». Se revisa cada 10 "
+        "minutos; este aviso se repite como máximo una vez por hora."
+    )
+
+    avisado = False
+    webhook = ""
+    if SLACK_DM_SECRET_ARN:
+        try:
+            webhook = secrets.get_secret_value(
+                SecretId=SLACK_DM_SECRET_ARN)["SecretString"].strip()
+        except Exception as e:                                   # noqa: BLE001
+            logger.warning("No pude leer el webhook privado: %s", type(e).__name__)
+    if webhook.startswith("https://"):
+        try:
+            req = urllib.request.Request(
+                webhook, data=json.dumps({"text": texto}).encode(),
+                headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10).read()
+            avisado = True
+        except Exception as e:                                   # noqa: BLE001
+            logger.warning("No pude avisar por Slack: %s", e)
+
+    if not avisado and AVISO_FALLA_EMAIL:
+        cuerpo = (
+            '<p style="font-family:Arial,sans-serif;font-size:14px;">'
+            "<strong>La escucha de respuestas de clientes está caída.</strong><br>"
+            f"<code>{detalle[:300]}</code><br><br>"
+            "Mientras siga así, lo que responden los clientes no entra a los "
+            "casos y los expedientes dicen «no respondió».</p>")
+        r = _send_email_gmail(AVISO_FALLA_EMAIL,
+                              "[WatchTower] Escucha de respuestas caída", cuerpo)
+        avisado = bool(r.get("sent"))
+
+    if avisado:
+        try:
+            s3.put_object(Bucket=S3_BUCKET, Key=marca,
+                          Body=ahora.isoformat().encode())
+        except Exception:                                        # noqa: BLE001
+            pass
 
 
 def handler(event, context):  # noqa: ARG001

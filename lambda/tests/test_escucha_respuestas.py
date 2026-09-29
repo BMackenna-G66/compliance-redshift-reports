@@ -92,6 +92,35 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
         cuerpo = self._despacho()
         self.assertIn("logger.info", cuerpo)
 
+    def test_el_aviso_no_va_al_canal_del_equipo(self):
+        """Pedido explícito: es una falla de infraestructura que resuelve una
+        persona, y en un canal compartido se vuelve ruido que todos aprenden
+        a saltear — que es cómo se pierden ocho días."""
+        fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
+        i = fuente.index("def _avisar_escucha_caida(")
+        cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
+        self.assertNotIn("SLACK_SECRET_ARN", cuerpo,
+                         "está usando el webhook del canal del equipo")
+        self.assertIn("SLACK_DM_SECRET_ARN", cuerpo)
+
+    def test_sin_webhook_privado_avisa_por_correo(self):
+        """Quedarse sin webhook no puede significar quedarse sin aviso: ese
+        es exactamente el modo de falla que este aviso existe para tapar."""
+        fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
+        i = fuente.index("def _avisar_escucha_caida(")
+        cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
+        self.assertIn("AVISO_FALLA_EMAIL", cuerpo)
+        self.assertIn("_send_email_gmail", cuerpo)
+
+    def test_la_marca_de_tiempo_solo_se_escribe_si_avisó(self):
+        """Si no se pudo avisar, no se anota: si no, el primer intento
+        fallido silenciaría la hora siguiente."""
+        fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
+        i = fuente.index("def _avisar_escucha_caida(")
+        cuerpo = fuente[i:fuente.index("\ndef ", i + 10)]
+        j = cuerpo.index("put_object")
+        self.assertIn("if avisado:", cuerpo[:j])
+
     def test_el_aviso_no_se_repite_cada_diez_minutos(self):
         """Un canal caído días generaría cientos de mensajes y el canal de
         avisos se volvería ruido que nadie mira — otra forma de no
