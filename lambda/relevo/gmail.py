@@ -134,7 +134,17 @@ class Gmail:
             try:
                 r = self._get("history", **p)
             except GmailError as e:
-                if "404" in str(e):      # historyId demasiado viejo: hay que resincronizar
+                # 404: el historyId es más viejo de lo que Gmail retiene.
+                # 400: el historyId no le sirve (corrupto, de otra casilla, o
+                #      de un formato que ya no acepta).
+                #
+                # LOS DOS SON LO MISMO desde acá: no hay punto de partida y no
+                # se puede pedir «lo nuevo». Antes sólo se contemplaba el 404 y
+                # el 400 se propagaba, así que la ingesta quedaba trabada para
+                # siempre reintentando lo mismo cada 5 minutos — pasó: SIETE
+                # DÍAS, del 22 al 29 de septiembre de 2026, sin bajar un solo
+                # correo y sin que nada lo dijera.
+                if "404" in str(e) or "400" in str(e):
                     return None, None
                 raise
             for h in r.get("history", []):
