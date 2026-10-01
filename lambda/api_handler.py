@@ -8680,30 +8680,63 @@ GEREO_MAX_EN_CURSO = 2
 # análisis individual.
 GEREO_VENTANA_MIN = 20
 
+# Tope de páginas del `scan`. Ver `_gereo_en_curso`: la tabla tiene TTL de 90
+# días, así que está acotada, pero un tope evita que un día raro deje el POST
+# recorriendo la tabla entera.
+GEREO_MAX_PAGINAS = 25
+
 
 def _gereo_en_curso() -> int:
-    """Cuántas generaciones están corriendo de verdad ahora mismo."""
+    """Cuántas generaciones están corriendo de verdad ahora mismo.
+
+    SE PAGINA, y no es un detalle. Un `scan` de DynamoDB lee hasta 1 MB y
+    aplica el filtro DESPUÉS; el resto queda en `LastEvaluatedKey`. Esta tabla
+    guarda todas las corridas de todos los reportes y ya pasa de 1 MB, así que
+    una sola llamada veía la mitad de los ítems y las corridas en curso
+    entraban en el conteo sólo si caían en esa mitad —al azar, por el hash de
+    la clave—.
+
+    El tope quedaba de adorno: tres corridas simultáneas pasaron las tres.
+    Esto se encontró ejercitándolo de verdad, no leyéndolo: cuando el `scan`
+    alcanzaba, funcionaba.
+    """
     from boto3.dynamodb.conditions import Attr                   # noqa: PLC0415
     corte = (dt.datetime.utcnow()
              - dt.timedelta(minutes=GEREO_VENTANA_MIN)).isoformat()
+    filtro = (Attr("report_name").eq("gereo_ros")
+              & Attr("status").eq("RUNNING"))
+    cuenta, arranque, paginas = 0, None, 0
     try:
-        r = runs_table.scan(
-            ProjectionExpression="run_id, started_at",
-            FilterExpression=(Attr("report_name").eq("gereo_ros")
-                              & Attr("status").eq("RUNNING")),
-            # Lectura consistente: el `scan` normal es de consistencia
-            # eventual y puede no ver la corrida que se acaba de crear. Con
-            # dos clics seguidos eso deja pasar las dos, que es justo lo que
-            # este tope existe para evitar.
-            ConsistentRead=True,
-        )
+        while paginas < GEREO_MAX_PAGINAS:
+            kw = {
+                "ProjectionExpression": "run_id, started_at",
+                "FilterExpression": filtro,
+                # Lectura consistente: el `scan` normal es de consistencia
+                # eventual y puede no ver la corrida que se acaba de crear.
+                # Con dos clics seguidos eso deja pasar las dos, que es justo
+                # lo que este tope existe para evitar.
+                "ConsistentRead": True,
+            }
+            if arranque:
+                kw["ExclusiveStartKey"] = arranque
+            r = runs_table.scan(**kw)
+            paginas += 1
+            cuenta += sum(1 for x in r.get("Items", [])
+                          if str(x.get("started_at") or "") > corte)
+            # Alcanza con saber que se llegó al tope: seguir leyendo la tabla
+            # para afinar un número que ya no cambia la decisión es gasto.
+            if cuenta >= GEREO_MAX_EN_CURSO:
+                return cuenta
+            arranque = r.get("LastEvaluatedKey")
+            if not arranque:
+                return cuenta
     except Exception as e:                                       # noqa: BLE001
         # Si no se puede contar, se deja pasar: bloquear por no poder mirar
         # sería peor que dejar correr una de más.
         print(f"[gereo] no pude contar las corridas en curso: {type(e).__name__}")
         return 0
-    return sum(1 for x in r.get("Items", [])
-               if str(x.get("started_at") or "") > corte)
+    print(f"[gereo] el conteo se cortó en {GEREO_MAX_PAGINAS} páginas")
+    return cuenta
 
 
 def generar_borrador_ros(body: dict):

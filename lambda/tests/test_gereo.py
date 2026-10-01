@@ -434,12 +434,24 @@ class NoSeLeCaeEncimaAGereo(unittest.TestCase):
     freno se la degrada», dice el documento. Un ROS consulta la base, evalúa
     reglas y redacta: dos o tres en paralelo ya se sienten del otro lado."""
 
-    def _con_corridas(self, items):
+    def _con_corridas(self, items, por_pagina=1):
         visto = {}
 
         class _Tabla:
+            # PAGINA, como la tabla real. Un `scan` de DynamoDB lee hasta 1 MB
+            # y deja el resto en `LastEvaluatedKey`; la tabla de corridas ya
+            # pasa de 1 MB. El doble que devolvía todo de una vez daba los
+            # tests en verde con el tope roto en producción: tres corridas
+            # simultáneas pasaron las tres. Una página por ítem, para que
+            # cualquier versión que no pagine cuente de menos.
             def scan(self, **kw):
-                return {"Items": items}
+                visto["paginas"] = visto.get("paginas", 0) + 1
+                desde = int((kw.get("ExclusiveStartKey") or {}).get("i", 0))
+                trozo = items[desde:desde + por_pagina]
+                fuera = {"Items": trozo}
+                if desde + por_pagina < len(items):
+                    fuera["LastEvaluatedKey"] = {"i": desde + por_pagina}
+                return fuera
 
             def put_item(self, Item):
                 visto["run"] = Item
@@ -490,6 +502,37 @@ class NoSeLeCaeEncimaAGereo(unittest.TestCase):
         codigo, _, visto = self._con_corridas(viejas)
         self.assertEqual(codigo, 202)
         self.assertIn("invoke", visto)
+
+    def test_cuenta_las_corridas_que_quedaron_en_otra_página(self):
+        """La regresión. Las corridas en curso no están todas en la primera
+        página del `scan`: con la tabla real caen donde las ponga el hash de
+        la clave. Contar sólo la primera dejaba pasar todo."""
+        relleno = [{"run_id": f"otro-{i}", "started_at": self._hace(600)}
+                   for i in range(40)]
+        en_curso = [{"run_id": str(i), "started_at": self._hace(2)}
+                    for i in range(A.GEREO_MAX_EN_CURSO)]
+        codigo, d, visto = self._con_corridas(relleno + en_curso, por_pagina=10)
+        self.assertEqual(codigo, 429, "el tope no vio las corridas del final")
+        self.assertNotIn("invoke", visto)
+
+    def test_deja_de_leer_apenas_llega_al_tope(self):
+        """Seguir recorriendo la tabla para afinar un número que ya no cambia
+        la decisión es gasto en cada POST."""
+        items = [{"run_id": str(i), "started_at": self._hace(2)}
+                 for i in range(500)]
+        _, _, visto = self._con_corridas(items, por_pagina=1)
+        self.assertLessEqual(visto["paginas"], A.GEREO_MAX_EN_CURSO)
+
+    def test_una_tabla_que_no_termina_nunca_no_cuelga_el_post(self):
+        class _Infinita:
+            def scan(self, **kw):
+                return {"Items": [], "LastEvaluatedKey": {"i": 1}}
+        orig = A.runs_table
+        A.runs_table = _Infinita()
+        try:
+            self.assertEqual(A._gereo_en_curso(), 0)
+        finally:
+            A.runs_table = orig
 
     def test_si_no_se_puede_contar_se_deja_pasar(self):
         """Bloquear por no poder mirar sería peor que dejar correr una de
