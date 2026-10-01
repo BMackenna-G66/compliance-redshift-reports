@@ -31,6 +31,8 @@ conecte, los que vengan de allá se distinguen de los de acá sin migrar nada.
 import datetime as dt
 import re
 
+import ros_gereo
+
 # ── Los reguladores ────────────────────────────────────────────────────────
 # Sólo los tres donde se reporta de verdad. El prototipo dibujaba cinco
 # —sumaba México y Brasil— pero eso era relleno del diseño.
@@ -239,11 +241,33 @@ def puede_pasar(desde, hasta):
     return hasta in TRANSICIONES.get(_texto(desde), [])
 
 
-def cambiar_estado(reporte, nuevo, quien, nota="", momento=None):
+def pendientes_gereo(reporte):
+    """Lo que el borrador de GEREO dejó pendiente de criterio humano.
+
+    Vacío si el ROS no vino de GEREO. `ros_gereo.listo_para_enviar()` traduce
+    las advertencias de la API —el reporte sale incompleto A PROPÓSITO— a una
+    lista de puntos; acá se usa para que esa lista no quede en un texto que
+    nadie relee al momento de enviar.
+    """
+    borrador = reporte.get("borrador_gereo")
+    # Sin borrador no hay nada que acusar. El `if` es necesario:
+    # `listo_para_enviar({})` devuelve «no se gatilló ninguna señal», que
+    # sobre un ROS escrito a mano no significa nada y lo trabaría sin motivo.
+    if not borrador:
+        return []
+    return ros_gereo.listo_para_enviar(borrador)
+
+
+def cambiar_estado(reporte, nuevo, quien, nota="", momento=None,
+                   acuse_gereo=False):
     """Mueve el ROS de estado, dejando rastro.
 
     El historial no se puede desactivar: es un registro regulatorio y quién
     lo movió, cuándo y por qué es justamente lo que se audita.
+
+    `acuse_gereo` es el acuse del oficial sobre el borrador de GEREO. Ver
+    abajo: no es un parámetro técnico, es la firma de que leyó lo que va a
+    reportar.
     """
     actual = _texto(reporte.get("estado"))
     nuevo = _texto(nuevo)
@@ -263,14 +287,43 @@ def cambiar_estado(reporte, nuevo, quien, nota="", momento=None):
     if nuevo == "enviado" and not _texto(reporte.get("narrativa")):
         raise ValueError("no se puede marcar como enviado un reporte sin narrativa")
 
+    # EL ACUSE SOBRE EL BORRADOR DE GEREO.
+    #
+    # El control de la narrativa de arriba mira que el campo no esté vacío, y
+    # «Usar como base» lo llena de una sentada con el texto que redactó GEREO.
+    # O sea que sin esto un ROS con texto de IA sin tocar pasa a enviado igual
+    # que cualquier otro, y el aviso de que lo escribió una IA queda en una
+    # pantalla que ya nadie está mirando.
+    #
+    # POR QUÉ UN ACUSE Y NO UN BLOQUEO SECO. Las advertencias vienen en TODAS
+    # las corridas —el reporte sale incompleto a propósito y el texto siempre
+    # es generado—, así que bloquear sin salida trabaría el módulo para
+    # siempre. Lo que falta no es que las advertencias desaparezcan: es que
+    # alguien se haga cargo de haberlas leído, con nombre y hora.
+    pendientes = pendientes_gereo(reporte) if nuevo == "enviado" else []
+    if pendientes and not acuse_gereo:
+        raise ValueError(
+            "el borrador de GEREO deja puntos pendientes de tu criterio y hay "
+            "que acusarlos antes de enviar: " + "; ".join(pendientes))
+
     t = (momento or ahora()).strftime(FORMATO)
     salida = dict(reporte)
     salida["estado"] = nuevo
     salida["actualizado_at"] = t
     if nuevo == "enviado":
         salida["enviado_at"] = t
+    if pendientes:
+        # Qué acusó, no sólo que acusó: el día que se audite, la pregunta es
+        # qué decía la advertencia que alguien dio por leída.
+        salida["acuse_gereo"] = {"quien": _texto(quien), "cuando": t,
+                                 "puntos": list(pendientes)}
+    nota_final = _texto(nota)
+    if pendientes:
+        acuse = (f"Acusó los {len(pendientes)} puntos pendientes del borrador "
+                 "de GEREO.")
+        nota_final = f"{nota_final} {acuse}".strip() if nota_final else acuse
     salida["historial"] = list(reporte.get("historial") or []) + [
-        {"estado": nuevo, "quien": _texto(quien), "cuando": t, "nota": _texto(nota)}
+        {"estado": nuevo, "quien": _texto(quien), "cuando": t, "nota": nota_final}
     ]
     return salida
 

@@ -266,6 +266,101 @@ class ElCicloDeVida(unittest.TestCase):
                 self.assertIn(e, ros.TRANSICIONES)
 
 
+BORRADOR_GEREO = {
+    "advertencias": ["La 'Temática' queda sin seleccionar.",
+                     "Textos narrativos redactados con IA (borrador — validar)."],
+    "senales": [{"id": "R02", "titulo": "Fraccionamiento"}],
+    "reglas": {"gatilladas": [{"id": "R02"}], "descartadas": [],
+               "total_evaluadas": 1},
+    "narrativa_borrador": [{"titulo": "Descripción de los hechos",
+                            "texto": "Durante el período analizado…"}],
+    "generado_con_ia": True,
+}
+
+
+class NadieFirmaUnTextoDeIASinDecirlo(unittest.TestCase):
+    """El agujero que esto cierra.
+
+    El único control que tenía «enviado» era que la narrativa no estuviera
+    vacía, y el botón «Usar como base» de la pantalla de GEREO la llena de una
+    sentada con el texto que redactó la IA. O sea que un ROS generado se podía
+    marcar enviado sin que nadie dijera que lo había leído, con el aviso de
+    que era IA mirando desde otra pantalla.
+
+    El acuse no hace desaparecer las advertencias —vienen en TODAS las
+    corridas, porque el reporte sale incompleto a propósito—: hace que alguien
+    se haga cargo de haberlas leído, con nombre y hora.
+    """
+
+    def _en_revision(self, **extra):
+        r = nuevo(narrativa="La escribió la IA y nadie la tocó.", **extra)
+        return ros.cambiar_estado(r, "revision_legal", "a@b.cl", momento=CUANDO)
+
+    def test_un_ros_de_gereo_no_se_envia_sin_acuse(self):
+        r = self._en_revision(borrador_gereo=BORRADOR_GEREO)
+        with self.assertRaises(ValueError) as e:
+            ros.cambiar_estado(r, "enviado", "oficial@global66.com", momento=CUANDO)
+        self.assertIn("IA", str(e.exception))
+
+    def test_con_acuse_sale_y_queda_registrado_qué_se_acusó(self):
+        """No alcanza con «acusó»: el día que se audite, la pregunta es qué
+        decía la advertencia que alguien dio por leída."""
+        r = self._en_revision(borrador_gereo=BORRADOR_GEREO)
+        r = ros.cambiar_estado(r, "enviado", "oficial@global66.com",
+                               momento=CUANDO, acuse_gereo=True)
+        self.assertEqual(r["estado"], "enviado")
+        self.assertEqual(r["acuse_gereo"]["quien"], "oficial@global66.com")
+        self.assertTrue(r["acuse_gereo"]["cuando"])
+        self.assertIn("Textos narrativos redactados con IA (borrador — validar).",
+                      r["acuse_gereo"]["puntos"])
+
+    def test_el_acuse_queda_en_el_historial(self):
+        """El historial es lo que se audita; un campo suelto se puede mirar
+        sin ver quién movió el reporte."""
+        r = self._en_revision(borrador_gereo=BORRADOR_GEREO)
+        r = ros.cambiar_estado(r, "enviado", "oficial@global66.com",
+                               nota="Enviado por el portal.", momento=CUANDO,
+                               acuse_gereo=True)
+        nota = r["historial"][-1]["nota"]
+        self.assertIn("Enviado por el portal.", nota)
+        self.assertIn("Acusó", nota)
+
+    def test_UN_ROS_ESCRITO_A_MANO_NO_PIDE_ACUSE(self):
+        """`listo_para_enviar({})` devuelve «no se gatilló ninguna señal», que
+        sobre un ROS que nunca pasó por GEREO no significa nada. Sin el
+        cortocircuito, esto trabaría todos los reportes del registro."""
+        r = self._en_revision()
+        r = ros.cambiar_estado(r, "enviado", "a@b.cl", momento=CUANDO)
+        self.assertEqual(r["estado"], "enviado")
+        self.assertNotIn("acuse_gereo", r)
+
+    def test_el_acuse_no_aplica_a_los_otros_estados(self):
+        """Mover a revisión o descartar no es firmar nada: pedir el acuse ahí
+        sería ruido en el camino que no reporta."""
+        r = nuevo(narrativa="x", borrador_gereo=BORRADOR_GEREO)
+        self.assertEqual(
+            ros.cambiar_estado(r, "revision_legal", "a@b.cl", momento=CUANDO)["estado"],
+            "revision_legal")
+        self.assertEqual(
+            ros.cambiar_estado(r, "descartado", "a@b.cl", momento=CUANDO)["estado"],
+            "descartado")
+
+    def test_sin_narrativa_sigue_mandando_ese_error_primero(self):
+        """Acusar un borrador no reemplaza escribir el reporte."""
+        r = ros.cambiar_estado(nuevo(borrador_gereo=BORRADOR_GEREO),
+                               "revision_legal", "a@b.cl", momento=CUANDO)
+        with self.assertRaises(ValueError) as e:
+            ros.cambiar_estado(r, "enviado", "a@b.cl", acuse_gereo=True)
+        self.assertIn("narrativa", str(e.exception))
+
+    def test_los_pendientes_se_pueden_leer_antes_de_intentar(self):
+        """La pantalla tiene que poder decir qué falta ANTES de que alguien
+        apriete: un botón que falla al pulsarlo es peor que uno que explica."""
+        r = nuevo(narrativa="x", borrador_gereo=BORRADOR_GEREO)
+        self.assertEqual(len(ros.pendientes_gereo(r)), 2)
+        self.assertEqual(ros.pendientes_gereo(nuevo(narrativa="x")), [])
+
+
 class Indicadores(unittest.TestCase):
 
     def test_en_curso_es_lo_que_falta_trabajar(self):
