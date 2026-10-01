@@ -94,6 +94,118 @@ class LaNarrativaDeGereoNoSeFirmaSola(unittest.TestCase):
         self.assertIn("narrativa", str(c.exception))
 
 
+# Las dos respuestas que faltaban: mismo armado que la de Chile, con la forma
+# que devuelve la API para esos países. Datos inventados.
+RESPUESTA_ARGENTINA = {
+    "estado": "OK",
+    "opciones": {"pais": "Argentina", "customer_id": "9000001", "meses": 6},
+    "advertencias": [],
+    "senales": [],
+    "ros_doc": {
+        "meta": {"customer_id": "9000001", "generado_en": "01/10/2026 10:00",
+                 "generado_con_ia": True},
+        "1_datos_directos_ros": {"conoce_delito_precedente": "NO",
+                                 "exteriorizacion_voluntaria": "NO"},
+        "3_persona_fisica": {"aplica": True, "nombre": "NOMBRE DE PRUEBA"},
+        "4_operaciones_y_productos": {
+            "monto_pesos": "1000000",
+            "descripcion_operatoria": "Durante el período analizado…",
+            "descripcion_analisis": "Del análisis de las operaciones…",
+            "conclusiones": "",
+        },
+        "reglas": [{"id": "R01", "titulo": "Fraccionamiento", "gatillada": True}],
+    },
+}
+
+RESPUESTA_COLOMBIA = {
+    "estado": "OK",
+    "opciones": {"pais": "Colombia", "customer_id": "9000002", "meses": 6},
+    "advertencias": [],
+    "senales": [],
+    "ros_doc": {
+        "meta": {"customer_id": "9000002", "generado_en": "01/10/2026 10:00",
+                 "generado_con_ia": True},
+        "1_informacion_general_reporte": {"clase_reporte": "ROS"},
+        "2_persona_juridica": {"aplica": False, "mensaje": "No aplica."},
+        "3_persona_natural": {"aplica": True, "nombres": "NOMBRE DE PRUEBA"},
+        "4_detalle": {"moneda": "COP",
+                      "descripcion": "El cliente registra operaciones…"},
+        "reglas": [{"id": "R01", "titulo": "Fraccionamiento", "gatillada": True}],
+    },
+}
+
+
+class LaNarrativaNoEstaEnElMismoLugarEnLosTresPaises(unittest.TestCase):
+    """La primera corrida real contra GEREO encontró esto.
+
+    El mapeo buscaba los dos campos de Chile dentro de la sección de apertura
+    de cada país. En Chile está ahí; en Argentina y Colombia la narrativa vive
+    en la última sección y con otros nombres, así que el borrador llegaba a la
+    pantalla con cero bloques de texto —sin el aviso de que era un borrador y
+    sin el botón para copiarlo— mientras el texto seguía adentro del JSON.
+    """
+
+    def test_argentina_la_encuentra_en_operaciones_y_productos(self):
+        n = RG.narrativa_borrador(RESPUESTA_ARGENTINA["ros_doc"], "Argentina")
+        self.assertEqual([x["titulo"] for x in n],
+                         ["Descripción de la operatoria", "Análisis de la operatoria"])
+
+    def test_colombia_la_encuentra_en_detalle(self):
+        n = RG.narrativa_borrador(RESPUESTA_COLOMBIA["ros_doc"], "Colombia")
+        self.assertEqual([x["titulo"] for x in n], ["Descripción de la operación"])
+
+    def test_chile_sigue_igual(self):
+        n = RG.narrativa_borrador(RESPUESTA_CHILE["ros_doc"], "Chile")
+        self.assertEqual(len(n), 2)
+
+    def test_un_campo_de_narrativa_vacío_no_se_dibuja(self):
+        """`conclusiones` viene vacío: GEREO lo deja al analista. Un título con
+        nada abajo se lee como «GEREO no supo qué poner»."""
+        n = RG.narrativa_borrador(RESPUESTA_ARGENTINA["ros_doc"], "Argentina")
+        self.assertNotIn("Conclusiones", [x["titulo"] for x in n])
+
+    def test_los_tres_países_tienen_mapeo_de_narrativa(self):
+        """Un país en SECCIONES sin entrada acá vuelve a dar cero bloques."""
+        self.assertEqual(set(RG.NARRATIVA), set(RG.SECCIONES))
+        for pais, (seccion, campos) in RG.NARRATIVA.items():
+            self.assertIn(seccion, [c for c, _ in RG.SECCIONES[pais]],
+                          f"{pais}: la narrativa apunta a una sección que no existe")
+            self.assertTrue(campos)
+
+
+class ElAvisoDeIANoDependeDeQueGereoLoMande(unittest.TestCase):
+    """GEREO manda `generado_con_ia: true` en los tres países, pero el texto de
+    advertencia sólo en Chile. Es la advertencia que impide que alguien firme
+    texto generado sin leerlo, así que la derivamos del flag."""
+
+    def test_argentina_lo_recibe_aunque_gereo_no_lo_mande(self):
+        b = RG.armar_borrador(RESPUESTA_ARGENTINA, "run-ar")
+        self.assertTrue(any("IA" in a for a in b["advertencias"]))
+
+    def test_y_frena_el_envío(self):
+        b = RG.armar_borrador(RESPUESTA_COLOMBIA, "run-co")
+        self.assertTrue(any("IA" in f for f in RG.listo_para_enviar(b)))
+
+    def test_no_se_dice_dos_veces_cuando_gereo_ya_lo_dijo(self):
+        r = dict(RESPUESTA_CHILE)
+        r["advertencias"] = [RG.AVISO_IA]
+        r["ros_doc"] = dict(RESPUESTA_CHILE["ros_doc"],
+                            meta={"generado_con_ia": True})
+        b = RG.armar_borrador(r, "run-cl")
+        self.assertEqual(sum("IA" in a for a in b["advertencias"]), 1)
+
+    def test_sin_ia_no_se_inventa_la_advertencia(self):
+        b = RG.armar_borrador(RESPUESTA_CHILE, "run-1")   # generado_con_ia: False
+        self.assertFalse(any("IA" in a for a in b["advertencias"]))
+
+    def test_una_advertencia_con_la_palabra_transferencia_no_cuenta_como_aviso(self):
+        """El de-duplicado busca «IA» como palabra, no como pedazo de otra."""
+        r = dict(RESPUESTA_ARGENTINA)
+        r["advertencias"] = ["Revisar la transferencia de mayor monto."]
+        b = RG.armar_borrador(r, "run-ar")
+        self.assertIn(RG.AVISO_IA, b["advertencias"])
+
+
 class UnCampoAusenteSignificaNoCorresponde(unittest.TestCase):
 
     def test_una_seccion_que_no_vino_no_se_dibuja_vacia(self):
@@ -108,6 +220,15 @@ class UnCampoAusenteSignificaNoCorresponde(unittest.TestCase):
         claves = [x["clave"] for x in s]
         self.assertIn("3_persona_fisica", claves)
         self.assertNotIn("3_persona_fisica_extranjera", claves)
+
+    def test_sin_delito_precedente_esa_sección_no_viaja(self):
+        """`conoce_delito_precedente: NO` ⇒ GEREO omite la sección 2 entera.
+        Verificado contra la respuesta real: no es un hueco del mapeo."""
+        s = RG.secciones_de(RESPUESTA_ARGENTINA["ros_doc"], "Argentina")
+        self.assertNotIn("2_delito_precedente", [x["clave"] for x in s])
+        self.assertEqual(
+            RESPUESTA_ARGENTINA["ros_doc"]["1_datos_directos_ros"]
+            ["conoce_delito_precedente"], "NO")
 
     def test_no_se_rellena_con_vacio(self):
         """Un campo vacío diría «no es PEP» donde el dato es «no se preguntó»."""
