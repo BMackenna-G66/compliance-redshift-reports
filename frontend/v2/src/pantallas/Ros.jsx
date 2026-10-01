@@ -25,7 +25,8 @@ import { Tabla } from '../comun/Tabla.jsx';
 import { Kpi } from '../comun/Kpi.jsx';
 import {
   alertasDe, colorDe, destinosDe, editable, faltaParaEnviar, fecha, hace,
-  montosDe, nombreEstado, nombreRegulador, periodoTexto,
+  montosDe, nombreEstado, nombreRegulador, pendientesGereo, periodoTexto,
+  puedeMover,
 } from '../comun/ros.js';
 import { soloLectura } from '../permisos.js';
 import { Gereo } from './ros/Gereo.jsx';
@@ -165,6 +166,94 @@ function Crear({ api, reguladores, email, alCrear, alCerrar }) {
   );
 }
 
+/* ── Lo que trajo GEREO ─────────────────────────────────────────────────── */
+
+/*
+   EL OFICIAL QUE FIRMA TIENE QUE PODER VER ESTO. El borrador viajaba con el
+   reporte desde que se conectó GEREO, pero sólo se dibujaba en la pantalla de
+   generación: quien abría el ROS después —que es quien lo manda al regulador—
+   no veía las advertencias, ni las señales, ni que el texto lo había escrito
+   una IA. Acusar algo que no se puede leer no es acusar nada.
+*/
+function BorradorDeGereo({ r }) {
+  const b = r.borrador_gereo;
+  if (!b) return null;
+  const reglas = b.reglas || {};
+  const narrativa = b.narrativa_borrador || [];
+  const acuse = r.acuse_gereo;
+
+  return (
+    <>
+      <h3 style={{ fontSize: 'var(--texto-xs)', textTransform: 'uppercase',
+                   letterSpacing: 'var(--track-ancho)', color: 'var(--texto-mute)',
+                   margin: 'var(--e-5) 0 var(--e-2)' }}>
+        Lo que trajo GEREO
+      </h3>
+
+      <p style={{ margin: '0 0 var(--e-2)', fontSize: 'var(--texto-sm)',
+                  color: 'var(--texto-mute)' }}>
+        {reglas.gatilladas?.length || 0} señal
+        {(reglas.gatilladas?.length || 0) === 1 ? '' : 'es'} gatillada
+        {(reglas.gatilladas?.length || 0) === 1 ? '' : 's'} de{' '}
+        {reglas.total_evaluadas || 0} evaluada
+        {(reglas.total_evaluadas || 0) === 1 ? '' : 's'}
+        {b.generado_en && <> · generado {b.generado_en}</>}
+        {b.generado_con_ia && <> · <strong>texto redactado con IA</strong></>}
+      </p>
+
+      {(b.advertencias || []).length > 0 && (
+        <div className="wt-nota"
+             style={{ borderColor: 'var(--nivel-alto-texto)',
+                      background: 'var(--nivel-alto-tenue)',
+                      color: 'var(--nivel-alto-texto)' }}>
+          <strong>Queda pendiente de criterio humano:</strong>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {b.advertencias.map((a) => <li key={a}>{a}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {(reglas.gatilladas || []).length > 0 && (
+        <ul style={{ margin: 'var(--e-2) 0 0', paddingLeft: 18,
+                     fontSize: 'var(--texto-sm)' }}>
+          {reglas.gatilladas.map((s, i) => (
+            <li key={s.id || i}>{s.titulo || s.id || 'Señal'}</li>
+          ))}
+        </ul>
+      )}
+
+      {narrativa.length > 0 && (
+        <details style={{ marginTop: 'var(--e-3)' }}>
+          <summary style={{ cursor: 'pointer', fontSize: 'var(--texto-sm)',
+                            color: 'var(--texto-2)' }}>
+            Ver el texto que redactó GEREO ({narrativa.length} bloque
+            {narrativa.length === 1 ? '' : 's'})
+          </summary>
+          {/* Se repite acá y no sólo en la pantalla de generación: este es el
+              texto contra el que hay que comparar lo que se va a firmar. */}
+          {narrativa.map((n) => (
+            <div key={n.titulo} style={{ marginTop: 'var(--e-2)' }}>
+              <strong style={{ fontSize: 'var(--texto-sm)' }}>{n.titulo}</strong>
+              <p style={{ margin: '2px 0 0', fontSize: 'var(--texto-sm)',
+                          color: 'var(--texto-2)', whiteSpace: 'pre-wrap' }}>
+                {n.texto}
+              </p>
+            </div>
+          ))}
+        </details>
+      )}
+
+      {acuse && (
+        <p style={{ margin: 'var(--e-2) 0 0', fontSize: 'var(--texto-xs)',
+                    color: 'var(--texto-mute)' }}>
+          {acuse.quien || 'alguien'} acusó los {(acuse.puntos || []).length} puntos
+          pendientes el {fecha(acuse.cuando)}.
+        </p>
+      )}
+    </>
+  );
+}
+
 /* ── El detalle ─────────────────────────────────────────────────────────── */
 
 function Detalle({ r, reguladores, transiciones, lectura, email,
@@ -172,8 +261,12 @@ function Detalle({ r, reguladores, transiciones, lectura, email,
   const [narrativa, setNarrativa] = useState(r.narrativa || '');
   const [tipologia, setTipologia] = useState(r.tipologia || '');
   const [nota, setNota] = useState('');
+  // El acuse arranca SIEMPRE en falso, también al reabrir un reporte ya
+  // acusado: es una firma del momento, no un recuerdo del formulario.
+  const [acuse, setAcuse] = useState(false);
   const puedeEditar = editable(r) && !lectura;
   const falta = faltaParaEnviar({ ...r, narrativa });
+  const pendientes = pendientesGereo(r);
   const destinos = destinosDe(r, transiciones);
 
   return (
@@ -289,6 +382,8 @@ function Detalle({ r, reguladores, transiciones, lectura, email,
               </dd>
             </dl>
           )}
+
+          <BorradorDeGereo r={r} />
         </div>
 
         <div className="wt-acciones">
@@ -316,14 +411,51 @@ function Detalle({ r, reguladores, transiciones, lectura, email,
                                    minHeight: 60, resize: 'vertical' }}
                           value={nota} onChange={(e) => setNota(e.target.value)} />
               </label>
+              {/* EL ACUSE SOBRE EL BORRADOR DE GEREO.
+
+                  No es un paso de más: el único control que tenía «enviado»
+                  era que la narrativa no estuviera vacía, y «Usar como base»
+                  la llena de una sentada con el texto que redactó la IA. Sin
+                  esto, un ROS generado se firma sin que nadie diga que lo
+                  leyó.
+
+                  Y es un acuse y no un bloqueo seco porque las advertencias
+                  vienen en TODAS las corridas —el reporte sale incompleto a
+                  propósito—: bloquear sin salida trabaría el módulo para
+                  siempre. Lo que falta no es que desaparezcan, es que alguien
+                  se haga cargo, con nombre y hora en el historial. */}
+              {pendientes.length > 0 && destinos.includes('enviado') && (
+                <div className="wt-nota"
+                     style={{ borderColor: 'var(--nivel-alto-texto)',
+                              background: 'var(--nivel-alto-tenue)',
+                              color: 'var(--nivel-alto-texto)' }}>
+                  <strong>El borrador de GEREO deja esto a tu criterio:</strong>
+                  <ul style={{ margin: '4px 0 var(--e-2)', paddingLeft: 18 }}>
+                    {pendientes.map((p) => <li key={p}>{p}</li>)}
+                  </ul>
+                  <label style={{ display: 'flex', gap: 'var(--e-2)',
+                                  alignItems: 'flex-start', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={acuse}
+                           onChange={(e) => setAcuse(e.target.checked)} />
+                    <span style={{ fontSize: 'var(--texto-sm)' }}>
+                      Leí estos puntos y validé el texto que estoy por reportar.
+                      Queda registrado a tu nombre en el historial.
+                    </span>
+                  </label>
+                </div>
+              )}
+
               {destinos.map((d) => {
-                const bloquea = d === 'enviado' && falta.length > 0;
+                const bloquea = !puedeMover({ ...r, narrativa }, d, acuse);
+                const porque = falta.length > 0
+                  ? `Falta ${falta.join(', ')}`
+                  : 'Falta que acuses los puntos pendientes del borrador de GEREO';
                 return (
                   <button key={d}
                           className={'wt-btn' + (d === 'enviado' ? ' wt-btn-primario' : '')}
                           disabled={Boolean(guardando) || bloquea}
-                          title={bloquea ? `Falta ${falta.join(', ')}` : ''}
-                          onClick={() => alMover(r, d, nota)}>
+                          title={bloquea ? porque : ''}
+                          onClick={() => alMover(r, d, nota, acuse)}>
                     {guardando === d ? '…' : `Pasar a ${nombreEstado(d)}`}
                   </button>
                 );
@@ -419,19 +551,28 @@ export function Ros({ api, perfil, email, navegar }) {
     }
   }
 
-  async function mover(r, estado, nota) {
+  async function mover(r, estado, nota, acuse = false) {
     // Enviar es la única que no tiene vuelta atrás: el reporte sale del
     // registro como reportado y no se puede deshacer.
+    const pendientes = pendientesGereo(r);
     if (estado === 'enviado' && !globalThis.confirm(
       `Marcar ${r.folio} como enviado al regulador.\n\n`
       + 'Esto NO lo manda: el envío es manual, por los canales del regulador. '
       + 'Y no tiene vuelta atrás — para corregirlo hay que emitir otro reporte.\n\n'
+      // Se nombra acá también: el checkbox se tilda y se olvida, y esta es la
+      // última pantalla antes de que el reporte quede firmado.
+      + (pendientes.length > 0
+        ? `Estás acusando ${pendientes.length} punto`
+          + `${pendientes.length === 1 ? '' : 's'} pendiente`
+          + `${pendientes.length === 1 ? '' : 's'} del borrador de GEREO, `
+          + 'incluido que el texto lo redactó una IA. Queda a tu nombre.\n\n'
+        : '')
       + '¿Ya lo enviaste?')) return;
 
     setGuardando(estado); setError(''); setAviso('');
     try {
       await api.post(`/ros/${encodeURIComponent(r.folio)}/estado`,
-                     { estado, quien: email, nota });
+                     { estado, quien: email, nota, acuse_gereo: acuse });
       setAviso(`${r.folio} pasó a ${nombreEstado(estado)}.`);
       await cargar(r.folio);
     } catch (e) {

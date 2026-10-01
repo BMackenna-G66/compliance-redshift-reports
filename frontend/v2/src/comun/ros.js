@@ -67,6 +67,33 @@ export function faltaParaEnviar(reporte) {
   return falta;
 }
 
+/**
+ * Los puntos del borrador de GEREO que esperan criterio humano.
+ *
+ * NO SE CALCULAN ACÁ: vienen en la respuesta. La regla vive en
+ * `ros_gereo.listo_para_enviar()` y reimplementarla en JS dejaría dos
+ * versiones que se separan sin que nada falle — el botón habilitado de este
+ * lado y el 400 del otro. Es la misma razón por la que el vocabulario de
+ * reguladores y estados viaja con la respuesta en vez de estar copiado.
+ */
+export function pendientesGereo(reporte) {
+  return reporte?.pendientes_gereo || [];
+}
+
+/**
+ * Si el reporte se puede mover a `destino` con lo que hay.
+ *
+ * Enviar pide dos cosas distintas: que la narrativa exista —eso lo mira
+ * `faltaParaEnviar`— y que, si el texto vino de GEREO, alguien acuse haber
+ * leído lo que quedó pendiente. Lo segundo no es un dato que falte: es una
+ * firma, y por eso depende del `acuse` y no del reporte.
+ */
+export function puedeMover(reporte, destino, acuse = false) {
+  if (destino !== 'enviado') return true;
+  if (faltaParaEnviar(reporte).length > 0) return false;
+  return pendientesGereo(reporte).length === 0 || Boolean(acuse);
+}
+
 /** El nombre del regulador para mostrar: «UAF · Chile». */
 export function nombreRegulador(clave, reguladores) {
   const d = (reguladores || {})[clave];

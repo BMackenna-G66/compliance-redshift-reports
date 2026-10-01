@@ -3296,11 +3296,23 @@ def execute_report(body: dict):
     return resp(202, {"run_id": run_id, "status": "RUNNING"})
 
 
+def _con_pendientes(r):
+    """El ROS más lo que le falta para poder enviarse.
+
+    Se calcula acá y viaja con la respuesta, igual que el vocabulario de
+    reguladores y estados: la regla de qué deja pendiente el borrador de
+    GEREO vive en `ros_gereo.listo_para_enviar()` y reimplementarla en el
+    front dejaría dos versiones que se separan sin que nada falle —el botón
+    habilitado de un lado y el 400 del otro—.
+    """
+    return dict(r, pendientes_gereo=ros_mod.pendientes_gereo(r))
+
+
 def _ros_publico(r):
     """El ROS como lo ve el front. El historial completo sólo va en el
     detalle: en un listado de cincuenta, cincuenta historiales son megabytes
     que nadie mira."""
-    return {k: v for k, v in r.items() if k != "historial"}
+    return {k: v for k, v in _con_pendientes(r).items() if k != "historial"}
 
 
 def listar_ros():
@@ -3325,7 +3337,7 @@ def detalle_ros(folio_o_id: str):
     r = _crm_get("ros", folio_o_id)
     if r is None:
         return resp(404, {"error": f"No existe el reporte '{folio_o_id}'."})
-    return resp(200, {"ros": r})
+    return resp(200, {"ros": _con_pendientes(r)})
 
 
 def crear_ros(body: dict):
@@ -3402,7 +3414,7 @@ def editar_ros(folio: str, body: dict):
     _crm_update("ros", folio, cambios)
     _safe_audit(user_email=body.get("actor_email", "unknown"), action="ros.edit",
                 entity_type="ros", entity_id=folio)
-    return resp(200, {"ros": _crm_get("ros", folio)})
+    return resp(200, {"ros": _con_pendientes(_crm_get("ros", folio))})
 
 
 def cambiar_estado_ros(folio: str, body: dict):
@@ -3412,13 +3424,14 @@ def cambiar_estado_ros(folio: str, body: dict):
     quien = (body.get("quien") or body.get("actor_email") or "").strip()
     try:
         nuevo = ros_mod.cambiar_estado(r, body.get("estado"), quien,
-                                       body.get("nota") or "")
+                                       body.get("nota") or "",
+                                       acuse_gereo=bool(body.get("acuse_gereo")))
     except ValueError as e:
         return resp(400, {"error": str(e)})
     _crm_put("ros", folio, nuevo)
     _safe_audit(user_email=quien, action="ros.estado", entity_type="ros",
                 entity_id=folio, new_value={"estado": nuevo["estado"]})
-    return resp(200, {"ros": nuevo})
+    return resp(200, {"ros": _con_pendientes(nuevo)})
 
 
 def get_flags():
