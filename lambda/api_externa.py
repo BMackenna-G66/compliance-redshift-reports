@@ -225,9 +225,26 @@ def regla_valida(codigo) -> bool:
 def sql_alertas_por_regla(codigo: str, pais: str = "", limite: int = 200) -> str:
     """Los clientes que la regla dejó bloqueados, listos para volverse caso.
 
-    Sale de la misma vista que ya usa la creación de casos desde alertas
-    (`compliance.priority_queue_b2c`), así que el país, el correo y el score
-    son los mismos que vería el analista en la pantalla.
+    SALE DE `customer.compliance`, NO DE LA VISTA. Antes leía
+    `compliance.priority_queue_b2c` pidiéndole nueve columnas que esa vista no
+    tiene —`nombre`, `dni`, `agent_comment`, `status_created_at`…— así que el
+    endpoint fallaba SIEMPRE, con `column "nombre" does not exist`. La vista
+    sólo aporta el score, y para eso queda: entra por LEFT JOIN, para que un
+    cliente que no esté en la cola de priorización no desaparezca del
+    resultado.
+
+    EL CÓDIGO DE LA REGLA VIVE EN DOS COLUMNAS. `customer.compliance` tiene
+    `comment` y `observation`, y hoy los bloqueos de fraude llegan por
+    `observation` —el reporte a medida de esta misma regla devuelve 119 filas
+    y las 119 matchean por ahí—. Buscar en una sola de las dos devolvía cero
+    sin error, que es la peor forma de fallar.
+
+    LA BÚSQUEDA ES POR SUBCADENA, A PROPÓSITO, y por eso da más filas que el
+    reporte a medida: éste busca el código adentro del texto (152 clientes) y
+    aquél matchea dos nombres de regla exactos (119). No es una discrepancia a
+    corregir — un endpoint que recibe un código de regla tiene que encontrarlo
+    escrito como esté. Es también la razón de `RE_REGLA`: el código entra al
+    LIKE interpolado.
     """
     if not regla_valida(codigo):
         raise ValueError(f"código de regla inválido: {codigo!r}")
@@ -235,15 +252,44 @@ def sql_alertas_por_regla(codigo: str, pais: str = "", limite: int = 200) -> str
     if pais:
         if not re.match(r"^[A-Za-z]{2}$", str(pais).strip()):
             raise ValueError(f"país inválido: {pais!r}")
-        filtro_pais = f" AND UPPER(pais_cliente) = '{str(pais).strip().upper()}'"
+        filtro_pais = f" AND UPPER(c.country_code) = '{str(pais).strip().upper()}'"
     limite = max(1, min(int(limite or 200), MAX_POR_PAGINA))
     return (
-        "SELECT customer_id, nombre, apellido, email, pais_cliente, dni, tipo_dni, "
-        "       compliance_status, agent_comment, compliance_agent, risk_score, "
-        "       status_created_at "
-        "FROM compliance.priority_queue_b2c "
-        f"WHERE agent_comment LIKE '%{codigo}%'{filtro_pais} "
-        "ORDER BY status_created_at DESC "
+        "WITH ultimo AS ("
+        " SELECT cc.customer_id, cc.status AS compliance_status, cc.comment,"
+        "        cc.observation, cc.created_by AS compliance_agent,"
+        "        cc.created_at AS status_created_at,"
+        "        ROW_NUMBER() OVER (PARTITION BY cc.customer_id"
+        "                           ORDER BY cc.created_at DESC, cc.id DESC) AS rn"
+        ' FROM "db_prod"."customer"."compliance" AS cc'
+        "), documento AS ("
+        " SELECT kd.customer_id, kd.document_number, kd.document_type,"
+        "        ROW_NUMBER() OVER (PARTITION BY kd.customer_id"
+        "                           ORDER BY COALESCE(kd.updated_at, kd.created_at) DESC) AS rn"
+        ' FROM "db_prod"."customer"."kyc_document" AS kd'
+        " WHERE kd.document_number IS NOT NULL"
+        ") "
+        "SELECT u.customer_id, c.name AS nombre, c.last_name AS apellido, c.email,"
+        "       c.country_code AS pais_cliente, d.document_number AS dni,"
+        "       d.document_type AS tipo_dni, u.compliance_status, u.comment,"
+        "       u.observation, u.compliance_agent, q.risk_score, u.status_created_at "
+        "FROM ultimo AS u "
+        'INNER JOIN "db_prod"."customer"."customer_v2" AS c'
+        "  ON u.customer_id = c.customer_id "
+        "LEFT JOIN documento AS d ON d.customer_id = c.customer_id AND d.rn = 1 "
+        "LEFT JOIN compliance.priority_queue_b2c AS q ON q.customer_id = u.customer_id "
+        "WHERE u.rn = 1"
+        f" AND (u.comment LIKE '%{codigo}%' OR u.observation LIKE '%{codigo}%')"
+        # Y QUE SIGA BLOQUEADO. `ultimo` se queda con el estado más nuevo de
+        # cada cliente, pero eso no alcanza: sin este filtro entran los que la
+        # regla bloqueó y después alguien desbloqueó, y devolverlos como
+        # alertas listas para volverse caso hace que un analista abra un caso
+        # sobre algo ya resuelto. Hoy no cambia el resultado —los 152 de
+        # PSP-C-AMT-J9H7 están todos en BLOCKED— y por eso está: es el día que
+        # desbloqueen a uno cuando importa. Mismo filtro que el reporte.
+        " AND u.compliance_status IN ('BLOCKED', 'FULLY_BLOCKED')"
+        f"{filtro_pais} "
+        "ORDER BY u.status_created_at DESC "
         f"LIMIT {limite}"
     )
 
@@ -256,7 +302,11 @@ def alerta_publica(row: dict) -> dict:
         "pais": row.get("pais_cliente", ""),
         "documento": {"tipo": row.get("tipo_dni", ""), "numero": row.get("dni", "")},
         "estado_compliance": row.get("compliance_status", ""),
-        "regla": row.get("agent_comment", ""),
+        # El código de la regla llega por `observation` o por `comment`, según
+        # cómo lo haya escrito el motor. Se prefiere `observation` porque es
+        # por donde vienen hoy los bloqueos de fraude; `comment` queda de
+        # respaldo para los históricos.
+        "regla": row.get("observation") or row.get("comment") or "",
         "motor": row.get("compliance_agent", ""),
         "score": row.get("risk_score"),
         "bloqueado_at": row.get("status_created_at", ""),

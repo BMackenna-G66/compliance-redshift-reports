@@ -183,6 +183,90 @@ class LaReglaNoEntraCrudaAlSQL(unittest.TestCase):
         self.assertIn("LIMIT 1", X.sql_alertas_por_regla("PSP-C-AMT-J9H7", "", -5))
 
 
+class LaConsultaLePideALaBaseColumnasQueExisten(unittest.TestCase):
+    """La regresión.
+
+    La SQL leía `compliance.priority_queue_b2c` pidiéndole nueve columnas que
+    esa vista no tiene —la vista expone customer_id, email, name, last_name,
+    country_code, los scores y poco más—, así que el endpoint fallaba SIEMPRE
+    con `column "nombre" does not exist`. No lo rompió ningún cambio reciente:
+    nunca anduvo, y ningún test lo veía porque todos miraban el texto del SQL
+    y no contra qué tabla iba.
+    """
+
+    # Lo que la vista expone de verdad, leído de Redshift el 06-10-2026.
+    VISTA = ("customer_id", "email", "name", "last_name", "country_code",
+             "nationality_code", "is_pep", "profession", "cant_beneficiarios",
+             "country_risk", "nationality_risk", "pep_score", "profession_score",
+             "benef_score", "risk_score")
+
+    def test_no_le_pide_a_la_vista_columnas_que_no_tiene(self):
+        sql = X.sql_alertas_por_regla("PSP-C-AMT-J9H7")
+        # De la vista sólo puede salir el score, y por un LEFT JOIN explícito:
+        # nunca como tabla principal.
+        self.assertNotIn("FROM compliance.priority_queue_b2c", sql)
+        self.assertIn("LEFT JOIN compliance.priority_queue_b2c", sql)
+        for inexistente in ("nombre", "dni", "tipo_dni", "agent_comment",
+                            "compliance_agent", "status_created_at",
+                            "pais_cliente", "compliance_status"):
+            with self.subTest(columna=inexistente):
+                self.assertNotIn(f"q.{inexistente}", sql,
+                                 f"{inexistente} no existe en priority_queue_b2c")
+
+    def test_los_datos_duros_salen_de_customer(self):
+        sql = X.sql_alertas_por_regla("PSP-C-AMT-J9H7")
+        self.assertIn('"db_prod"."customer"."compliance"', sql)
+        self.assertIn('"db_prod"."customer"."customer_v2"', sql)
+        self.assertIn('"db_prod"."customer"."kyc_document"', sql)
+
+    def test_el_score_entra_por_LEFT_join(self):
+        """Un INNER dejaría afuera al cliente que no está en la cola de
+        priorización, que es justo el que nadie miró todavía."""
+        sql = X.sql_alertas_por_regla("PSP-C-AMT-J9H7")
+        self.assertIn("LEFT JOIN compliance.priority_queue_b2c", sql)
+        self.assertNotIn("INNER JOIN compliance.priority_queue_b2c", sql)
+
+    def test_busca_el_codigo_en_las_DOS_columnas(self):
+        """Hoy los bloqueos de fraude llegan por `observation`. Buscar sólo en
+        `comment` devolvía cero sin error, que es la peor forma de fallar."""
+        sql = X.sql_alertas_por_regla("PSP-C-AMT-J9H7")
+        self.assertIn("u.comment LIKE '%PSP-C-AMT-J9H7%'", sql)
+        self.assertIn("u.observation LIKE '%PSP-C-AMT-J9H7%'", sql)
+
+    def test_solo_los_que_siguen_bloqueados(self):
+        """Devolver uno ya desbloqueado hace que un analista abra un caso
+        sobre algo resuelto."""
+        self.assertIn("u.compliance_status IN ('BLOCKED', 'FULLY_BLOCKED')",
+                      X.sql_alertas_por_regla("PSP-C-AMT-J9H7"))
+
+    def test_se_queda_con_el_estado_mas_nuevo_de_cada_cliente(self):
+        sql = X.sql_alertas_por_regla("PSP-C-AMT-J9H7")
+        self.assertIn("ROW_NUMBER() OVER", sql)
+        self.assertIn("u.rn = 1", sql)
+
+    def test_el_pais_filtra_por_la_columna_de_customer(self):
+        """`pais_cliente` es un alias del SELECT: en el WHERE no existe."""
+        sql = X.sql_alertas_por_regla("PSP-C-AMT-J9H7", "ar")
+        self.assertIn("UPPER(c.country_code) = 'AR'", sql)
+
+
+class LaReglaSaleDeDondeVengaEscrita(unittest.TestCase):
+
+    def test_prefiere_observation(self):
+        a = X.alerta_publica({"customer_id": "9000001",
+                              "observation": "operation-alert - FRAUD - PSP-C-AMT-J9H7",
+                              "comment": "otra cosa"})
+        self.assertEqual(a["regla"], "operation-alert - FRAUD - PSP-C-AMT-J9H7")
+
+    def test_cae_en_comment_si_no_hay_observation(self):
+        a = X.alerta_publica({"customer_id": "9000001", "observation": "",
+                              "comment": "operation-alert - PSP_SUM_30"})
+        self.assertEqual(a["regla"], "operation-alert - PSP_SUM_30")
+
+    def test_sin_ninguna_de_las_dos_no_revienta(self):
+        self.assertEqual(X.alerta_publica({"customer_id": "9000001"})["regla"], "")
+
+
 class ElContrato(unittest.TestCase):
     """La proyección es el contrato: si cambia el objeto interno, acá no pasa
     nada hasta que alguien lo decida."""

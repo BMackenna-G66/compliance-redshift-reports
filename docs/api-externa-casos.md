@@ -141,11 +141,12 @@ Lo mismo que una fila del listado, más:
   "titulo": "Revisión por regla PSP-C-AMT-J9H7",
   "descripcion": "Bloqueo automático del motor de fraude.",
   "prioridad": "high",
-  "cliente": {"tipo": "customer", "id": "4171334", "nombre": "Nombre Apellido"},
+  "cliente": {"tipo": "customer", "id": "9000001", "nombre": "Nombre Apellido"},
   "origen": {"reporte": "operation-alert_-_psp_sum_30", "prioridad_alerta": "P2"},
-  "alerta": {"agent_comment": "operation-alert - FRAUD - PSP-C-AMT-J9H7",
+  "alerta": {"observation": "operation-alert - FRAUD - PSP-C-AMT-J9H7",
+             "comment": "",
              "pais_cliente": "AR", "email": "cliente@ejemplo.com",
-             "dni": "38699180", "tipo_dni": "DNI"}
+             "dni": "11111111", "tipo_dni": "DNI"}
 }
 ```
 
