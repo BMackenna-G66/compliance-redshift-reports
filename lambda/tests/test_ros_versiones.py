@@ -108,7 +108,7 @@ class UNA_VERSION_NO_SE_PISA(unittest.TestCase):
     def _desc(self, n, origen="gereo"):
         return V.descriptor(n, json_key=V.clave(ROS, n, "json"),
                             json_sha256="abc", origen=origen,
-                            quien="ana@global66.com", cuando="2026-10-12 11:00:00")
+                            quien="analista@example.com", cuando="2026-10-12 11:00:00")
 
     def test_agregar_no_muta_el_reporte_que_recibe(self):
         r = dict(ROS)
@@ -250,7 +250,7 @@ class LaEscrituraEsCondicional(unittest.TestCase):
         A.s3 = self._con_s3(puesto)
         try:
             r = A._crear_version_ros(dict(ROS), {"b": 2, "a": 1},
-                                     "ana@global66.com")
+                                     "analista@example.com")
         finally:
             A.s3 = orig
         escrito = puesto[0]["Body"]
@@ -262,7 +262,7 @@ class LaEscrituraEsCondicional(unittest.TestCase):
         orig = A.s3
         A.s3 = self._con_s3(puesto)
         try:
-            r = A._crear_version_ros(dict(ROS), {"a": 1}, "ana@global66.com",
+            r = A._crear_version_ros(dict(ROS), {"a": 1}, "analista@example.com",
                                      pdf_bytes=b"%PDF-1.4 falso")
         finally:
             A.s3 = orig
@@ -278,7 +278,7 @@ class LaEscrituraEsCondicional(unittest.TestCase):
         orig = A.s3
         A.s3 = self._con_s3(puesto)
         try:
-            A._crear_version_ros(dict(ROS), {"a": 1}, "ana@global66.com")
+            A._crear_version_ros(dict(ROS), {"a": 1}, "analista@example.com")
         finally:
             A.s3 = orig
         self.assertEqual([p["Key"] for p in puesto],
@@ -305,3 +305,81 @@ class ElPDFSeSacaDelBorrador(unittest.TestCase):
         """El reporte vale por su JSON, que es lo que se manda al regulador."""
         self.assertEqual(A._pdf_del_borrador({"pdf_base64": "no es base64 %%%"}),
                          b"")
+
+
+class UNA_VERSION_QUE_NO_SE_GUARDO_NO_ES_SILENCIOSA(unittest.TestCase):
+    """El ROS se crea igual si falla S3 —el reporte es el dato, la versión es
+    la prueba— pero si eso falla de forma sistemática TODOS los ROS de GEREO
+    quedan sin versión. Un `print` no lo ve nadie; el registro sí."""
+
+    def test_queda_marcado_en_el_registro(self):
+        class _Rota:
+            def put_object(self, **kw):
+                raise RuntimeError("S3 caído")
+        orig = A.s3
+        A.s3 = _Rota()
+        try:
+            with self.assertRaises(RuntimeError):
+                A._crear_version_ros(dict(ROS), {"a": 1}, "analista@example.com")
+        finally:
+            A.s3 = orig
+
+    def _crear_ros_con_s3(self, s3_doble):
+        """`crear_ros` de verdad, con dobles en todo lo que toca afuera."""
+        import io
+        borrador = json.dumps({"ros_doc": {"a": 1}, "opciones": {"pais": "Chile"},
+                               "senales": [], "advertencias": []}).encode()
+
+        class _S3(s3_doble):
+            def get_object(self, **kw):
+                return {"Body": io.BytesIO(borrador)}
+
+        guardado = {}
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_list", "_crm_put", "_safe_audit")}
+        A.s3 = _S3()
+        A._crm_get = lambda t, k: ({"case_id": "c-1", "entity_id": "9000001"}
+                                   if t == "cases" else None)
+        A._crm_list = lambda t: []
+        A._crm_put = lambda t, k, v: guardado.update(ros=v)
+        A._safe_audit = lambda **k: None
+        try:
+            r = A.crear_ros({"case_id": "c-1", "regulador": "UAF-CL",
+                             "actor_email": "analista@example.com",
+                             "gereo_run_id": "run-1"})
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+        return r, guardado.get("ros", {})
+
+    def test_crear_ros_deja_la_marca_cuando_falla_S3(self):
+        class _Rota:
+            def put_object(self, **kw):
+                raise RuntimeError("S3 caído")
+        codigo, guardado = self._crear_ros_con_s3(_Rota)
+        self.assertEqual(codigo["statusCode"], 201, "el ROS tenía que crearse igual")
+        self.assertEqual(guardado["version_error"]["motivo"], "RuntimeError")
+        self.assertTrue(guardado["version_error"]["cuando"])
+        self.assertEqual(V.versiones_de(guardado), [])
+
+    def test_el_motivo_no_lleva_el_mensaje_crudo_de_boto(self):
+        """El mensaje de boto trae la clave del objeto, y la clave lleva el
+        folio y el país. Sólo puede viajar el TIPO del error."""
+        class _Rota:
+            def put_object(self, **kw):
+                raise RuntimeError("falló al escribir "
+                                   "ros/CL/2026/10/ROS-2026-0001/v1.json")
+        _, guardado = self._crear_ros_con_s3(_Rota)
+        motivo = guardado["version_error"]["motivo"]
+        self.assertEqual(motivo, "RuntimeError")
+        self.assertNotIn("ros/", motivo)
+        self.assertNotIn("ROS-", motivo)
+
+    def test_cuando_S3_anda_no_hay_marca_de_error(self):
+        class _Bien:
+            def put_object(self, **kw):
+                pass
+        codigo, guardado = self._crear_ros_con_s3(_Bien)
+        self.assertEqual(codigo["statusCode"], 201)
+        self.assertNotIn("version_error", guardado)
+        self.assertEqual(len(V.versiones_de(guardado)), 1)

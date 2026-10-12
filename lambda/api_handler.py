@@ -3535,8 +3535,18 @@ def crear_ros(body: dict):
             # El ROS se crea igual. Quedarse sin registro porque falló S3
             # sería peor: el reporte es el dato, la versión es la prueba, y la
             # prueba se puede regenerar desde el borrador, que sigue en S3.
+            #
+            # PERO NO EN SILENCIO. Si esto falla de forma sistemática —una
+            # política de S3, un permiso que cambia—, TODOS los ROS de GEREO
+            # quedan sin versión y nadie se entera, porque un `print` no lo ve
+            # nadie. Queda en el registro, que es lo que la pantalla lee.
+            #
+            # Sólo el TIPO de error: el mensaje de boto puede traer la clave
+            # del objeto, y la clave lleva el folio y el país.
             print(f"[ros] no pude guardar la versión 1 de "
                   f"{reporte['folio']}: {type(e).__name__}: {e}")
+            reporte = dict(reporte, version_error={
+                "cuando": _now_str(), "motivo": type(e).__name__})
 
     # El folio es la clave: es como se cita el reporte, y así el detalle se
     # pide por el número que la gente tiene anotado.
