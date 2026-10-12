@@ -139,6 +139,12 @@ except Exception as _e:  # pragma: no cover
     print(f"[api] versiones de ROS no disponibles: {_e}")
 
 try:
+    import ros_etapas
+except Exception as _e:  # pragma: no cover
+    ros_etapas = None
+    print(f"[api] etapas de ROS no disponibles: {_e}")
+
+try:
     import informe_alertas
     import informe_email
 except Exception as _e:  # pragma: no cover
@@ -3319,7 +3325,12 @@ def _con_pendientes(r):
     front dejaría dos versiones que se separan sin que nada falle —el botón
     habilitado de un lado y el 400 del otro—.
     """
-    return dict(r, pendientes_gereo=ros_mod.pendientes_gereo(r))
+    salida = dict(r, pendientes_gereo=ros_mod.pendientes_gereo(r))
+    # La etapa se calcula y no se asume: un registro viejo no tiene el campo
+    # y la pantalla necesita leer algo igual.
+    if ros_etapas:
+        salida["etapa_gereo"] = ros_etapas.etapa_de(r)
+    return salida
 
 
 def _ros_publico(r):
@@ -3531,6 +3542,13 @@ def crear_ros(body: dict):
                 reporte, respuesta.get("ros_doc") or {},
                 reporte["creado_por"], origen="gereo",
                 pdf_bytes=_pdf_del_borrador(respuesta))
+            # Guardada la v1, el documento está «recibido». La etapa se mueve
+            # ACÁ y no en la creación del ROS: sin versión guardada no hay
+            # nada recibido, y decirlo igual sería mentirle a la pantalla.
+            if ros_etapas:
+                reporte = ros_etapas.cambiar(
+                    reporte, "recibido", reporte["creado_por"],
+                    nota="GEREO devolvió el reporte.", momento=_now_str())
         except Exception as e:                                   # noqa: BLE001
             # El ROS se crea igual. Quedarse sin registro porque falló S3
             # sería peor: el reporte es el dato, la versión es la prueba, y la
