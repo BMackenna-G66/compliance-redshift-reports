@@ -210,3 +210,78 @@ class LaEtapaDiceDeQueVersionHabla(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LaEtapaYLaVersionNoSeConfundenAlFallar(unittest.TestCase):
+    """Observación de la auditoría sobre el #101.
+
+    Si el cambio de etapa viviera en el mismo `try` que el guardado de la
+    versión, un fallo al mover la etapa dejaría el ROS marcado con
+    `version_error` aunque la v1 SÍ se haya guardado. El registro mentiría
+    sobre qué falló, que es peor que no decir nada.
+    """
+
+    def _crear(self, s3_clase, etapas_rotas=False):
+        import io
+        import json as _json
+        import api_handler as A
+        import ros_etapas as _E
+        borrador = _json.dumps({"ros_doc": {"a": 1},
+                                "opciones": {"pais": "Chile"},
+                                "senales": [], "advertencias": []}).encode()
+
+        class _S3(s3_clase):
+            def get_object(self, **kw):
+                return {"Body": io.BytesIO(borrador)}
+
+        class _EtapasRotas:
+            def cambiar(self, *a, **k):
+                raise RuntimeError("etapa rota")
+            etapa_de = staticmethod(_E.etapa_de)
+
+        guardado = {}
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_list", "_crm_put", "_safe_audit",
+                 "ros_etapas")}
+        A.s3 = _S3()
+        A._crm_get = lambda t, k: ({"case_id": "c-1"} if t == "cases" else None)
+        A._crm_list = lambda t: []
+        A._crm_put = lambda t, k, v: guardado.update(ros=v)
+        A._safe_audit = lambda **k: None
+        if etapas_rotas:
+            A.ros_etapas = _EtapasRotas()
+        try:
+            A.crear_ros({"case_id": "c-1", "regulador": "UAF-CL",
+                         "actor_email": "analista@example.com",
+                         "gereo_run_id": "run-1"})
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+        return guardado.get("ros", {})
+
+    def test_si_falla_la_etapa_NO_se_marca_un_error_de_version(self):
+        class _Bien:
+            def put_object(self, **kw):
+                pass
+        guardado = self._crear(_Bien, etapas_rotas=True)
+        self.assertNotIn("version_error", guardado,
+                         "el registro miente: la v1 se guardó bien")
+        self.assertEqual(len(guardado.get("versiones", [])), 1)
+
+    def test_si_falla_la_version_la_etapa_no_avanza(self):
+        """Sin versión guardada no hay nada «recibido»."""
+        class _Rota:
+            def put_object(self, **kw):
+                raise RuntimeError("S3 caído")
+        guardado = self._crear(_Rota)
+        self.assertEqual(E.etapa_de(guardado), "sin_ros")
+        self.assertEqual(guardado["version_error"]["motivo"], "RuntimeError")
+
+    def test_el_camino_normal_deja_la_v1_y_la_etapa(self):
+        class _Bien:
+            def put_object(self, **kw):
+                pass
+        guardado = self._crear(_Bien)
+        self.assertEqual(E.etapa_de(guardado), "recibido")
+        self.assertEqual(len(guardado["versiones"]), 1)
+        self.assertEqual(E.historial_de(guardado)[-1]["version"], 1)

@@ -3542,13 +3542,6 @@ def crear_ros(body: dict):
                 reporte, respuesta.get("ros_doc") or {},
                 reporte["creado_por"], origen="gereo",
                 pdf_bytes=_pdf_del_borrador(respuesta))
-            # Guardada la v1, el documento está «recibido». La etapa se mueve
-            # ACÁ y no en la creación del ROS: sin versión guardada no hay
-            # nada recibido, y decirlo igual sería mentirle a la pantalla.
-            if ros_etapas:
-                reporte = ros_etapas.cambiar(
-                    reporte, "recibido", reporte["creado_por"],
-                    nota="GEREO devolvió el reporte.", momento=_now_str())
         except Exception as e:                                   # noqa: BLE001
             # El ROS se crea igual. Quedarse sin registro porque falló S3
             # sería peor: el reporte es el dato, la versión es la prueba, y la
@@ -3565,6 +3558,24 @@ def crear_ros(body: dict):
                   f"{reporte['folio']}: {type(e).__name__}: {e}")
             reporte = dict(reporte, version_error={
                 "cuando": _now_str(), "motivo": type(e).__name__})
+
+    # Guardada la v1, el documento está «recibido». La etapa se mueve ACÁ y no
+    # al crear el ROS: sin versión guardada no hay nada recibido, y decirlo
+    # igual sería mentirle a la pantalla.
+    #
+    # EN SU PROPIO `try`, Y NO EN EL DE ARRIBA. Si fallara acá dentro del otro,
+    # el ROS quedaría marcado con `version_error` aunque la v1 SÍ se haya
+    # guardado: el registro mentiría sobre qué falló, que es peor que no decir
+    # nada. Hoy no puede pasar —`sin_ros → recibido` es válido y la creación ya
+    # exige `creado_por`— pero el costo de separarlo es cero.
+    if ros_etapas and ros_versiones and ros_versiones.versiones_de(reporte):
+        try:
+            reporte = ros_etapas.cambiar(
+                reporte, "recibido", reporte["creado_por"],
+                nota="GEREO devolvió el reporte.", momento=_now_str())
+        except Exception as e:                                   # noqa: BLE001
+            print(f"[ros] la v1 de {reporte['folio']} quedó guardada pero no "
+                  f"pude mover la etapa: {type(e).__name__}: {e}")
 
     # El folio es la clave: es como se cita el reporte, y así el detalle se
     # pide por el número que la gente tiene anotado.
