@@ -41,6 +41,7 @@ Routes:
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import decimal
 import hashlib
@@ -130,6 +131,12 @@ try:
 except Exception as _e:  # pragma: no cover
     gereo = ros_gereo = None
     print(f"[api] cliente de GEREO no disponible: {_e}")
+
+try:
+    import ros_versiones
+except Exception as _e:  # pragma: no cover
+    ros_versiones = None
+    print(f"[api] versiones de ROS no disponibles: {_e}")
 
 try:
     import informe_alertas
@@ -2605,6 +2612,13 @@ def handler(event, context):  # noqa: ARG001
                 return cambiar_estado_ros(parts[1], body)
             if method == "POST" and len(parts) == 3 and parts[2] == "narrativa":
                 return editar_ros(parts[1], body)
+            # GET /ros/{folio}/versiones — las fichas, sin bajar nada.
+            if method == "GET" and len(parts) == 3 and parts[2] == "versiones":
+                return listar_versiones_ros(parts[1])
+            # GET /ros/{folio}/versiones/{n}/{json|pdf} — una URL prefirmada.
+            if (method == "GET" and len(parts) == 5
+                    and parts[2] == "versiones" and parts[4] in ("json", "pdf")):
+                return descargar_version_ros(parts[1], parts[3], parts[4])
 
         # GET /flags — la matriz de banderas y sus pesos.
         if method == "GET" and parts == ["flags"]:
@@ -3340,6 +3354,119 @@ def detalle_ros(folio_o_id: str):
     return resp(200, {"ros": _con_pendientes(r)})
 
 
+class VersionYaExiste(Exception):
+    """Alguien escribió esa versión primero. Ver `_s3_put_inmutable`."""
+
+
+def _s3_put_inmutable(key: str, cuerpo: bytes, content_type: str):
+    """Escribe en S3 sólo si el objeto NO existe.
+
+    `IfNoneMatch='*'` es la pieza que hace que una versión sea inmutable de
+    verdad y no por convención. El registro del ROS es leer-modificar-escribir
+    sin bloqueo: dos ediciones simultáneas calculan el mismo `siguiente_numero`
+    y, sin esto, la segunda pisaría a la primera sin que nadie se entere —y lo
+    pisado sería el objeto que alguien aprobó—. Con esto, la segunda falla y
+    el llamador la trata como lo que es: un choque, no un éxito.
+    """
+    try:
+        s3.put_object(Bucket=S3_BUCKET, Key=key, Body=cuerpo,
+                      ContentType=content_type, IfNoneMatch="*")
+    except Exception as e:                                       # noqa: BLE001
+        codigo = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+        if codigo in ("PreconditionFailed", "ConditionalRequestConflict"):
+            raise VersionYaExiste(key) from e
+        raise
+
+
+def _crear_version_ros(reporte: dict, payload: dict, quien: str,
+                       origen: str = "gereo", pdf_bytes: bytes = b"") -> dict:
+    """Guarda una versión del ROS en S3 y devuelve el reporte con su ficha.
+
+    El hash se calcula sobre LOS MISMOS BYTES que se escriben —no sobre el
+    dict en memoria— para que se pueda verificar contra el objeto de S3. Es
+    toda la gracia de guardarlo.
+    """
+    n = ros_versiones.siguiente_numero(reporte)
+    cuerpo = ros_versiones.canonico(payload)
+    json_key = ros_versiones.clave(reporte, n, "json")
+    _s3_put_inmutable(json_key, cuerpo, "application/json; charset=utf-8")
+
+    pdf_key = pdf_sha = ""
+    if pdf_bytes:
+        pdf_key = ros_versiones.clave(reporte, n, "pdf")
+        _s3_put_inmutable(pdf_key, pdf_bytes, "application/pdf")
+        pdf_sha = ros_versiones.sha256_de(pdf_bytes)
+
+    return ros_versiones.agregar(reporte, ros_versiones.descriptor(
+        n, json_key=json_key, json_sha256=ros_versiones.sha256_de(cuerpo),
+        origen=origen, quien=quien, cuando=_now_str(),
+        pdf_key=pdf_key, pdf_sha256=pdf_sha))
+
+
+def _pdf_del_borrador(respuesta: dict) -> bytes:
+    """El PDF que GEREO mandó adentro del JSON, como archivo.
+
+    Hoy viaja en `pdf_base64` DENTRO del borrador que queda en S3: no es un
+    archivo, no está ligado al ROS y no se puede ni mirar. Acá se saca de ahí
+    una sola vez, al crear la versión. Si no vino —sólo llega cuando se marcó
+    «Traer también el PDF»— se devuelven cero bytes y el ROS igual es válido.
+    """
+    crudo = respuesta.get("pdf_base64")
+    if not crudo:
+        return b""
+    try:
+        return base64.b64decode(crudo, validate=True)
+    except Exception as e:                                       # noqa: BLE001
+        # Un PDF ilegible no puede voltear la creación del ROS: el reporte
+        # vale por su JSON, que es lo que se manda al regulador.
+        print(f"[ros] pdf_base64 ilegible: {type(e).__name__}")
+        return b""
+
+
+def listar_versiones_ros(folio: str):
+    """Las fichas de las versiones. Sin contenido: punteros y hashes."""
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte '{folio}'."})
+    if not ros_versiones:
+        return resp(503, {"error": "Las versiones no están disponibles en "
+                                   "este despliegue."})
+    return resp(200, {"folio": r.get("folio"),
+                      "version_actual": r.get("version_actual") or 0,
+                      "versiones": ros_versiones.versiones_de(r)})
+
+
+def descargar_version_ros(folio: str, numero: str, que: str):
+    """Una URL prefirmada y de corta duración para el JSON o el PDF.
+
+    El bucket es privado y sigue siéndolo: no se devuelve el contenido por la
+    API ni se abre nada. La URL dura 5 minutos —lo que tarda alguien en
+    apretar— y no 1 hora como los adjuntos de un caso, porque esto es el
+    documento que se reporta al regulador.
+    """
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte '{folio}'."})
+    if not ros_versiones:
+        return resp(503, {"error": "Las versiones no están disponibles en "
+                                   "este despliegue."})
+    v = ros_versiones.version_de(r, numero)
+    if v is None:
+        return resp(404, {"error": f"El reporte {folio} no tiene la versión "
+                                   f"{numero}."})
+    key = v.get("pdf_key") if que == "pdf" else v.get("json_key")
+    if not key:
+        return resp(404, {"error": f"La versión {numero} no tiene {que}."
+                                   + (" GEREO sólo manda el PDF si se pidió "
+                                      "al generar." if que == "pdf" else "")})
+    url = s3.generate_presigned_url("get_object",
+                                    Params={"Bucket": S3_BUCKET, "Key": key},
+                                    ExpiresIn=300)
+    return resp(200, {"download_url": url, "expira_en": 300,
+                      "sha256": v.get("pdf_sha256" if que == "pdf"
+                                      else "json_sha256", "")})
+
+
 def crear_ros(body: dict):
     """Arma un ROS en borrador a partir de un caso.
 
@@ -3372,6 +3499,9 @@ def crear_ros(body: dict):
     # propio campo: la narrativa que firma el oficial la escribe una persona,
     # y que el generador sea bueno no cambia eso.
     run_id = str(body.get("gereo_run_id") or "").strip()
+    # Definida antes del `if`: si `ros_gereo` no está en este despliegue, el
+    # bloque de abajo no corre y más abajo se la consulta igual.
+    respuesta = None
     if run_id and ros_gereo:
         try:
             obj = s3.get_object(Bucket=S3_BUCKET,
@@ -3390,6 +3520,23 @@ def crear_ros(body: dict):
         reporte = ros_mod.crear(datos, caso, alertas, existentes, leer_fila=_fila)
     except ValueError as e:
         return resp(400, {"error": str(e)})
+
+    # LA VERSIÓN 1 ES LO QUE DEVOLVIÓ GEREO, INTACTO. Se guarda acá y no en un
+    # paso posterior porque el PDF vive adentro del borrador de esa corrida: si
+    # se dejara para después, habría que ir a buscarlo hacia atrás y una v1 sin
+    # su PDF ya habría existido.
+    if run_id and ros_versiones and respuesta:
+        try:
+            reporte = _crear_version_ros(
+                reporte, respuesta.get("ros_doc") or {},
+                reporte["creado_por"], origen="gereo",
+                pdf_bytes=_pdf_del_borrador(respuesta))
+        except Exception as e:                                   # noqa: BLE001
+            # El ROS se crea igual. Quedarse sin registro porque falló S3
+            # sería peor: el reporte es el dato, la versión es la prueba, y la
+            # prueba se puede regenerar desde el borrador, que sigue en S3.
+            print(f"[ros] no pude guardar la versión 1 de "
+                  f"{reporte['folio']}: {type(e).__name__}: {e}")
 
     # El folio es la clave: es como se cita el reporte, y así el detalle se
     # pide por el número que la gente tiene anotado.
