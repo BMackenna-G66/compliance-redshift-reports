@@ -139,6 +139,12 @@ except Exception as _e:  # pragma: no cover
     print(f"[api] versiones de ROS no disponibles: {_e}")
 
 try:
+    import ros_etapas
+except Exception as _e:  # pragma: no cover
+    ros_etapas = None
+    print(f"[api] etapas de ROS no disponibles: {_e}")
+
+try:
     import informe_alertas
     import informe_email
 except Exception as _e:  # pragma: no cover
@@ -3319,7 +3325,12 @@ def _con_pendientes(r):
     front dejaría dos versiones que se separan sin que nada falle —el botón
     habilitado de un lado y el 400 del otro—.
     """
-    return dict(r, pendientes_gereo=ros_mod.pendientes_gereo(r))
+    salida = dict(r, pendientes_gereo=ros_mod.pendientes_gereo(r))
+    # La etapa se calcula y no se asume: un registro viejo no tiene el campo
+    # y la pantalla necesita leer algo igual.
+    if ros_etapas:
+        salida["etapa_gereo"] = ros_etapas.etapa_de(r)
+    return salida
 
 
 def _ros_publico(r):
@@ -3547,6 +3558,24 @@ def crear_ros(body: dict):
                   f"{reporte['folio']}: {type(e).__name__}: {e}")
             reporte = dict(reporte, version_error={
                 "cuando": _now_str(), "motivo": type(e).__name__})
+
+    # Guardada la v1, el documento está «recibido». La etapa se mueve ACÁ y no
+    # al crear el ROS: sin versión guardada no hay nada recibido, y decirlo
+    # igual sería mentirle a la pantalla.
+    #
+    # EN SU PROPIO `try`, Y NO EN EL DE ARRIBA. Si fallara acá dentro del otro,
+    # el ROS quedaría marcado con `version_error` aunque la v1 SÍ se haya
+    # guardado: el registro mentiría sobre qué falló, que es peor que no decir
+    # nada. Hoy no puede pasar —`sin_ros → recibido` es válido y la creación ya
+    # exige `creado_por`— pero el costo de separarlo es cero.
+    if ros_etapas and ros_versiones and ros_versiones.versiones_de(reporte):
+        try:
+            reporte = ros_etapas.cambiar(
+                reporte, "recibido", reporte["creado_por"],
+                nota="GEREO devolvió el reporte.", momento=_now_str())
+        except Exception as e:                                   # noqa: BLE001
+            print(f"[ros] la v1 de {reporte['folio']} quedó guardada pero no "
+                  f"pude mover la etapa: {type(e).__name__}: {e}")
 
     # El folio es la clave: es como se cita el reporte, y así el detalle se
     # pide por el número que la gente tiene anotado.
