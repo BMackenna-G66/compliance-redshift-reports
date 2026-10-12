@@ -145,6 +145,12 @@ except Exception as _e:  # pragma: no cover
     print(f"[api] etapas de ROS no disponibles: {_e}")
 
 try:
+    import auth_firebase
+except Exception as _e:  # pragma: no cover
+    auth_firebase = None
+    print(f"[api] verificación de sesión no disponible: {_e}")
+
+try:
     import informe_alertas
     import informe_email
 except Exception as _e:  # pragma: no cover
@@ -2544,29 +2550,16 @@ def handler(event, context):  # noqa: ARG001
         body = {}
 
     try:
-        # CORS preflight — return proper CORS headers so browser accepts the request.
-        # API Gateway $default route routes OPTIONS to Lambda, so we handle CORS here.
-        if method == "OPTIONS":
-            req_headers = event.get("headers", {}) or {}
-            origin = req_headers.get("origin") or req_headers.get("Origin", "")
-            # El front vive sólo en GitHub Pages. CloudFront se dio de baja:
-            # servía lo mismo byte por byte y mantener dos destinos era una
-            # fuente de desfases sin nada a cambio.
-            _allowed_origins = {
-                "https://bmackenna-g66.github.io",
-            }
-            cors_origin = origin if origin in _allowed_origins else "https://bmackenna-g66.github.io"
-            return {
-                "statusCode": 200,
-                "headers": {
-                    "Content-Type": "application/json",
-                    "Access-Control-Allow-Origin": cors_origin,
-                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-                    "Access-Control-Allow-Headers": "Authorization, Content-Type, x-api-key",
-                    "Access-Control-Max-Age": "300",
-                },
-                "body": "",
-            }
+        # EL CORS NO SE DECLARA ACÁ. Lo contesta API Gateway, con la
+        # `CorsConfiguration` de la API (`aws apigatewayv2 get-api --api-id
+        # qwvd2t33uc`); este código nunca corre para un preflight.
+        #
+        # Acá había un handler de OPTIONS que declaraba su propia política, y
+        # decía cosas que NO regían: permitía `PUT` y el header
+        # `Authorization`, que API Gateway rechazaba. Eso escondió durante
+        # meses que editar una configuración documental de alerta estaba roto
+        # en v1 — alguien leía el código, veía `PUT` permitido y seguía de
+        # largo. Una política falsa es peor que ninguna.
 
         # GET /reports
         if method == "GET" and not parts:
@@ -2608,6 +2601,33 @@ def handler(event, context):  # noqa: ARG001
         if parts and parts[0] == "ros":
             if not ros_mod:
                 return resp(503, {"error": "El registro de ROS no está disponible en este despliegue."})
+
+            # TODO EL ÁRBOL /ros PASA POR ACÁ, no sólo los botones. Una URL
+            # prefirmada de `GET /ros/{folio}/versiones/{n}/pdf` es el reporte
+            # que se le manda al regulador, y los folios son secuenciales
+            # (`ROS-2026-0001`, `0002`…): se recorren solos. Filtrar un ROS
+            # —que el cliente se entere de que lo reportaron— es exactamente
+            # lo que la normativa castiga.
+            #
+            # Mientras dure el tramo transitorio, estas rutas aceptan token y
+            # también siguen sin él; un token PRESENTE pero inválido es 401
+            # igual. Ver `_identidad`.
+            quien, error = _identidad(event, exige=False)
+            if error:
+                return error
+            if quien["modo"] == "sin_token":
+                _contar_sin_token(method, "/".join(parts))
+            else:
+                # CON TOKEN, EL ACTOR SALE DEL TOKEN. Se pisa lo que haya
+                # venido en el cuerpo en vez de compararlo: si alguien manda
+                # un correo distinto del suyo, lo que corresponde no es
+                # rechazar la request —puede ser el front mandando un dato
+                # viejo— sino registrar a quien realmente la hizo. El campo
+                # del cuerpo deja de tener efecto, que es el punto.
+                body = dict(body or {})
+                body["actor_email"] = quien["email"]
+                body["quien"] = quien["email"]
+
             if method == "GET" and parts == ["ros"]:
                 return listar_ros()
             if method == "POST" and parts == ["ros"]:
@@ -5523,11 +5543,95 @@ def _is_admin_email(email: str) -> bool:
 
 
 def _actor(body: dict) -> str:
-    """Quién dice ser el que llama. Para el registro de auditoría.
+    """Quién DICE SER el que llama. Para el registro de auditoría.
+
+    Sale del cuerpo y por lo tanto es falsificable. Sirve para anotar quién
+    hizo qué cuando nadie está mintiendo, que es el caso normal; no sirve
+    para decidir si alguien puede hacer algo. Para eso está `_identidad()`,
+    que lo verifica contra Firebase.
 
     Las tres funciones de usuarios anotaban `"admin"` a secas, que no dice
     nada: lo único que interesa de un cambio de permisos es quién lo hizo."""
     return (body or {}).get("actor_email", "").strip().lower() or "unknown"
+
+
+# ── Quién llama, de verdad ────────────────────────────────────────────────
+#
+# TRAMO TRANSITORIO, y por qué existe. Si la API empezara a exigir el token
+# de golpe, la pantalla de ROS se rompería para todo el que tenga el bundle
+# viejo —y el caché de la SPA tarda hasta un día en renovarse, medido—. No es
+# sólo `Ros.jsx`: `/ros` lo llaman también `ros/Gereo.jsx`, `Caso.jsx`,
+# `comun/ros.js` y `dominio.js`, así que la ficha del caso también se caería.
+#
+# Entonces: las rutas que YA EXISTEN aceptan token y también siguen sin él,
+# y cada llamada sin token queda contada. Cuando pase un día hábil completo
+# sin ninguna, un PR BORRA este camino. No hay perilla de entorno que apague
+# la autenticación: el endurecimiento tiene que quedar en git, revisado y sin
+# marcha atrás silenciosa.
+#
+# Las rutas NUEVAS (revisar, aprobar, enviar, editar una versión) exigen
+# token desde el día uno: ningún bundle viejo las llama, así que no hay
+# compatibilidad que cuidar.
+RUTAS_ROS_EN_TRANSICION = ("ros",)
+
+
+def _identidad(event: dict, *, exige: bool):
+    """Quién llama, verificado. Devuelve `(identidad, respuesta_de_error)`.
+
+    `identidad` es `{"email", "uid", "modo"}` con `modo` en `token` o
+    `sin_token`. Si hay respuesta de error, el llamador la devuelve y corta.
+
+    UN TOKEN PRESENTE PERO INVÁLIDO ES SIEMPRE 401, exija la ruta o no. No se
+    degrada a anónimo: si se degradara, un bug del front que mandara tokens
+    vencidos pasaría invisible —todo seguiría andando— hasta el día del corte,
+    que es cuando se rompería todo junto y sin pista de por qué.
+    """
+    if not auth_firebase:
+        if exige:
+            return None, resp(503, {"error": "La verificación de sesión no "
+                                             "está disponible en este despliegue."})
+        return {"email": "", "uid": "", "modo": "sin_token"}, None
+
+    try:
+        crudo = auth_firebase.token_del_evento(event)
+    except auth_firebase.TokenInvalido as e:
+        return None, resp(401, {"error": str(e)})
+
+    if not crudo:
+        if exige:
+            return None, resp(401, {"error": "Esta acción necesita tu sesión. "
+                                             "Volvé a entrar y reintentá."})
+        return {"email": "", "uid": "", "modo": "sin_token"}, None
+
+    try:
+        quien = auth_firebase.verificar(crudo)
+    except auth_firebase.TokenInvalido as e:
+        return None, resp(401, {"error": str(e)})
+    except Exception as e:                                       # noqa: BLE001
+        # Google no contestó. No es un token inválido y tampoco se deja pasar
+        # como anónimo: un problema de red no puede leerse como un problema de
+        # credenciales, ni al revés.
+        print(f"[auth] no pude verificar la sesión: {type(e).__name__}")
+        return None, resp(503, {"error": "No pude verificar tu sesión en este "
+                                         "momento. Reintentá en un minuto."})
+
+    return {**quien, "modo": "token"}, None
+
+
+def _contar_sin_token(metodo: str, ruta: str) -> None:
+    """Deja constancia de una llamada sin token, para saber cuándo cerrar.
+
+    Se audita con la ruta y SIN inventar un actor: poner `unknown` donde no
+    se sabe quién fue es exactamente lo que hace que un registro de auditoría
+    deje de servir.
+
+    El criterio del corte es cero de estas durante un día hábil completo
+    después de que el front nuevo esté publicado — medido por ventana de
+    despliegue, no con las dos primeras horas.
+    """
+    print(f"[auth] sin_token {metodo} /{ruta}")
+    _safe_audit(user_email="sin_token", action="api.sin_token",
+                entity_type="ruta", entity_id=f"{metodo} /{ruta}"[:200])
 
 
 def _require_admin(body: dict):

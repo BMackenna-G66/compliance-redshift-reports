@@ -155,8 +155,10 @@ export default function App() {
       base: config.apiUrl,
       perfil: sesion.leerPerfilActual,
       email: sesion.leerEmailActual,
+      token: sesion.leerTokenActual,
     });
-  }, [config, sesion.leerPerfilActual, sesion.leerEmailActual]);
+  }, [config, sesion.leerPerfilActual, sesion.leerEmailActual,
+      sesion.leerTokenActual]);
 
   if (sesion.cargando) {
     return <div className="wt-login"><p className="wt-estado">Cargando…</p></div>;
