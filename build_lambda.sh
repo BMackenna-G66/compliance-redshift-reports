@@ -76,6 +76,13 @@ find "$BUILD_DIR" -type f -name "*.pyc" -delete 2>/dev/null || true
 echo "→ Build complete: $(du -sh "$BUILD_DIR" | cut -f1)"
 
 echo "→ Zipping from inside build dir (files at zip root for Lambda)"
+# EL ZIP SE RECREA, NO SE ACTUALIZA. `zip -r` sobre un archivo que ya existe
+# AGREGA y reemplaza, pero nunca saca lo que dejó de estar: `rm -rf $BUILD_DIR`
+# de arriba limpia el directorio y no el .zip. Sin esta línea, todo lo que
+# alguna vez se empaquetó se sigue desplegando para siempre. Se vio en el zip
+# vivo: SEIS `boto3-*.dist-info` y seis de `botocore`, de 1.43.102 a 1.43.112,
+# una por cada deploy que actualizó la dependencia.
+rm -f lambda_package.zip
 (cd "$BUILD_DIR" && zip -r ../lambda_package.zip . -q)
 echo "→ lambda_package.zip created"
 echo "→ Deploy: aws s3 cp lambda_package.zip s3://compliance-redshift-reports-561521480266-us-east-1/ --profile compliance-admin && aws lambda update-function-code --function-name compliance-redshift-reports-api --s3-bucket compliance-redshift-reports-561521480266-us-east-1 --s3-key lambda_package.zip --region us-east-1 --profile compliance-admin"
