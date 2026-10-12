@@ -10448,7 +10448,12 @@
           documentos_b2b: this.docConfigModal.documentos_b2b,
         };
         const d = this.docConfigModal.config_id
-          ? await this.api('PUT', '/alert-document-config/' + this.docConfigModal.config_id, payload)
+          // POST y no PUT: el CORS de la API no permite PUT, así que el
+          // navegador bloqueaba el preflight y editar una configuración que
+          // ya existía fallaba siempre (crear una nueva, que va por POST,
+          // andaba). La Lambda acepta los dos métodos en esta ruta, y v2 ya
+          // usa POST acá mismo. Arreglarlo así no toca la infra.
+          ? await this.api('POST', '/alert-document-config/' + this.docConfigModal.config_id, payload)
           : await this.api('POST', '/alert-document-config', payload);
         if (d) {
           this.docConfigModal.open = false;
