@@ -71,3 +71,31 @@ class ElPaqueteLlevaTodo(unittest.TestCase):
         """Empaquetarlos engorda la Lambda y mete dependencias de desarrollo
         en el runtime."""
         self.assertNotIn("tests", _copiados()[1])
+
+
+class ElZipSeRecreaYNoSeActualiza(unittest.TestCase):
+    """`zip -r` sobre un archivo que YA EXISTE agrega y reemplaza, pero nunca
+    saca lo que dejó de estar. El `rm -rf` del build limpia el directorio, no
+    el .zip, así que sin recrearlo todo lo que alguna vez se empaquetó se
+    sigue desplegando para siempre.
+
+    Se vio en el zip vivo: SEIS `boto3-*.dist-info` y seis de `botocore`, de
+    la 1.43.102 a la 1.43.112 — una por cada deploy que actualizó boto3.
+    """
+
+    def test_el_zip_se_borra_antes_de_armarlo(self):
+        texto = BUILD.read_text(encoding="utf-8")
+        recrea = ("rm -f lambda_package.zip" in texto
+                  or "zip -FS" in texto)
+        self.assertTrue(recrea,
+                        "build_lambda.sh actualiza el zip en vez de recrearlo: "
+                        "agregá `rm -f lambda_package.zip` antes del `zip`, o "
+                        "usá `zip -FS`.")
+
+    def test_se_borra_ANTES_del_zip_y_no_despues(self):
+        texto = BUILD.read_text(encoding="utf-8")
+        if "zip -FS" in texto:
+            self.skipTest("usa zip -FS, que sincroniza solo")
+        self.assertLess(texto.index("rm -f lambda_package.zip"),
+                        texto.index("zip -r ../lambda_package.zip"),
+                        "el borrado quedó después de armar el zip")
