@@ -1,0 +1,171 @@
+# -*- coding: utf-8 -*-
+"""Las versiones de un ROS: qué se guardó, con qué hash y dónde.
+
+═══════════════════════════════════════════════════════════════════════════
+POR QUÉ UNA VERSIÓN ES INMUTABLE
+═══════════════════════════════════════════════════════════════════════════
+
+Lo que se aprueba y se manda al regulador es **una versión específica**, no
+«el ROS». Si una edición pisara la versión anterior, la frase «se aprobó esto»
+dejaría de poder probarse: el objeto aprobado y el objeto que quedó en disco
+serían distintos y nadie podría notar la diferencia.
+
+Por eso una edición **crea** `v{n+1}` y nunca toca `v{n}`, y por eso el hash
+se calcula sobre **los mismos bytes que se escriben**. Un hash sobre el dict
+en memoria no sirve: se puede volver a serializar distinto y dejar de
+coincidir con el archivo, que es justo lo que uno querría verificar.
+
+═══════════════════════════════════════════════════════════════════════════
+LA SERIALIZACIÓN ES CANÓNICA, Y NO ES COSMÉTICA
+═══════════════════════════════════════════════════════════════════════════
+
+`sort_keys=True`, separadores sin espacios y UTF-8 sin escapar. Dos corridas
+sobre el mismo contenido tienen que dar el MISMO hash; con el orden de claves
+de Python o con `ensure_ascii` prendido, el mismo ROS da dos hashes distintos
+según el día, y el hash deja de significar nada.
+
+`ensure_ascii=False` importa particularmente acá: un ROS chileno viene lleno de
+tildes y de «ñ», y escaparlas cambiaría los bytes sin cambiar el contenido.
+
+═══════════════════════════════════════════════════════════════════════════
+LO DEVUELTO POR GEREO Y LO EDITADO VIVEN SEPARADOS
+═══════════════════════════════════════════════════════════════════════════
+
+`origen` dice de dónde salió cada versión. La v1 de un ROS de GEREO es lo que
+devolvió GEREO, intacto; una edición del analista es otra versión, con su
+propio hash y su propio autor. Mezclarlos en un solo campo «el JSON» haría
+imposible contestar la única pregunta que importa en una auditoría: qué puso
+la máquina y qué puso la persona.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+
+# El ROS se guarda bajo el código de país, que es como lo pide el regulador y
+# como lo nombra la especificación. `ros.REGULADORES` habla de nombres largos.
+PAIS_POR_REGULADOR = {
+    "UIF-AR": "AR",
+    "UAF-CL": "CL",
+    "UIAF-CO": "CO",
+}
+
+ORIGENES = ("gereo", "edicion")
+
+# `ros/` es un prefijo SIN regla de lifecycle, a propósito: el bucket tiene 28
+# reglas por carpeta y ninguna lo alcanza, así que nada de acá se borra solo.
+# Un ROS es información reservada y el plazo de guarda lo fija la normativa de
+# cada país, no una regla de S3 que alguien puso para ahorrar espacio.
+RAIZ = "ros"
+
+RE_FOLIO = re.compile(r"^ROS-\d{4}-\d{4}$")
+
+
+def canonico(obj) -> bytes:
+    """Los bytes exactos que se escriben y sobre los que se calcula el hash."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def sha256_de(datos: bytes) -> str:
+    return hashlib.sha256(datos).hexdigest()
+
+
+def pais_de(reporte: dict) -> str:
+    return PAIS_POR_REGULADOR.get(str(reporte.get("regulador") or "").strip(), "")
+
+
+def prefijo(reporte: dict) -> str:
+    """`ros/CL/2026/10/ROS-2026-0001` — todas las versiones del mismo ROS juntas.
+
+    El año y el mes salen de `creado_at` y NO de la fecha de hoy: si salieran
+    de hoy, la v2 de un ROS de octubre aterrizaría en la carpeta de noviembre y
+    las versiones de un mismo reporte quedarían desparramadas.
+    """
+    folio = str(reporte.get("folio") or "").strip()
+    if not RE_FOLIO.match(folio):
+        raise ValueError(f"folio inválido: {folio!r}")
+    pais = pais_de(reporte)
+    if not pais:
+        raise ValueError(f"regulador sin país: {reporte.get('regulador')!r}")
+    creado = str(reporte.get("creado_at") or "")
+    m = re.match(r"^(\d{4})-(\d{2})", creado)
+    if not m:
+        raise ValueError(f"creado_at ilegible: {creado!r}")
+    return f"{RAIZ}/{pais}/{m.group(1)}/{m.group(2)}/{folio}"
+
+
+def clave(reporte: dict, numero: int, extension: str) -> str:
+    if int(numero) < 1:
+        raise ValueError(f"número de versión inválido: {numero!r}")
+    if extension not in ("json", "pdf"):
+        raise ValueError(f"extensión no permitida: {extension!r}")
+    return f"{prefijo(reporte)}/v{int(numero)}.{extension}"
+
+
+def versiones_de(reporte: dict) -> list:
+    """Las versiones ya guardadas. Un ROS viejo no tiene el campo: son cero.
+
+    Importa que esto no explote con un registro anterior a todo esto: el
+    modelo tiene que seguir leyéndose sin migrar nada.
+    """
+    v = reporte.get("versiones")
+    return list(v) if isinstance(v, list) else []
+
+
+def siguiente_numero(reporte: dict) -> int:
+    ya = versiones_de(reporte)
+    return max((int(x.get("version") or 0) for x in ya), default=0) + 1
+
+
+def version_de(reporte: dict, numero) -> dict | None:
+    try:
+        n = int(numero)
+    except (TypeError, ValueError):
+        return None
+    for v in versiones_de(reporte):
+        if int(v.get("version") or 0) == n:
+            return v
+    return None
+
+
+def descriptor(numero: int, *, json_key: str, json_sha256: str, origen: str,
+               quien: str, cuando: str, pdf_key: str = "",
+               pdf_sha256: str = "") -> dict:
+    """La ficha de una versión. Lo pesado vive en S3; acá van los punteros.
+
+    El PDF es opcional de verdad: GEREO sólo lo manda si se pidió, y un ROS
+    sin PDF es un ROS válido. Se guarda `""` y no `None` para que el registro
+    tenga siempre la misma forma.
+    """
+    if origen not in ORIGENES:
+        raise ValueError(f"origen desconocido: {origen!r}")
+    return {
+        "version": int(numero),
+        "origen": origen,
+        "json_key": json_key,
+        "json_sha256": json_sha256,
+        "pdf_key": pdf_key or "",
+        "pdf_sha256": pdf_sha256 or "",
+        "creada_por": str(quien or "").strip(),
+        "creada_at": str(cuando or ""),
+    }
+
+
+def agregar(reporte: dict, desc: dict) -> dict:
+    """El reporte con la versión nueva. NO muta el que recibe.
+
+    Rechaza repetir un número: el llamador calcula `siguiente_numero()` y
+    escribe en S3 con escritura condicional, pero el registro es leer-modificar-
+    escribir sin bloqueo y dos ediciones a la vez pueden llegar hasta acá con el
+    mismo `n`. Que falle es lo correcto: la alternativa es que una pise a la
+    otra en silencio.
+    """
+    n = int(desc.get("version") or 0)
+    if version_de(reporte, n) is not None:
+        raise ValueError(f"la versión {n} ya existe en {reporte.get('folio')}")
+    salida = dict(reporte)
+    salida["versiones"] = versiones_de(reporte) + [desc]
+    salida["version_actual"] = n
+    return salida
