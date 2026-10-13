@@ -6,13 +6,16 @@
    manejo de error, el corte de sólo lectura— hubo que confiar en haberlas
    encontrado todas. Acá pasa todo por `pedir()`.
 
-   POR QUÉ NO VA EL HEADER `Authorization`. No es un olvido. La API Gateway
-   tiene `AllowHeaders: ["content-type"]` y nada más; mandar `Authorization`
-   hace fallar el preflight y la llamada nunca sale. Cambiarlo necesita
-   `apigateway:PATCH`, que el rol `compliance-admin` no tiene. Hasta que
-   alguien con ese permiso lo agregue, la autenticación la hace Firebase del
-   lado del navegador y la API confía en `actor_email` — que es falsificable.
-   Está anotado como pendiente en PLAN.md; no lo arregla este archivo.
+   EL HEADER `Authorization` YA VA. Durante mucho tiempo no fue posible: la
+   API Gateway tenía `AllowHeaders: ["content-type"]` y nada más, así que
+   mandarlo hacía fallar el preflight y la llamada nunca salía. Eso se
+   corrigió —`authorization` está en la configuración de CORS de la API— y
+   ahora cada request lleva el ID token de Firebase, que la Lambda verifica.
+
+   `actor_email` sigue viajando en el cuerpo, y NO es lo que identifica a
+   nadie: cuando hay token, el backend lo pisa con el correo verificado. Se
+   mantiene porque las rutas que todavía no exigen token lo siguen usando
+   para el registro de auditoría.
    ========================================================================= */
 
 import { soloLectura } from './permisos.js';
@@ -43,7 +46,7 @@ function esLectura(metodo) {
  * vuelve a loguear. Guardando el valor, el cliente se quedaría con el perfil
  * mínimo para siempre — y con ese, todo lo que escribe queda bloqueado.
  */
-export function crearApi({ base, perfil, email }) {
+export function crearApi({ base, perfil, email, token }) {
   const raiz = String(base || '').replace(/\/$/, '');
 
   async function pedir(metodo, ruta, cuerpo = null, { crudo = false } = {}) {
@@ -64,6 +67,16 @@ export function crearApi({ base, perfil, email }) {
         credentials: 'omit',
         headers: { 'Content-Type': 'application/json' },
       };
+      // El token va en el header y en TODAS las llamadas, incluidas las GET.
+      // En el cuerpo no puede ir: un GET no manda cuerpo. Y en el query
+      // string tampoco, que es donde las credenciales terminan en los access
+      // logs, en CloudWatch y en el historial del navegador.
+      //
+      // Si no hay token —la sesión todavía no resolvió, o se cayó— la llamada
+      // sale igual, sin el header. Mientras dure el tramo transitorio el
+      // backend la acepta; romper la pantalla por esto sería peor.
+      const jwt = token ? await token() : '';
+      if (jwt) opts.headers.Authorization = `Bearer ${jwt}`;
       // La API identifica a quien actúa por este campo. Ponerlo acá y no en
       // cada llamada es la única forma de que no se olvide en una — que ya
       // pasó: una nota quedó guardada sin autor porque el campo viajaba con

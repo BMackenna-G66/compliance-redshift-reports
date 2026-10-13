@@ -131,6 +131,21 @@ export function useSesion() {
       autenticado: Boolean(email),
       leerPerfilActual: () => perfilRef.current,
       leerEmailActual: () => emailRef.current,
+      /* El ID token para la API. Se pide en cada llamada y NO se guarda:
+         `getIdToken()` devuelve el de la caché de Firebase y lo renueva solo
+         cuando está por vencer, así que guardarlo acá sería quedarse con uno
+         viejo sin enterarse. Dura una hora.
+
+         Devuelve cadena vacía si no hay sesión, en vez de tirar: que una
+         pantalla reviente por esto sería peor que una llamada sin token,
+         que el backend todavía acepta mientras dure el tramo transitorio. */
+      leerTokenActual: async () => {
+        try {
+          return (await auth.currentUser?.getIdToken()) || '';
+        } catch {
+          return '';
+        }
+      },
     }),
     [cargando, email, perfil, error],
   );

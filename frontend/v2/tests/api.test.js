@@ -186,3 +186,70 @@ describe('los errores', () => {
     assert.equal(r.datos.error, 'ya lo tomó otro');
   });
 });
+
+/* ── El token de sesión ─────────────────────────────────────────────────── */
+
+describe('el ID token va en el header', () => {
+  function conToken(valor) {
+    globalThis.fetch = fetchFalso();
+    return crearApi({
+      base: 'https://api.ejemplo/',
+      perfil: () => ({ rol: 'analyst', modulos: ['all'] }),
+      email: () => 'quien@global66.com',
+      token: async () => valor,
+    });
+  }
+
+  it('va también en los GET, que no pueden llevar cuerpo', async () => {
+    await conToken('jwt-de-mentira').get('/ros');
+    assert.equal(llamadas[0].opts.headers.Authorization, 'Bearer jwt-de-mentira');
+  });
+
+  it('va en los POST', async () => {
+    await conToken('jwt-de-mentira').post('/ros', { case_id: 'c-1' });
+    assert.equal(llamadas[0].opts.headers.Authorization, 'Bearer jwt-de-mentira');
+  });
+
+  it('NUNCA viaja en la URL', async () => {
+    // Es donde las credenciales terminan en los access logs, en CloudWatch y
+    // en el historial del navegador.
+    await conToken('jwt-de-mentira').get('/ros');
+    assert.equal(llamadas[0].url.includes('jwt-de-mentira'), false);
+  });
+
+  it('sin token la llamada sale igual, sin el header', async () => {
+    // El backend todavía las acepta mientras dure el tramo transitorio;
+    // romper la pantalla porque la sesión no resolvió sería peor.
+    await conToken('').get('/ros');
+    assert.equal('Authorization' in llamadas[0].opts.headers, false);
+  });
+
+  it('sin la función `token` tampoco rompe', async () => {
+    // `banco.jsx` arma el cliente sin ella.
+    globalThis.fetch = fetchFalso();
+    const a = crearApi({
+      base: 'https://api.ejemplo/',
+      perfil: () => ({ rol: 'analyst', modulos: ['all'] }),
+      email: () => 'quien@global66.com',
+    });
+    await a.get('/ros');
+    assert.equal('Authorization' in llamadas[0].opts.headers, false);
+  });
+
+  it('se pide en cada llamada y no se guarda', async () => {
+    // `getIdToken()` renueva solo cuando está por vencer: cachearlo acá sería
+    // quedarse con uno viejo sin enterarse.
+    let n = 0;
+    globalThis.fetch = fetchFalso();
+    const a = crearApi({
+      base: 'https://api.ejemplo/',
+      perfil: () => ({ rol: 'analyst', modulos: ['all'] }),
+      email: () => 'quien@global66.com',
+      token: async () => `jwt-${++n}`,
+    });
+    await a.get('/ros');
+    await a.get('/ros');
+    assert.equal(llamadas[0].opts.headers.Authorization, 'Bearer jwt-1');
+    assert.equal(llamadas[1].opts.headers.Authorization, 'Bearer jwt-2');
+  });
+});
