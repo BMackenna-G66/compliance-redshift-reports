@@ -169,3 +169,109 @@ def agregar(reporte: dict, desc: dict) -> dict:
     salida["versiones"] = versiones_de(reporte) + [desc]
     salida["version_actual"] = n
     return salida
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LA EDICIÓN CAMBIA VALORES, NUNCA LA ESTRUCTURA
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# GEREO usa el JSON tal cual para completar el formulario del regulador: un
+# campo de más, uno de menos o uno que cambió de tipo y el reporte se cae del
+# otro lado —o peor, entra mal— y nos enteramos por el regulador.
+#
+# Por eso una edición se compara contra la versión anterior y se rechaza
+# entera si la forma no coincide. No se recorta ni se completa lo que falta:
+# arreglar a medias una estructura que no entendemos es cómo se manda un
+# reporte que parece correcto.
+
+def _tipo(v) -> str:
+    """El tipo a efectos de forma. `int` y `float` son lo mismo —un monto
+    puede venir como 1000 o 1000.0 sin que eso cambie nada— y `None` es
+    comodín: un campo que vino vacío puede llenarse, que es el punto de
+    editar."""
+    if v is None:
+        return "nulo"
+    if isinstance(v, bool):      # antes que int: en Python bool ES int
+        return "bool"
+    if isinstance(v, (int, float)):
+        return "numero"
+    if isinstance(v, str):
+        return "texto"
+    if isinstance(v, dict):
+        return "objeto"
+    if isinstance(v, list):
+        return "lista"
+    return type(v).__name__
+
+
+def rutas_de(obj, prefijo: str = "") -> dict:
+    """Cada hoja del árbol con su tipo. `{"a.b": "texto", "c[0]": "numero"}`."""
+    fuera = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            fuera.update(rutas_de(v, f"{prefijo}.{k}" if prefijo else str(k)))
+    elif isinstance(obj, list):
+        # El largo de una lista ES la estructura: agregar un reportado no es
+        # editar un valor, es cambiar lo que el formulario del regulador va a
+        # recibir. Para eso se pide otra generación a GEREO.
+        for i, v in enumerate(obj):
+            fuera.update(rutas_de(v, f"{prefijo}[{i}]"))
+        if not obj:
+            fuera[prefijo] = "lista"
+    else:
+        fuera[prefijo] = _tipo(obj)
+    return fuera
+
+
+def diferencias_de_forma(antes, despues) -> list:
+    """Qué cambió además de los valores. Lista vacía = sólo cambiaron valores."""
+    a, b = rutas_de(antes), rutas_de(despues)
+    problemas = []
+    for ruta in sorted(set(a) - set(b)):
+        problemas.append(f"falta «{ruta}»")
+    for ruta in sorted(set(b) - set(a)):
+        problemas.append(f"sobra «{ruta}»")
+    for ruta in sorted(set(a) & set(b)):
+        # `nulo` es comodín en los dos sentidos: un campo vacío se puede
+        # llenar, y uno lleno se puede vaciar.
+        if a[ruta] != b[ruta] and "nulo" not in (a[ruta], b[ruta]):
+            problemas.append(
+                f"«{ruta}» era {a[ruta]} y llegó como {b[ruta]}")
+    return problemas
+
+
+def fundir(doc_anterior: dict, secciones_editadas: dict,
+           claves_editables) -> dict:
+    """El documento nuevo: lo editado encima de lo anterior.
+
+    SÓLO SE TOCAN LAS SECCIONES DEL FORMULARIO. `meta` y `reglas` se arrastran
+    de la versión anterior y no se exponen a edición: `meta` dice quién y
+    cuándo generó el reporte y `reglas` qué se evaluó. Son el registro de lo
+    que hizo la máquina, y una persona editándolos borraría justamente la
+    parte que permite auditar.
+    """
+    permitidas = set(claves_editables)
+    intrusas = sorted(set(secciones_editadas) - permitidas)
+    if intrusas:
+        raise ValueError("no se pueden editar estas secciones: "
+                         + ", ".join(intrusas))
+    salida = dict(doc_anterior)
+    for clave, valor in secciones_editadas.items():
+        salida[clave] = valor
+    return salida
+
+
+# El nombre largo del país, que es como lo nombra `ros_gereo.SECCIONES`.
+# `PAIS_POR_REGULADOR` da el código de dos letras, que es lo que pide la ruta
+# en S3; son dos cosas distintas y mezclarlas devuelve secciones vacías sin
+# error, que es la peor forma de fallar.
+PAIS_LARGO_POR_REGULADOR = {
+    "UIF-AR": "Argentina",
+    "UAF-CL": "Chile",
+    "UIAF-CO": "Colombia",
+}
+
+
+def pais_largo(reporte: dict) -> str:
+    return PAIS_LARGO_POR_REGULADOR.get(
+        str(reporte.get("regulador") or "").strip(), "")

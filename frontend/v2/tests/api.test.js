@@ -253,3 +253,20 @@ describe('el ID token va en el header', () => {
     assert.equal(llamadas[1].opts.headers.Authorization, 'Bearer jwt-2');
   });
 });
+
+describe('el error lleva el cuerpo de la respuesta', () => {
+  it('para que la pantalla pueda decir QUÉ estuvo mal', async () => {
+    // El rechazo de una edición de ROS viene con la lista de campos que
+    // cambiaron de estructura. Sin esto sólo se puede decir «no se pudo».
+    const a = api('analyst', {
+      status: 400,
+      cuerpo: { error: 'La edición cambia la estructura del reporte.',
+                diferencias: ['sobra «s.inventado»'] },
+    });
+    await assert.rejects(() => a.post('/ros/X/versiones', {}), (e) => {
+      assert.deepEqual(e.datos.diferencias, ['sobra «s.inventado»']);
+      assert.equal(e.status, 400);
+      return true;
+    });
+  });
+});

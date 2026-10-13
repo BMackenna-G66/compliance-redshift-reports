@@ -30,6 +30,7 @@ import {
 } from '../comun/ros.js';
 import { soloLectura } from '../permisos.js';
 import { Gereo } from './ros/Gereo.jsx';
+import { Formulario } from './ros/Formulario.jsx';
 
 function Estado({ r }) {
   const c = colorDe(r.estado);
@@ -256,8 +257,8 @@ function BorradorDeGereo({ r }) {
 
 /* ── El detalle ─────────────────────────────────────────────────────────── */
 
-function Detalle({ r, reguladores, transiciones, lectura, email,
-                   alGuardar, alMover, guardando, alCerrar }) {
+function Detalle({ r, reguladores, transiciones, lectura, email, api,
+                   alGuardar, alMover, guardando, alCerrar, alRecargar }) {
   const [narrativa, setNarrativa] = useState(r.narrativa || '');
   const [tipologia, setTipologia] = useState(r.tipologia || '');
   const [nota, setNota] = useState('');
@@ -384,6 +385,26 @@ function Detalle({ r, reguladores, transiciones, lectura, email,
           )}
 
           <BorradorDeGereo r={r} />
+
+          {/* El formulario editable. Plegado: la mayoría de las veces el
+              borrador de GEREO se revisa y no se corrige, y desplegado de
+              entrada empuja todo lo demás fuera de la pantalla. */}
+          {r.version_actual > 0 && (
+            <details style={{ marginTop: 'var(--e-4)' }}>
+              <summary style={{ cursor: 'pointer', fontSize: 'var(--texto-sm)',
+                                color: 'var(--g66-azul-texto)' }}>
+                Ver y corregir los datos del reporte
+                <span style={{ color: 'var(--texto-mute)' }}>
+                  {' '}— versión {r.version_actual}
+                </span>
+              </summary>
+              <div style={{ marginTop: 'var(--e-3)' }}>
+                <Formulario api={api} folio={r.folio} version={r.version_actual}
+                            lectura={lectura || !puedeEditar}
+                            alGuardar={alRecargar} />
+              </div>
+            </details>
+          )}
         </div>
 
         <div className="wt-acciones">
@@ -686,8 +707,9 @@ export function Ros({ api, perfil, email, navegar }) {
 
       {abierto && (
         <Detalle r={abierto} reguladores={reguladores} transiciones={datos?.transiciones}
-                 lectura={lectura} email={email} guardando={guardando}
+                 lectura={lectura} email={email} guardando={guardando} api={api}
                  alGuardar={guardarTexto} alMover={mover}
+                 alRecargar={() => cargar(abierto.folio)}
                  alCerrar={() => setAbierto(null)} />
       )}
 
