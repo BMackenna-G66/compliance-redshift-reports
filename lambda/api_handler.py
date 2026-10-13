@@ -2653,6 +2653,30 @@ def handler(event, context):  # noqa: ARG001
             # GET /ros/{folio}/versiones — las fichas, sin bajar nada.
             if method == "GET" and len(parts) == 3 and parts[2] == "versiones":
                 return listar_versiones_ros(parts[1])
+            # GET /ros/{folio}/versiones/{n} — el contenido, para el
+            # formulario. RUTA NUEVA, así que exige token desde el día uno:
+            # devuelve el reporte ENTERO que se le manda al regulador, y
+            # ningún bundle viejo la llama.
+            if (method == "GET" and len(parts) == 4
+                    and parts[2] == "versiones"):
+                exigido, error = _identidad(event, exige=True)
+                if error:
+                    return error
+                return ver_version_ros(parts[1], parts[3])
+            # POST /ros/{folio}/versiones — guardar una edición.
+            #
+            # RUTA NUEVA: EXIGE TOKEN DESDE EL DÍA UNO. Ningún bundle viejo la
+            # llama, así que no hay compatibilidad que cuidar — y es la que
+            # escribe el contenido que se va a reportar al regulador.
+            #
+            # El actor va como ARGUMENTO y no por el cuerpo: enumerar los
+            # campos de identidad que hay que pisar ya falló una vez, por el
+            # que nadie listó.
+            if method == "POST" and len(parts) == 3 and parts[2] == "versiones":
+                exigido, error = _identidad(event, exige=True)
+                if error:
+                    return error
+                return guardar_version_ros(parts[1], body, exigido["email"])
             # GET /ros/{folio}/versiones/{n}/{json|pdf} — una URL prefirmada.
             if (method == "GET" and len(parts) == 5
                     and parts[2] == "versiones" and parts[4] in ("json", "pdf")):
@@ -3464,6 +3488,168 @@ def _pdf_del_borrador(respuesta: dict) -> bytes:
         # vale por su JSON, que es lo que se manda al regulador.
         print(f"[ros] pdf_base64 ilegible: {type(e).__name__}")
         return b""
+
+
+def _leer_version_ros(reporte: dict, numero) -> dict:
+    """El JSON de una versión, desde S3."""
+    v = ros_versiones.version_de(reporte, numero)
+    if v is None or not v.get("json_key"):
+        raise FileNotFoundError(f"versión {numero} sin json")
+    obj = s3.get_object(Bucket=S3_BUCKET, Key=v["json_key"])
+    return json.loads(obj["Body"].read())
+
+
+def ver_version_ros(folio: str, numero: str):
+    """El contenido de una versión, para dibujar el formulario.
+
+    Se devuelve el JSON y no una URL prefirmada: la pantalla lo necesita en
+    memoria para armar los campos, y mandarla a bajarlo aparte sería un viaje
+    de más a S3 por cada vez que alguien abre un ROS.
+    """
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte '{folio}'."})
+    if not (ros_versiones and ros_gereo):
+        return resp(503, {"error": "Las versiones no están disponibles en "
+                                   "este despliegue."})
+    try:
+        doc = _leer_version_ros(r, numero)
+    except FileNotFoundError:
+        return resp(404, {"error": f"El reporte {folio} no tiene la versión "
+                                   f"{numero}."})
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[ros] no pude leer la versión {numero} de {folio}: "
+              f"{type(e).__name__}")
+        return resp(502, {"error": "No pude leer esa versión."})
+
+    pais = ros_versiones.pais_largo(r)
+    editables = [c for c, _ in ros_gereo.SECCIONES.get(pais, [])]
+    return resp(200, {
+        "folio": folio, "version": int(numero), "pais": pais,
+        # Las secciones del formulario, en el orden del regulador, con su
+        # nombre. La pantalla no tiene que saber cuáles son.
+        "secciones": ros_gereo.secciones_de(doc, pais),
+        # Lo que NO se edita, para poder mostrarlo sin ofrecer tocarlo.
+        "meta": doc.get("meta") or {},
+        "editables": editables,
+    })
+
+
+def guardar_version_ros(folio: str, body: dict, actor: str):
+    """Guarda una edición como VERSIÓN NUEVA. El actor llega verificado.
+
+    `actor` es un argumento y no sale del cuerpo: enumerar los campos de
+    identidad que hay que pisar ya falló una vez, por el que nadie listó.
+    """
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte '{folio}'."})
+    if not (ros_versiones and ros_gereo and ros_etapas):
+        return resp(503, {"error": "Las versiones no están disponibles en "
+                                   "este despliegue."})
+    if not ros_mod.editable(r):
+        return resp(409, {"error": "Un reporte enviado no se edita. Para "
+                                   "corregirlo se emite otro."})
+    if not ros_etapas.editable(r):
+        return resp(409, {"error": "Mientras GEREO procesa el envío, el "
+                                   "reporte no se puede editar."})
+
+    base = r.get("version_actual") or 0
+    if not base:
+        return resp(409, {"error": "Este reporte no tiene ninguna versión "
+                                   "guardada todavía."})
+    # SE EDITA SOBRE LA ÚLTIMA VERSIÓN, y el cliente dice cuál creía estar
+    # editando. Si no coinciden, alguien guardó entremedio y pisar su trabajo
+    # en silencio sería peor que hacerle repetir el suyo.
+    #
+    # ES OBLIGATORIO. Si fuera opcional, un cliente que no lo manda se saltea
+    # el control entero — y el control existe justamente para el cliente
+    # distraído. La ruta es nueva: no hay nadie viejo que no lo mande.
+    try:
+        sobre = int(body.get("sobre_version"))
+    except (TypeError, ValueError):
+        return resp(400, {"error": "Falta `sobre_version`: hay que decir qué "
+                                   "versión se estaba editando."})
+    if sobre != int(base):
+        return resp(409, {
+            "error": f"Alguien guardó la versión {base} mientras editabas la "
+                     f"{sobre}. Recargá y volvé a aplicar tus cambios.",
+            "version_actual": base})
+
+    secciones = body.get("secciones")
+    if not isinstance(secciones, dict) or not secciones:
+        return resp(400, {"error": "Falta el contenido editado."})
+
+    try:
+        anterior = _leer_version_ros(r, base)
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[ros] no pude leer la versión {base} de {folio}: "
+              f"{type(e).__name__}")
+        return resp(502, {"error": "No pude leer la versión anterior."})
+
+    # LA FORMA ES LA DE GEREO, ASÍ QUE SE COMPARA CONTRA LA v1 y no contra la
+    # versión anterior. Comparando contra la anterior, el comodín `nulo` deja
+    # lavar un tipo en dos saltos: v1 texto → v2 null (permitido) → v3 número
+    # (permitido), y queda un tipo que GEREO nunca devolvió. Es un GET más.
+    try:
+        original = anterior if base == 1 else _leer_version_ros(r, 1)
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[ros] no pude leer la v1 de {folio}: {type(e).__name__}")
+        return resp(502, {"error": "No pude leer la versión original."})
+
+    pais = ros_versiones.pais_largo(r)
+    editables = [c for c, _ in ros_gereo.SECCIONES.get(pais, [])]
+    if not editables:
+        return resp(409, {"error": f"No sé qué secciones tiene un reporte de "
+                                   f"{r.get('regulador')!r}."})
+    try:
+        nuevo = ros_versiones.fundir(anterior, secciones, editables)
+    except ValueError as e:
+        return resp(400, {"error": str(e)})
+
+    # LA FORMA NO SE NEGOCIA. GEREO usa el JSON tal cual para completar el
+    # formulario del regulador: un campo de más, uno de menos o uno que cambió
+    # de tipo y el reporte se cae del otro lado —o entra mal—. Se rechaza
+    # entero en vez de recortar: arreglar a medias una estructura que no
+    # entendemos es cómo se manda un reporte que parece correcto.
+    problemas = ros_versiones.diferencias_de_forma(original, nuevo)
+    if problemas:
+        return resp(400, {
+            "error": "La edición cambia la estructura del reporte, y eso "
+                     "GEREO no lo acepta. Sólo se pueden cambiar los valores.",
+            "diferencias": problemas[:20]})
+
+    try:
+        actualizado = _crear_version_ros(r, nuevo, actor, origen="edicion")
+    except VersionYaExiste:
+        # Dos guardados a la vez con el mismo `sobre_version`: los dos leyeron
+        # la misma versión y el segundo choca con el `IfNoneMatch` de S3. No es
+        # un fallo de infraestructura y decir «reintentá» haría que el segundo
+        # reintente y vuelva a chocar. Es el mismo caso que el 409 de arriba,
+        # detectado un escalón más abajo.
+        return resp(409, {
+            "error": "Alguien guardó una versión mientras editabas. Recargá y "
+                     "volvé a aplicar tus cambios.",
+            "version_actual": base + 1})
+    except Exception as e:                                       # noqa: BLE001
+        # Sin el mensaje: el de boto puede traer la clave del objeto, y la
+        # clave lleva el folio y el país.
+        print(f"[ros] no pude guardar la edición de {folio}: {type(e).__name__}")
+        return resp(502, {"error": "No pude guardar la versión. Reintentá."})
+
+    # EDITAR ANULA LA REVISIÓN. Lo revisado era la versión anterior, y darla
+    # por buena sobre un contenido que cambió es exactamente lo que el control
+    # existe para evitar.
+    if ros_etapas.etapa_de(actualizado) == "revisado":
+        actualizado = ros_etapas.cambiar(
+            actualizado, "recibido", actor, momento=_now_str(),
+            nota="Se editó el contenido: la revisión anterior ya no vale.")
+
+    _crm_put("ros", folio, actualizado)
+    _safe_audit(user_email=actor, action="ros.version", entity_type="ros",
+                entity_id=folio,
+                new_value={"version": actualizado.get("version_actual")})
+    return resp(201, {"ros": _con_pendientes(actualizado)})
 
 
 def listar_versiones_ros(folio: str):

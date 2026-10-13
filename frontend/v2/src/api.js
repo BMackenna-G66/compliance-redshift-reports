@@ -21,11 +21,16 @@
 import { soloLectura } from './permisos.js';
 
 export class ErrorApi extends Error {
-  constructor(mensaje, { status = 0, codigo = '' } = {}) {
+  constructor(mensaje, { status = 0, codigo = '', datos = null } = {}) {
     super(mensaje);
     this.name = 'ErrorApi';
     this.status = status;
     this.codigo = codigo;
+    // El cuerpo de la respuesta, cuando el backend manda algo más que un
+    // mensaje. El rechazo de una edición de ROS, por ejemplo, viene con la
+    // lista de campos que cambiaron de estructura: sin esto la pantalla sólo
+    // puede decir «no se pudo», que no le sirve a nadie para arreglarlo.
+    this.datos = datos;
   }
 }
 
@@ -105,7 +110,8 @@ export function crearApi({ base, perfil, email, token }) {
       throw new ErrorApi('Sesión expirada — volvé a iniciar sesión.', { status: 401, codigo: 'sesion' });
     }
     if (!r.ok) {
-      throw new ErrorApi(datos?.error || `Error ${r.status}`, { status: r.status });
+      throw new ErrorApi(datos?.error || `Error ${r.status}`,
+                         { status: r.status, datos });
     }
     return datos;
   }

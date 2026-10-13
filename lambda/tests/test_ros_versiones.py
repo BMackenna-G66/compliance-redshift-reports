@@ -383,3 +383,372 @@ class UNA_VERSION_QUE_NO_SE_GUARDO_NO_ES_SILENCIOSA(unittest.TestCase):
         self.assertEqual(codigo["statusCode"], 201)
         self.assertNotIn("version_error", guardado)
         self.assertEqual(len(V.versiones_de(guardado)), 1)
+
+
+# ── La edición: valores sí, estructura no ──────────────────────────────────
+
+class LA_EDICION_NO_DEFORMA_EL_REPORTE(unittest.TestCase):
+    """GEREO usa el JSON tal cual para completar el formulario del regulador.
+    Un campo de más, uno de menos o uno que cambió de tipo y el reporte se cae
+    del otro lado — o peor, entra mal, y nos enteramos por el regulador."""
+
+    BASE = {"s": {"nombre": "X", "monto": 100, "pep": False,
+                  "lista": ["a", "b"], "vacio": None,
+                  "anidado": {"calle": "Falsa", "nro": 123}}}
+
+    def test_cambiar_valores_esta_bien(self):
+        otro = {"s": {"nombre": "Y", "monto": 200, "pep": True,
+                      "lista": ["c", "d"], "vacio": None,
+                      "anidado": {"calle": "Real", "nro": 456}}}
+        self.assertEqual(V.diferencias_de_forma(self.BASE, otro), [])
+
+    def test_UN_CAMPO_VACIO_SE_PUEDE_LLENAR(self):
+        """Es el punto de editar: GEREO deja campos a criterio del analista."""
+        lleno = {"s": {**self.BASE["s"], "vacio": "ahora dice algo"}}
+        self.assertEqual(V.diferencias_de_forma(self.BASE, lleno), [])
+
+    def test_y_uno_lleno_se_puede_vaciar(self):
+        vacio = {"s": {**self.BASE["s"], "nombre": None}}
+        self.assertEqual(V.diferencias_de_forma(self.BASE, vacio), [])
+
+    def test_un_entero_y_un_decimal_son_el_mismo_tipo(self):
+        """Un monto puede venir como 1000 o 1000.0 sin que eso cambie nada."""
+        self.assertEqual(
+            V.diferencias_de_forma(self.BASE,
+                                   {"s": {**self.BASE["s"], "monto": 100.5}}),
+            [])
+
+    def test_un_campo_de_mas_se_rechaza(self):
+        d = V.diferencias_de_forma(self.BASE,
+                                   {"s": {**self.BASE["s"], "inventado": "x"}})
+        self.assertEqual(d, ["sobra «s.inventado»"])
+
+    def test_un_campo_de_menos_tambien(self):
+        sin = {k: v for k, v in self.BASE["s"].items() if k != "pep"}
+        self.assertEqual(V.diferencias_de_forma(self.BASE, {"s": sin}),
+                         ["falta «s.pep»"])
+
+    def test_un_tipo_cambiado_tambien(self):
+        d = V.diferencias_de_forma(self.BASE,
+                                   {"s": {**self.BASE["s"], "monto": "cien"}})
+        self.assertEqual(d, ["«s.monto» era numero y llegó como texto"])
+
+    def test_UN_BOOL_NO_ES_UN_NUMERO(self):
+        """En Python `bool` ES `int`: sin cuidarlo, mandar 1 donde iba `true`
+        pasaría el control y el regulador recibiría otra cosa."""
+        d = V.diferencias_de_forma(self.BASE,
+                                   {"s": {**self.BASE["s"], "pep": 1}})
+        self.assertEqual(d, ["«s.pep» era bool y llegó como numero"])
+
+    def test_EL_LARGO_DE_UNA_LISTA_ES_ESTRUCTURA(self):
+        """Agregar un reportado no es editar un valor: cambia lo que el
+        formulario del regulador va a recibir. Para eso se pide otra
+        generación a GEREO."""
+        mas = {"s": {**self.BASE["s"], "lista": ["a", "b", "c"]}}
+        self.assertEqual(V.diferencias_de_forma(self.BASE, mas),
+                         ["sobra «s.lista[2]»"])
+        menos = {"s": {**self.BASE["s"], "lista": ["a"]}}
+        self.assertEqual(V.diferencias_de_forma(self.BASE, menos),
+                         ["falta «s.lista[1]»"])
+
+    def test_tambien_mira_adentro_de_lo_anidado(self):
+        d = V.diferencias_de_forma(
+            self.BASE,
+            {"s": {**self.BASE["s"], "anidado": {"calle": "Real"}}})
+        self.assertEqual(d, ["falta «s.anidado.nro»"])
+
+
+class SOLO_SE_EDITAN_LAS_SECCIONES_DEL_FORMULARIO(unittest.TestCase):
+    """`meta` dice quién y cuándo generó el reporte; `reglas`, qué se evaluó.
+    Son el registro de lo que hizo la máquina, y una persona editándolos
+    borraría justo la parte que permite auditar."""
+
+    DOC = {"meta": {"generado_con_ia": True}, "reglas": [{"id": "R1"}],
+           "1_antecedentes_operaciones_sospechosas": {"monto": 1},
+           "2_identificacion_reportados": {"nombre": "X"}}
+    EDITABLES = ["1_antecedentes_operaciones_sospechosas",
+                 "2_identificacion_reportados"]
+
+    def test_lo_editado_pisa_y_lo_demas_se_arrastra(self):
+        nuevo = V.fundir(self.DOC,
+                         {"1_antecedentes_operaciones_sospechosas": {"monto": 99}},
+                         self.EDITABLES)
+        self.assertEqual(nuevo["1_antecedentes_operaciones_sospechosas"],
+                         {"monto": 99})
+        self.assertEqual(nuevo["meta"], self.DOC["meta"])
+        self.assertEqual(nuevo["reglas"], self.DOC["reglas"])
+        self.assertEqual(nuevo["2_identificacion_reportados"], {"nombre": "X"})
+
+    def test_NO_SE_PUEDE_EDITAR_META_NI_REGLAS(self):
+        for intruso in ("meta", "reglas"):
+            with self.subTest(intruso), self.assertRaises(ValueError) as c:
+                V.fundir(self.DOC, {intruso: {"lo que sea": 1}}, self.EDITABLES)
+            self.assertIn(intruso, str(c.exception))
+
+    def test_ni_una_seccion_de_otro_pais(self):
+        with self.assertRaises(ValueError):
+            V.fundir(self.DOC, {"4_detalle": {"descripcion": "x"}},
+                     self.EDITABLES)
+
+    def test_fundir_no_muta_el_documento_anterior(self):
+        V.fundir(self.DOC, {"2_identificacion_reportados": {"nombre": "Z"}},
+                 self.EDITABLES)
+        self.assertEqual(self.DOC["2_identificacion_reportados"], {"nombre": "X"})
+
+
+class GuardarUnaEdicion(unittest.TestCase):
+    """El endpoint entero, con dobles."""
+
+    DOC = {"meta": {"generado_con_ia": True}, "reglas": [],
+           "1_antecedentes_operaciones_sospechosas": {"monto": 1, "txt": "a"},
+           "2_identificacion_reportados": {"nombre": "X"}}
+
+    def _guardar(self, secciones, *, etapa="recibido", estado="borrador",
+                 sobre=None, version_actual=1):
+        import io as _io
+        import json as _json
+        import ros_etapas as _E
+        guardado, escrito = {}, []
+        reporte = {"folio": "ROS-2026-0001", "regulador": "UAF-CL",
+                   "estado": estado, "creado_at": "2026-10-13 11:00:00",
+                   "etapa_gereo": etapa, "version_actual": version_actual,
+                   "versiones": [{"version": 1, "origen": "gereo",
+                                  "json_key": "ros/CL/2026/10/ROS-2026-0001/v1.json",
+                                  "json_sha256": "x", "pdf_key": "",
+                                  "pdf_sha256": "", "creada_por": "a@example.com",
+                                  "creada_at": "x"}]}
+
+        class _S3:
+            def get_object(self, **kw):
+                return {"Body": _io.BytesIO(_json.dumps(GuardarUnaEdicion.DOC).encode())}
+            def put_object(self, **kw):
+                escrito.append(kw)
+
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_put", "_safe_audit")}
+        A.s3 = _S3()
+        A._crm_get = lambda t, k: reporte if t == "ros" else None
+        A._crm_put = lambda t, k, v: guardado.update(ros=v)
+        A._safe_audit = lambda **k: None
+        try:
+            # `sobre_version` es obligatorio: por defecto va el que el
+            # cliente real mandaría.
+            cuerpo = {"secciones": secciones,
+                      "sobre_version": version_actual if sobre is None else sobre}
+            r = A.guardar_version_ros("ROS-2026-0001", cuerpo,
+                                      "oficial@example.com")
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+        return r, guardado.get("ros", {}), escrito
+
+    def test_el_camino_normal_crea_la_version_2(self):
+        r, guardado, escrito = self._guardar(
+            {"1_antecedentes_operaciones_sospechosas": {"monto": 99, "txt": "b"}})
+        self.assertEqual(r["statusCode"], 201)
+        self.assertEqual(guardado["version_actual"], 2)
+        self.assertEqual(V.versiones_de(guardado)[-1]["origen"], "edicion")
+        self.assertEqual(V.versiones_de(guardado)[-1]["creada_por"],
+                         "oficial@example.com")
+
+    def test_la_version_1_no_se_toca(self):
+        """Lo que se aprueba es una versión específica."""
+        _, _, escrito = self._guardar(
+            {"1_antecedentes_operaciones_sospechosas": {"monto": 99, "txt": "b"}})
+        claves = [e["Key"] for e in escrito]
+        self.assertEqual(claves, ["ros/CL/2026/10/ROS-2026-0001/v2.json"])
+        self.assertTrue(all(e.get("IfNoneMatch") == "*" for e in escrito))
+
+    def test_meta_y_reglas_se_arrastran(self):
+        _, _, escrito = self._guardar(
+            {"1_antecedentes_operaciones_sospechosas": {"monto": 99, "txt": "b"}})
+        doc = json.loads(escrito[0]["Body"].decode("utf-8"))
+        self.assertEqual(doc["meta"], self.DOC["meta"])
+        self.assertEqual(doc["2_identificacion_reportados"], {"nombre": "X"})
+
+    def test_UNA_EDICION_QUE_DEFORMA_SE_RECHAZA_ENTERA(self):
+        r, guardado, escrito = self._guardar(
+            {"1_antecedentes_operaciones_sospechosas": {"monto": 99}})
+        self.assertEqual(r["statusCode"], 400)
+        cuerpo = json.loads(r["body"])
+        self.assertIn("estructura", cuerpo["error"])
+        self.assertTrue(cuerpo["diferencias"])
+        self.assertEqual(escrito, [], "escribió igual")
+        self.assertEqual(guardado, {}, "guardó igual")
+
+    def test_EDITAR_ANULA_LA_REVISION(self):
+        """Lo revisado era la versión anterior; darla por buena sobre un
+        contenido que cambió es lo que el control existe para evitar."""
+        r, guardado, _ = self._guardar(
+            {"1_antecedentes_operaciones_sospechosas": {"monto": 99, "txt": "b"}},
+            etapa="revisado")
+        self.assertEqual(r["statusCode"], 201)
+        import ros_etapas as _E
+        self.assertEqual(_E.etapa_de(guardado), "recibido")
+        self.assertIn("revisión", _E.historial_de(guardado)[-1]["nota"])
+
+    def test_un_reporte_enviado_no_se_edita(self):
+        r, _, escrito = self._guardar(
+            {"1_antecedentes_operaciones_sospechosas": {"monto": 99, "txt": "b"}},
+            estado="enviado")
+        self.assertEqual(r["statusCode"], 409)
+        self.assertEqual(escrito, [])
+
+    def test_mientras_gereo_procesa_tampoco(self):
+        r, _, escrito = self._guardar(
+            {"1_antecedentes_operaciones_sospechosas": {"monto": 99, "txt": "b"}},
+            etapa="enviando")
+        self.assertEqual(r["statusCode"], 409)
+        self.assertEqual(escrito, [])
+
+    def test_DOS_ANALISTAS_A_LA_VEZ_NO_SE_PISAN(self):
+        """El cliente dice qué versión creía editar. Pisar el trabajo de otro
+        en silencio es peor que hacerle repetir el suyo."""
+        r, _, escrito = self._guardar(
+            {"1_antecedentes_operaciones_sospechosas": {"monto": 99, "txt": "b"}},
+            sobre=1, version_actual=3)
+        self.assertEqual(r["statusCode"], 409)
+        self.assertIn("mientras editabas", json.loads(r["body"])["error"])
+        self.assertEqual(escrito, [])
+
+    def test_sin_contenido_no_hace_nada(self):
+        for vacio in ({}, None, "texto", []):
+            with self.subTest(vacio=vacio):
+                r, _, escrito = self._guardar(vacio)
+                self.assertEqual(r["statusCode"], 400)
+                self.assertEqual(escrito, [])
+
+
+class LaFormaEsLaDeGEREO(unittest.TestCase):
+    """Se compara contra la v1, no contra la versión anterior.
+
+    Comparando contra la anterior, el comodín `nulo` deja lavar un tipo en
+    dos saltos: v1 texto → v2 null (permitido) → v3 número (permitido). Queda
+    un tipo que GEREO nunca devolvió, y el reporte entra mal al regulador.
+    """
+
+    def test_dos_saltos_no_lavan_un_tipo(self):
+        v1 = {"s": {"rut": "11.111.111-1"}}
+        v2 = {"s": {"rut": None}}            # vaciar: permitido
+        v3 = {"s": {"rut": 11111111}}        # llenar con OTRO tipo
+        # Contra la versión anterior, el salto pasa…
+        self.assertEqual(V.diferencias_de_forma(v2, v3), [])
+        # …y contra la v1, que es la forma de GEREO, no.
+        self.assertEqual(V.diferencias_de_forma(v1, v3),
+                         ["«s.rut» era texto y llegó como numero"])
+
+    def test_vaciar_y_volver_a_llenar_con_el_mismo_tipo_si(self):
+        v1 = {"s": {"rut": "11.111.111-1"}}
+        self.assertEqual(V.diferencias_de_forma(v1, {"s": {"rut": "22.222.222-2"}}),
+                         [])
+
+
+class CadaReguladorEncuentraSusSecciones(unittest.TestCase):
+    """Si el mapeo falla, el resultado son secciones vacías SIN error: el
+    formulario sale en blanco y nadie sabe por qué. Por eso se verifica el
+    camino entero, de regulador a secciones editables."""
+
+    def test_los_tres(self):
+        import ros_gereo as RG
+        for regulador, pais in (("UAF-CL", "Chile"), ("UIAF-CO", "Colombia"),
+                                ("UIF-AR", "Argentina")):
+            with self.subTest(regulador):
+                largo = V.pais_largo({"regulador": regulador})
+                self.assertEqual(largo, pais)
+                editables = [c for c, _ in RG.SECCIONES.get(largo, [])]
+                self.assertTrue(editables,
+                                f"{regulador} se queda sin secciones editables")
+
+    def test_un_regulador_desconocido_no_devuelve_un_formulario_vacio(self):
+        self.assertEqual(V.pais_largo({"regulador": "XXX-ZZ"}), "")
+
+
+class LoQueGuardarRechaza(unittest.TestCase):
+    """Los casos de borde del endpoint."""
+
+    def _pedir(self, cuerpo, version_actual=2):
+        import io as _io
+        import json as _json
+        reporte = {"folio": "ROS-2026-0001", "regulador": "UAF-CL",
+                   "estado": "borrador", "creado_at": "2026-10-13 11:00:00",
+                   "etapa_gereo": "recibido", "version_actual": version_actual,
+                   "versiones": [{"version": n, "origen": "gereo",
+                                  "json_key": f"k{n}", "json_sha256": "x",
+                                  "pdf_key": "", "pdf_sha256": "",
+                                  "creada_por": "a@example.com", "creada_at": "x"}
+                                 for n in range(1, version_actual + 1)]}
+
+        class _S3:
+            def get_object(self, **kw):
+                return {"Body": _io.BytesIO(_json.dumps(
+                    GuardarUnaEdicion.DOC).encode())}
+            def put_object(self, **kw):
+                pass
+
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_put", "_safe_audit")}
+        A.s3 = _S3()
+        A._crm_get = lambda t, k: reporte if t == "ros" else None
+        A._crm_put = lambda t, k, v: None
+        A._safe_audit = lambda **k: None
+        try:
+            return A.guardar_version_ros("ROS-2026-0001", cuerpo, "o@example.com")
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+
+    def test_SIN_sobre_version_no_se_guarda(self):
+        """Si fuera opcional, el cliente distraído se saltea el control — y el
+        control existe justamente para el cliente distraído."""
+        r = self._pedir({"secciones": {"1_antecedentes_operaciones_sospechosas":
+                                       {"monto": 9, "txt": "b"}}})
+        self.assertEqual(r["statusCode"], 400)
+        self.assertIn("sobre_version", json.loads(r["body"])["error"])
+
+    def test_un_sobre_version_que_no_es_numero_tampoco_revienta(self):
+        for malo in ("x", None, [], {}, "2.5"):
+            with self.subTest(malo=malo):
+                r = self._pedir({"secciones": {"s": {}}, "sobre_version": malo})
+                self.assertEqual(r["statusCode"], 400)
+
+    def test_un_choque_en_S3_es_409_y_no_502(self):
+        """Dos guardados a la vez con el mismo `sobre_version`: el segundo
+        choca con el IfNoneMatch. Decir «reintentá» haría que reintente y
+        vuelva a chocar."""
+        import io as _io
+        import json as _json
+        reporte = {"folio": "ROS-2026-0001", "regulador": "UAF-CL",
+                   "estado": "borrador", "creado_at": "2026-10-13 11:00:00",
+                   "etapa_gereo": "recibido", "version_actual": 1,
+                   "versiones": [{"version": 1, "origen": "gereo",
+                                  "json_key": "k1", "json_sha256": "x",
+                                  "pdf_key": "", "pdf_sha256": "",
+                                  "creada_por": "a@example.com", "creada_at": "x"}]}
+
+        class _S3Ocupado:
+            def get_object(self, **kw):
+                return {"Body": _io.BytesIO(_json.dumps(
+                    GuardarUnaEdicion.DOC).encode())}
+            def put_object(self, **kw):
+                e = Exception("ya existe")
+                e.response = {"Error": {"Code": "PreconditionFailed"}}
+                raise e
+
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_put", "_safe_audit")}
+        A.s3 = _S3Ocupado()
+        A._crm_get = lambda t, k: reporte if t == "ros" else None
+        A._crm_put = lambda t, k, v: None
+        A._safe_audit = lambda **k: None
+        try:
+            r = A.guardar_version_ros(
+                "ROS-2026-0001",
+                {"secciones": {"1_antecedentes_operaciones_sospechosas":
+                               {"monto": 9, "txt": "b"}},
+                 "sobre_version": 1},
+                "o@example.com")
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+        self.assertEqual(r["statusCode"], 409)
+        self.assertIn("Recargá", json.loads(r["body"])["error"])
