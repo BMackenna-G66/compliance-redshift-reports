@@ -222,6 +222,6 @@ describe('los ids del análisis individual', () => {
   it('no descarta ids que no son numéricos', () => {
     // El backend acepta otros identificadores; filtrarlos acá los perdería
     // en silencio.
-    assert.deepEqual(leerIds('76.543.210-K, 111'), ['76.543.210-K', '111']);
+    assert.deepEqual(leerIds('11.111.111-K, 111'), ['11.111.111-K', '111']);
   });
 });

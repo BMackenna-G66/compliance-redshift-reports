@@ -628,9 +628,9 @@ class LaFormaEsLaDeGEREO(unittest.TestCase):
     """
 
     def test_dos_saltos_no_lavan_un_tipo(self):
-        v1 = {"s": {"rut": "76.123.456-7"}}
+        v1 = {"s": {"rut": "11.111.111-1"}}
         v2 = {"s": {"rut": None}}            # vaciar: permitido
-        v3 = {"s": {"rut": 76123456}}        # llenar con OTRO tipo
+        v3 = {"s": {"rut": 11111111}}        # llenar con OTRO tipo
         # Contra la versión anterior, el salto pasa…
         self.assertEqual(V.diferencias_de_forma(v2, v3), [])
         # …y contra la v1, que es la forma de GEREO, no.
@@ -638,8 +638,8 @@ class LaFormaEsLaDeGEREO(unittest.TestCase):
                          ["«s.rut» era texto y llegó como numero"])
 
     def test_vaciar_y_volver_a_llenar_con_el_mismo_tipo_si(self):
-        v1 = {"s": {"rut": "76.123.456-7"}}
-        self.assertEqual(V.diferencias_de_forma(v1, {"s": {"rut": "77.000.000-0"}}),
+        v1 = {"s": {"rut": "11.111.111-1"}}
+        self.assertEqual(V.diferencias_de_forma(v1, {"s": {"rut": "22.222.222-2"}}),
                          [])
 
 

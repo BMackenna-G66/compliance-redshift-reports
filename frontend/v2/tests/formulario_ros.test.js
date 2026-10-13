@@ -103,7 +103,7 @@ describe('LOS MONTOS SE LEEN EN CASTELLANO', () => {
     // Un RUT o un número de repertorio son texto: convertirlos perdería los
     // ceros de adelante.
     assert.strictEqual(coaccionar('007', '008'), '008');
-    assert.strictEqual(coaccionar('76.123.456-7', '77.000.000-0'), '77.000.000-0');
+    assert.strictEqual(coaccionar('11.111.111-1', '22.222.222-2'), '22.222.222-2');
   });
 
   it('un campo vacío se puede llenar y volver a vaciar', () => {
@@ -113,7 +113,7 @@ describe('LOS MONTOS SE LEEN EN CASTELLANO', () => {
 
   it('sólo los números se muestran formateados', () => {
     assert.equal(paraMostrar(1234567), '1.234.567');
-    assert.equal(paraMostrar('76.123.456-7'), '76.123.456-7');
+    assert.equal(paraMostrar('11.111.111-1'), '11.111.111-1');
     assert.equal(paraMostrar(null), '');
   });
 });
