@@ -531,9 +531,10 @@ class GuardarUnaEdicion(unittest.TestCase):
         A._crm_put = lambda t, k, v: guardado.update(ros=v)
         A._safe_audit = lambda **k: None
         try:
-            cuerpo = {"secciones": secciones}
-            if sobre is not None:
-                cuerpo["sobre_version"] = sobre
+            # `sobre_version` es obligatorio: por defecto va el que el
+            # cliente real mandaría.
+            cuerpo = {"secciones": secciones,
+                      "sobre_version": version_actual if sobre is None else sobre}
             r = A.guardar_version_ros("ROS-2026-0001", cuerpo,
                                       "oficial@example.com")
         finally:
@@ -616,3 +617,138 @@ class GuardarUnaEdicion(unittest.TestCase):
                 r, _, escrito = self._guardar(vacio)
                 self.assertEqual(r["statusCode"], 400)
                 self.assertEqual(escrito, [])
+
+
+class LaFormaEsLaDeGEREO(unittest.TestCase):
+    """Se compara contra la v1, no contra la versión anterior.
+
+    Comparando contra la anterior, el comodín `nulo` deja lavar un tipo en
+    dos saltos: v1 texto → v2 null (permitido) → v3 número (permitido). Queda
+    un tipo que GEREO nunca devolvió, y el reporte entra mal al regulador.
+    """
+
+    def test_dos_saltos_no_lavan_un_tipo(self):
+        v1 = {"s": {"rut": "76.123.456-7"}}
+        v2 = {"s": {"rut": None}}            # vaciar: permitido
+        v3 = {"s": {"rut": 76123456}}        # llenar con OTRO tipo
+        # Contra la versión anterior, el salto pasa…
+        self.assertEqual(V.diferencias_de_forma(v2, v3), [])
+        # …y contra la v1, que es la forma de GEREO, no.
+        self.assertEqual(V.diferencias_de_forma(v1, v3),
+                         ["«s.rut» era texto y llegó como numero"])
+
+    def test_vaciar_y_volver_a_llenar_con_el_mismo_tipo_si(self):
+        v1 = {"s": {"rut": "76.123.456-7"}}
+        self.assertEqual(V.diferencias_de_forma(v1, {"s": {"rut": "77.000.000-0"}}),
+                         [])
+
+
+class CadaReguladorEncuentraSusSecciones(unittest.TestCase):
+    """Si el mapeo falla, el resultado son secciones vacías SIN error: el
+    formulario sale en blanco y nadie sabe por qué. Por eso se verifica el
+    camino entero, de regulador a secciones editables."""
+
+    def test_los_tres(self):
+        import ros_gereo as RG
+        for regulador, pais in (("UAF-CL", "Chile"), ("UIAF-CO", "Colombia"),
+                                ("UIF-AR", "Argentina")):
+            with self.subTest(regulador):
+                largo = V.pais_largo({"regulador": regulador})
+                self.assertEqual(largo, pais)
+                editables = [c for c, _ in RG.SECCIONES.get(largo, [])]
+                self.assertTrue(editables,
+                                f"{regulador} se queda sin secciones editables")
+
+    def test_un_regulador_desconocido_no_devuelve_un_formulario_vacio(self):
+        self.assertEqual(V.pais_largo({"regulador": "XXX-ZZ"}), "")
+
+
+class LoQueGuardarRechaza(unittest.TestCase):
+    """Los casos de borde del endpoint."""
+
+    def _pedir(self, cuerpo, version_actual=2):
+        import io as _io
+        import json as _json
+        reporte = {"folio": "ROS-2026-0001", "regulador": "UAF-CL",
+                   "estado": "borrador", "creado_at": "2026-10-13 11:00:00",
+                   "etapa_gereo": "recibido", "version_actual": version_actual,
+                   "versiones": [{"version": n, "origen": "gereo",
+                                  "json_key": f"k{n}", "json_sha256": "x",
+                                  "pdf_key": "", "pdf_sha256": "",
+                                  "creada_por": "a@example.com", "creada_at": "x"}
+                                 for n in range(1, version_actual + 1)]}
+
+        class _S3:
+            def get_object(self, **kw):
+                return {"Body": _io.BytesIO(_json.dumps(
+                    GuardarUnaEdicion.DOC).encode())}
+            def put_object(self, **kw):
+                pass
+
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_put", "_safe_audit")}
+        A.s3 = _S3()
+        A._crm_get = lambda t, k: reporte if t == "ros" else None
+        A._crm_put = lambda t, k, v: None
+        A._safe_audit = lambda **k: None
+        try:
+            return A.guardar_version_ros("ROS-2026-0001", cuerpo, "o@example.com")
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+
+    def test_SIN_sobre_version_no_se_guarda(self):
+        """Si fuera opcional, el cliente distraído se saltea el control — y el
+        control existe justamente para el cliente distraído."""
+        r = self._pedir({"secciones": {"1_antecedentes_operaciones_sospechosas":
+                                       {"monto": 9, "txt": "b"}}})
+        self.assertEqual(r["statusCode"], 400)
+        self.assertIn("sobre_version", json.loads(r["body"])["error"])
+
+    def test_un_sobre_version_que_no_es_numero_tampoco_revienta(self):
+        for malo in ("x", None, [], {}, "2.5"):
+            with self.subTest(malo=malo):
+                r = self._pedir({"secciones": {"s": {}}, "sobre_version": malo})
+                self.assertEqual(r["statusCode"], 400)
+
+    def test_un_choque_en_S3_es_409_y_no_502(self):
+        """Dos guardados a la vez con el mismo `sobre_version`: el segundo
+        choca con el IfNoneMatch. Decir «reintentá» haría que reintente y
+        vuelva a chocar."""
+        import io as _io
+        import json as _json
+        reporte = {"folio": "ROS-2026-0001", "regulador": "UAF-CL",
+                   "estado": "borrador", "creado_at": "2026-10-13 11:00:00",
+                   "etapa_gereo": "recibido", "version_actual": 1,
+                   "versiones": [{"version": 1, "origen": "gereo",
+                                  "json_key": "k1", "json_sha256": "x",
+                                  "pdf_key": "", "pdf_sha256": "",
+                                  "creada_por": "a@example.com", "creada_at": "x"}]}
+
+        class _S3Ocupado:
+            def get_object(self, **kw):
+                return {"Body": _io.BytesIO(_json.dumps(
+                    GuardarUnaEdicion.DOC).encode())}
+            def put_object(self, **kw):
+                e = Exception("ya existe")
+                e.response = {"Error": {"Code": "PreconditionFailed"}}
+                raise e
+
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_put", "_safe_audit")}
+        A.s3 = _S3Ocupado()
+        A._crm_get = lambda t, k: reporte if t == "ros" else None
+        A._crm_put = lambda t, k, v: None
+        A._safe_audit = lambda **k: None
+        try:
+            r = A.guardar_version_ros(
+                "ROS-2026-0001",
+                {"secciones": {"1_antecedentes_operaciones_sospechosas":
+                               {"monto": 9, "txt": "b"}},
+                 "sobre_version": 1},
+                "o@example.com")
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+        self.assertEqual(r["statusCode"], 409)
+        self.assertIn("Recargá", json.loads(r["body"])["error"])

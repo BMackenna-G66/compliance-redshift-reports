@@ -2653,9 +2653,15 @@ def handler(event, context):  # noqa: ARG001
             # GET /ros/{folio}/versiones — las fichas, sin bajar nada.
             if method == "GET" and len(parts) == 3 and parts[2] == "versiones":
                 return listar_versiones_ros(parts[1])
-            # GET /ros/{folio}/versiones/{n} — el contenido, para el formulario.
+            # GET /ros/{folio}/versiones/{n} — el contenido, para el
+            # formulario. RUTA NUEVA, así que exige token desde el día uno:
+            # devuelve el reporte ENTERO que se le manda al regulador, y
+            # ningún bundle viejo la llama.
             if (method == "GET" and len(parts) == 4
                     and parts[2] == "versiones"):
+                exigido, error = _identidad(event, exige=True)
+                if error:
+                    return error
                 return ver_version_ros(parts[1], parts[3])
             # POST /ros/{folio}/versiones — guardar una edición.
             #
@@ -3555,8 +3561,16 @@ def guardar_version_ros(folio: str, body: dict, actor: str):
     # SE EDITA SOBRE LA ÚLTIMA VERSIÓN, y el cliente dice cuál creía estar
     # editando. Si no coinciden, alguien guardó entremedio y pisar su trabajo
     # en silencio sería peor que hacerle repetir el suyo.
-    sobre = body.get("sobre_version")
-    if sobre is not None and int(sobre) != int(base):
+    #
+    # ES OBLIGATORIO. Si fuera opcional, un cliente que no lo manda se saltea
+    # el control entero — y el control existe justamente para el cliente
+    # distraído. La ruta es nueva: no hay nadie viejo que no lo mande.
+    try:
+        sobre = int(body.get("sobre_version"))
+    except (TypeError, ValueError):
+        return resp(400, {"error": "Falta `sobre_version`: hay que decir qué "
+                                   "versión se estaba editando."})
+    if sobre != int(base):
         return resp(409, {
             "error": f"Alguien guardó la versión {base} mientras editabas la "
                      f"{sobre}. Recargá y volvé a aplicar tus cambios.",
@@ -3573,8 +3587,21 @@ def guardar_version_ros(folio: str, body: dict, actor: str):
               f"{type(e).__name__}")
         return resp(502, {"error": "No pude leer la versión anterior."})
 
+    # LA FORMA ES LA DE GEREO, ASÍ QUE SE COMPARA CONTRA LA v1 y no contra la
+    # versión anterior. Comparando contra la anterior, el comodín `nulo` deja
+    # lavar un tipo en dos saltos: v1 texto → v2 null (permitido) → v3 número
+    # (permitido), y queda un tipo que GEREO nunca devolvió. Es un GET más.
+    try:
+        original = anterior if base == 1 else _leer_version_ros(r, 1)
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[ros] no pude leer la v1 de {folio}: {type(e).__name__}")
+        return resp(502, {"error": "No pude leer la versión original."})
+
     pais = ros_versiones.pais_largo(r)
     editables = [c for c, _ in ros_gereo.SECCIONES.get(pais, [])]
+    if not editables:
+        return resp(409, {"error": f"No sé qué secciones tiene un reporte de "
+                                   f"{r.get('regulador')!r}."})
     try:
         nuevo = ros_versiones.fundir(anterior, secciones, editables)
     except ValueError as e:
@@ -3585,7 +3612,7 @@ def guardar_version_ros(folio: str, body: dict, actor: str):
     # de tipo y el reporte se cae del otro lado —o entra mal—. Se rechaza
     # entero en vez de recortar: arreglar a medias una estructura que no
     # entendemos es cómo se manda un reporte que parece correcto.
-    problemas = ros_versiones.diferencias_de_forma(anterior, nuevo)
+    problemas = ros_versiones.diferencias_de_forma(original, nuevo)
     if problemas:
         return resp(400, {
             "error": "La edición cambia la estructura del reporte, y eso "
@@ -3594,9 +3621,20 @@ def guardar_version_ros(folio: str, body: dict, actor: str):
 
     try:
         actualizado = _crear_version_ros(r, nuevo, actor, origen="edicion")
+    except VersionYaExiste:
+        # Dos guardados a la vez con el mismo `sobre_version`: los dos leyeron
+        # la misma versión y el segundo choca con el `IfNoneMatch` de S3. No es
+        # un fallo de infraestructura y decir «reintentá» haría que el segundo
+        # reintente y vuelva a chocar. Es el mismo caso que el 409 de arriba,
+        # detectado un escalón más abajo.
+        return resp(409, {
+            "error": "Alguien guardó una versión mientras editabas. Recargá y "
+                     "volvé a aplicar tus cambios.",
+            "version_actual": base + 1})
     except Exception as e:                                       # noqa: BLE001
-        print(f"[ros] no pude guardar la edición de {folio}: "
-              f"{type(e).__name__}: {e}")
+        # Sin el mensaje: el de boto puede traer la clave del objeto, y la
+        # clave lleva el folio y el país.
+        print(f"[ros] no pude guardar la edición de {folio}: {type(e).__name__}")
         return resp(502, {"error": "No pude guardar la versión. Reintentá."})
 
     # EDITAR ANULA LA REVISIÓN. Lo revisado era la versión anterior, y darla

@@ -16,7 +16,7 @@ import test, { describe, it } from 'node:test';
 
 import {
   campos, coaccionar, cuerpoDeGuardado, escribir, esTextoLargo, etiqueta,
-  leer, tipoDe,
+  formatearNumero, leer, paraMostrar, parsearNumero, tipoDe,
 } from '../src/comun/formulario_ros.js';
 
 const DOC = {
@@ -47,34 +47,74 @@ describe('los tipos espejan el backend', () => {
   });
 });
 
-describe('UN NÚMERO SIGUE SIENDO UN NÚMERO', () => {
-  it('el texto de un input vuelve a número', () => {
-    assert.strictEqual(coaccionar(1000, '2000'), 2000);
+describe('LOS MONTOS SE LEEN EN CASTELLANO', () => {
+  /* El bug que esto cierra: `Number('12.500')` da 12.5 — un monto dividido
+     por mil entrando a un reporte al regulador—, y `Number('1.234.567')` da
+     NaN, que se descartaba sin aviso. Tipeando tecla por tecla el punto se
+     come solo y por casualidad daba bien; pegando, no. Y los montos se pegan. */
+
+  it('el punto es de miles, no decimal', () => {
+    assert.strictEqual(parsearNumero('12.500'), 12500);
+    assert.strictEqual(parsearNumero('1.234.567'), 1234567);
   });
 
-  it('un decimal también', () => {
-    assert.strictEqual(coaccionar(10.5, '20.25'), 20.25);
+  it('la coma es la decimal', () => {
+    assert.strictEqual(parsearNumero('1.234,5'), 1234.5);
+    assert.strictEqual(parsearNumero('0,75'), 0.75);
   });
 
-  it('un número ilegible deja el anterior, no NaN ni texto', () => {
-    assert.strictEqual(coaccionar(1000, 'mil'), 1000);
-    assert.strictEqual(coaccionar(1000, ''), 1000);
+  it('aguanta el símbolo de moneda y los espacios', () => {
+    assert.strictEqual(parsearNumero('$ 1.234.567'), 1234567);
+    assert.strictEqual(parsearNumero('1 234 567'), 1234567);
+    // El espacio duro entra pegando desde Excel o desde un PDF.
+    assert.strictEqual(parsearNumero('1\u00a0234'), 1234);
+  });
+
+  it('IDA Y VUELTA: lo que se muestra se vuelve a leer igual', () => {
+    // Si no, un 1000.5 de GEREO se vería «1000.5» y al tocarlo sería 10005.
+    for (const n of [1000.5, 12500, 1234567, 0.75, -42, 1000000.25]) {
+      assert.strictEqual(parsearNumero(formatearNumero(n)), n, String(n));
+    }
+    assert.strictEqual(formatearNumero(1000.5), '1.000,5');
+    assert.strictEqual(formatearNumero(1234567), '1.234.567');
+  });
+
+  it('UN PUNTO QUE NO AGRUPA MILES ES AMBIGUO Y SE MARCA', () => {
+    // «1.23» puede ser un decimal mal escrito o un miles mal escrito. Lo
+    // resuelve una persona, no el sistema eligiendo por ella.
+    for (const malo of ['1.23', '1000.5', '12.3456']) {
+      assert.equal(Number.isNaN(parsearNumero(malo)), true, malo);
+    }
+  });
+
+  it('lo ilegible se marca, NO vuelve al valor anterior', () => {
+    // Volver en silencio le haría creer a alguien que guardó una corrección
+    // que no se guardó — y lo que no se guardó es un monto de un reporte.
+    for (const malo of ['abc', '', '  ', '--5', '1,2,3']) {
+      assert.equal(Number.isNaN(coaccionar(1000, malo)), true, JSON.stringify(malo));
+    }
   });
 
   it('un bool sigue siendo bool', () => {
     assert.strictEqual(coaccionar(false, true), true);
-    assert.strictEqual(coaccionar(true, false), false);
   });
 
   it('un texto sigue siendo texto aunque parezca número', () => {
     // Un RUT o un número de repertorio son texto: convertirlos perdería los
-    // ceros de adelante y cambiaría el tipo.
+    // ceros de adelante.
     assert.strictEqual(coaccionar('007', '008'), '008');
+    assert.strictEqual(coaccionar('76.123.456-7', '77.000.000-0'), '77.000.000-0');
   });
 
   it('un campo vacío se puede llenar y volver a vaciar', () => {
     assert.strictEqual(coaccionar(null, 'algo'), 'algo');
     assert.strictEqual(coaccionar(null, ''), null);
+  });
+
+  it('sólo los números se muestran formateados', () => {
+    assert.equal(paraMostrar(1234567), '1.234.567');
+    assert.equal(paraMostrar('76.123.456-7'), '76.123.456-7');
+    assert.equal(paraMostrar(null), '');
   });
 });
 

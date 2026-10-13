@@ -108,11 +108,10 @@ export function coaccionar(valorOriginal, crudo) {
   const tipo = tipoDe(valorOriginal);
   if (tipo === 'bool') return Boolean(crudo);
   if (tipo === 'numero') {
-    if (crudo === '' || crudo === null) return valorOriginal;
-    const n = Number(crudo);
-    // Un número ilegible NO se guarda como texto ni como NaN: se deja el
-    // anterior. El campo rechaza la tecla, que es lo que espera quien escribe.
-    return Number.isFinite(n) ? n : valorOriginal;
+    // Devuelve NaN si no se puede leer, y el llamador MARCA EL CAMPO EN ERROR
+    // y bloquea el guardado. No se vuelve al valor anterior en silencio: eso
+    // le haría creer a alguien que guardó una corrección que no se guardó.
+    return parsearNumero(crudo);
   }
   // `nulo` se puede llenar con texto, y vaciarlo lo devuelve a nulo: los dos
   // lados lo aceptan, por eso el backend lo trata como comodín.
@@ -160,4 +159,47 @@ export function cuerpoDeGuardado(secciones, borradores, versionActual) {
       : s.contenido;
   }
   return { secciones: fuera, sobre_version: versionActual };
+}
+
+
+/* ── Los números, en castellano ───────────────────────────────────────────
+   LOS TRES PAÍSES ESCRIBEN CON PUNTO DE MILES Y COMA DECIMAL. `Number()` lee
+   el punto como decimal, y eso ya corrompió montos: «12.500» se guardaba como
+   12,5 — un monto dividido por mil entrando a un reporte al regulador— y
+   «1.234.567» se descartaba sin aviso. Tipeando tecla por tecla el punto se
+   come solo y por casualidad daba bien; pegando, no. Y los montos se pegan.
+
+   Por eso el valor se MUESTRA con el mismo formato con el que se lee: si
+   GEREO devuelve 1000.5 y la pantalla escribe «1000.5», al tocar ese campo se
+   volvería 10005.                                                          */
+
+const SIN_PUNTOS = /^-?\d+(,\d+)?$/;
+const CON_MILES = /^-?\d{1,3}(\.\d{3})+(,\d+)?$/;
+
+/** Un número escrito en castellano → número. `NaN` si no se puede leer. */
+export function parsearNumero(texto) {
+  if (typeof texto === 'number') return Number.isFinite(texto) ? texto : NaN;
+  // El espacio duro entra pegando desde Excel o desde un PDF.
+  const limpio = String(texto ?? '').trim().replace(/[$\s\u00a0]/g, '');
+  if (limpio === '') return NaN;
+  // Un punto que NO forma grupos de miles —«1.23»— es ambiguo: puede ser un
+  // decimal mal escrito o un miles mal escrito. Se marca error y lo resuelve
+  // una persona, en vez de que el sistema elija por ella.
+  const valido = limpio.includes('.') ? CON_MILES.test(limpio)
+                                      : SIN_PUNTOS.test(limpio);
+  if (!valido) return NaN;
+  const n = Number(limpio.replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/** Número → como se escribe acá. Es la vuelta exacta de `parsearNumero`. */
+export function formatearNumero(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '';
+  return new Intl.NumberFormat('es-CL', { maximumFractionDigits: 20 }).format(n);
+}
+
+/** Cómo se muestra un valor en su campo. */
+export function paraMostrar(valor) {
+  if (tipoDe(valor) === 'numero') return formatearNumero(valor);
+  return valor ?? '';
 }
