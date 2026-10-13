@@ -2624,9 +2624,21 @@ def handler(event, context):  # noqa: ARG001
                 # rechazar la request —puede ser el front mandando un dato
                 # viejo— sino registrar a quien realmente la hizo. El campo
                 # del cuerpo deja de tener efecto, que es el punto.
+                #
+                # SON CUATRO NOMBRES PARA LA MISMA COSA, y enumerarlos es
+                # frágil. La primera versión de esto pisaba `actor_email` y
+                # `quien` y se olvidaba de `creado_por` — que es justamente el
+                # que `crear_ros` prefiere. Con un token válido se podía crear
+                # un ROS a nombre de otra persona, y ese nombre entraba al
+                # historial de un registro regulatorio.
+                #
+                # Por eso en el PR 6 las funciones nuevas reciben el actor
+                # como ARGUMENTO desde acá y no lo leen del cuerpo nunca. Esta
+                # lista existe sólo para las que ya estaban escritas, y falla
+                # exactamente así: por el campo que nadie puso en la lista.
                 body = dict(body or {})
-                body["actor_email"] = quien["email"]
-                body["quien"] = quien["email"]
+                for campo in ("actor_email", "quien", "creado_por", "user_email"):
+                    body[campo] = quien["email"]
 
             if method == "GET" and parts == ["ros"]:
                 return listar_ros()

@@ -283,3 +283,91 @@ class ElTramoTransitorio(unittest.TestCase):
         self.assertEqual(
             [a for a in vistos["auditoria"] if a.get("action") == "api.sin_token"],
             [])
+
+
+class SOLO_EL_400_ES_UN_TOKEN_INVALIDO(unittest.TestCase):
+    """Los otros 4xx no son culpa del token, y tratarlos como tal le diría a
+    TODO EL MUNDO «volvé a entrar» por un problema de configuración nuestro
+    — y en el paso 2, los dejaría a todos afuera con el diagnóstico
+    equivocado."""
+
+    def _con(self, codigo):
+        orig = F.urllib.request.urlopen
+        F.urllib.request.urlopen = _error_http(codigo)
+        self.addCleanup(lambda: setattr(F.urllib.request, "urlopen", orig))
+
+    def test_400_si(self):
+        self._con(400)
+        with self.assertRaises(F.TokenInvalido):
+            F.verificar(TOKEN)
+
+    def test_403_NO_es_token_invalido(self):
+        """Pasa si alguien restringe la apiKey por referer en GCP, que es el
+        endurecimiento que Google recomienda. La Lambda no manda Referer."""
+        self._con(403)
+        with self.assertRaises(Exception) as c:
+            F.verificar(TOKEN)
+        self.assertNotIsInstance(c.exception, F.TokenInvalido)
+
+    def test_429_tampoco(self):
+        """Cuota de Identity Toolkit."""
+        self._con(429)
+        with self.assertRaises(Exception) as c:
+            F.verificar(TOKEN)
+        self.assertNotIsInstance(c.exception, F.TokenInvalido)
+
+    def test_el_error_lleva_el_codigo_y_no_el_cuerpo(self):
+        """La respuesta de Google puede traer el token de vuelta."""
+        self._con(403)
+        try:
+            F.verificar(TOKEN)
+        except Exception as e:
+            self.assertIn("403", str(e))
+            self.assertNotIn(TOKEN, str(e))
+
+    def test_un_403_termina_en_503_y_no_en_401(self):
+        """De punta a punta por el ruteo: es la diferencia entre «reintentá»
+        y «tu sesión no vale»."""
+        caso = ElTramoTransitorio()
+        def _403(t):
+            raise RuntimeError("no pude verificar la sesión: HTTP 403")
+        r, _ = caso._llamar(headers={"Authorization": f"Bearer {TOKEN}"},
+                            verifica=_403)
+        self.assertEqual(r["statusCode"], 503)
+
+
+class NoSeInventaUnaVerificacionQueNoExiste(unittest.TestCase):
+
+    def test_no_hay_constante_de_proyecto_sin_usar(self):
+        """Había una `PROYECTO` declarada y nunca usada: al leerla daba a
+        entender que el proyecto se verificaba, y no se verificaba. La key ya
+        ata el token a su proyecto."""
+        self.assertFalse(hasattr(F, "PROYECTO"))
+
+
+class ELCREADO_POR_TAMPOCO_SALE_DEL_CUERPO(unittest.TestCase):
+    """El agujero que esto cierra: `crear_ros` PREFIERE `creado_por` sobre
+    `actor_email`, así que pisar sólo los dos primeros dejaba crear un ROS a
+    nombre de otra persona CON un token válido — y ese nombre entraba al
+    historial de un registro regulatorio."""
+
+    def test_con_token_el_creado_por_del_cuerpo_no_tiene_efecto(self):
+        caso = ElTramoTransitorio()
+        _, vistos = caso._llamar(
+            headers={"Authorization": f"Bearer {TOKEN}"}, metodo="POST",
+            cuerpo={"case_id": "c-1", "creado_por": "otro@global66.com",
+                    "actor_email": "otro@global66.com"})
+        self.assertEqual(vistos["crear"][0]["creado_por"],
+                         "analista@global66.com")
+
+    def test_se_pisan_los_cuatro_nombres_de_lo_mismo(self):
+        caso = ElTramoTransitorio()
+        _, vistos = caso._llamar(
+            headers={"Authorization": f"Bearer {TOKEN}"}, metodo="POST",
+            cuerpo={"case_id": "c-1", "actor_email": "a@global66.com",
+                    "quien": "b@global66.com", "creado_por": "c@global66.com",
+                    "user_email": "d@global66.com"})
+        enviado = vistos["crear"][0]
+        for campo in ("actor_email", "quien", "creado_por", "user_email"):
+            with self.subTest(campo=campo):
+                self.assertEqual(enviado[campo], "analista@global66.com")

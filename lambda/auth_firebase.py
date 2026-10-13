@@ -52,9 +52,13 @@ import urllib.request
 # `frontend/v2/src/sesion.js` y en v1. Lo que protege los datos son las reglas
 # de Firestore y esta verificación, no esconderla. Se deja configurable por
 # entorno igual, para que un ambiente de prueba no tenga que tocar el código.
+#
+# No hay constante de proyecto: la key YA ata el token a su proyecto, así que
+# `accounts:lookup` rechaza un token de otro lado sin que haya nada que
+# comparar acá. Había una `PROYECTO` declarada y sin usar, que al leerla daba
+# a entender que el proyecto se verificaba — y no se verificaba.
 API_KEY = os.environ.get("FIREBASE_WEB_API_KEY",
                          "AIzaSyCKduUg-DLxeOEx7ZDTbS8TpxRdTVyFMjI")
-PROYECTO = os.environ.get("FIREBASE_PROJECT_ID", "global66-compliance")
 
 URL = "https://identitytoolkit.googleapis.com/v1/accounts:lookup"
 
@@ -103,13 +107,26 @@ def _consultar(id_token: str) -> dict:
         with urllib.request.urlopen(pedido, timeout=TIMEOUT) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        # Firebase contesta 400 con INVALID_ID_TOKEN / TOKEN_EXPIRED / etc.
-        # No se reenvía su texto al cliente: puede cambiar y no le dice nada
-        # a quien lo lee.
-        if 400 <= e.code < 500:
+        # SÓLO EL 400 ES UN TOKEN INVÁLIDO. Firebase contesta 400 con
+        # INVALID_ID_TOKEN / TOKEN_EXPIRED / etc. No se reenvía su texto al
+        # cliente: puede cambiar y no le dice nada a quien lo lee.
+        if e.code == 400:
             raise TokenInvalido("La sesión no es válida o venció. "
                                 "Volvé a entrar.") from e
-        raise
+        # EL RESTO DE LOS 4xx NO ES CULPA DEL TOKEN, y tratarlos como tal
+        # sería decirle a TODO EL MUNDO «volvé a entrar» por un problema de
+        # configuración nuestro — y en el paso 2, dejarlos a todos afuera con
+        # el diagnóstico equivocado. Los dos casos reales:
+        #
+        #   403  alguien restringió la apiKey por referer en GCP, que es el
+        #        endurecimiento que Google recomienda para las keys públicas.
+        #        La Lambda no manda Referer, así que recibiría 403 siempre.
+        #   429  se acabó la cuota de Identity Toolkit.
+        #
+        # Se loguea el CÓDIGO y nunca el cuerpo: la respuesta de Google puede
+        # traer el token de vuelta.
+        print(f"[auth] identitytoolkit respondió HTTP {e.code}")
+        raise RuntimeError(f"no pude verificar la sesión: HTTP {e.code}") from e
     except urllib.error.URLError as e:
         # Google no contestó. NO es un token inválido y no se puede dejar
         # pasar como anónimo: se corta con un error distinto, para que un
