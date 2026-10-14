@@ -45,6 +45,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import whitelist_validacion
+
 import boto3
 import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -544,6 +546,21 @@ def inject_whitelist_exclusions(sql: str, whitelist_entries: list[dict]) -> str:
     """
     if not whitelist_entries:
         return sql
+
+    # SE VALIDA ACÁ ADEMÁS DE AL ESCRIBIR. Lo que ya está guardado no pasó por
+    # la validación nueva, y un camino que hoy no existe —la API externa, un
+    # script, una carga a mano en S3— no tiene por qué acordarse de validar.
+    #
+    # Una entrada inválida se DESCARTA y la corrida sigue: un reporte que no
+    # corre es peor que un reporte con una exclusión de menos. El motivo va al
+    # log SIN el valor: si el valor es un intento de inyección, copiarlo lo
+    # mete en CloudWatch.
+    whitelist_entries, descartadas = whitelist_validacion.filtrar(whitelist_entries)
+    for wid, motivo in descartadas:
+        logger.warning("Whitelist: entrada %s descartada — %s", wid, motivo)
+    if not whitelist_entries:
+        return sql
+
     # Group exclusions by field
     by_field: dict[str, list[str]] = {}
     for entry in whitelist_entries:

@@ -156,6 +156,8 @@ except Exception as _e:  # pragma: no cover
     ros_aprobacion = None
     print(f"[api] aprobación de ROS no disponible: {_e}")
 
+import whitelist_validacion
+
 try:
     import informe_alertas
     import informe_email
@@ -2890,7 +2892,7 @@ def handler(event, context):  # noqa: ARG001
             return bulk_add_to_whitelist(body)
         # DELETE /whitelist/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "whitelist":
-            return remove_from_whitelist(parts[1])
+            return remove_from_whitelist(parts[1], body)
 
         # ---------------------------------------------------------------------------
         # PRIORIZACIÓN DE ALERTAS — mantenedor de documentos + corrida de prueba
@@ -4455,10 +4457,22 @@ def add_to_whitelist(body: dict):
     scope = body.get("scope", "global").strip()
     report_name = body.get("report_name", "").strip()
 
-    if not entity_field or not entity_value:
-        return resp(400, {"error": "entity_field and entity_value are required"})
+    # EL VALOR ENTRA AL SQL DE TODOS LOS REPORTES. Un valor con una barra
+    # invertida cierra el literal en Redshift y deja el reporte vacío para
+    # TODOS los clientes. Lista cerrada de campos y forma del valor: prohibir
+    # caracteres es una carrera que se pierde.
+    motivo = whitelist_validacion.motivo_de_rechazo(entity_field, entity_value)
+    if motivo:
+        return resp(400, {"error": f"No se puede agregar: {motivo}."})
     if duration_days not in (30, 60, 90):
         return resp(400, {"error": "duration_days must be 30, 60, or 90"})
+
+    # QUIÉN LO AGREGÓ. La v1 ya lo manda desde el caso y v2 también; el
+    # backend lo descartaba, así que 47 entradas vigentes no tienen autor.
+    # No se EXIGE: dos pantallas todavía no lo mandan y exigirlo las rompería
+    # hasta que se renueve el bundle, que tarda hasta un día.
+    creado_por = str(body.get("created_by") or body.get("actor_email")
+                     or "").strip()[:200]
 
     wid = str(uuid.uuid4())
     now = dt.datetime.utcnow()
@@ -4471,10 +4485,17 @@ def add_to_whitelist(body: dict):
         "reason": reason,
         "scope": scope,
         "report_name": report_name if scope == "report" else "",
+        "created_by": creado_por,
         "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "expires_at": int(expires.timestamp()),
         "expires_at_str": expires.strftime("%Y-%m-%d %H:%M:%S"),
     })
+    # Dejar de alertar sobre un cliente es una decisión de compliance: sin
+    # auditoría no hay forma de reconstruir quién la tomó ni cuándo.
+    _safe_audit(user_email=creado_por or "unknown", action="whitelist.add",
+                entity_type="whitelist", entity_id=wid,
+                new_value={"entity_field": entity_field, "scope": scope,
+                           "duration_days": duration_days})
     return resp(201, {"whitelist_id": wid})
 
 
@@ -4537,6 +4558,13 @@ def bulk_add_to_whitelist(body: dict):
         if not value:
             skipped.append({"index": idx, "motivo": "la fila no identifica cliente/empresa"})
             continue
+        # Mismo control que el alta individual: el valor termina en el
+        # SQL de todos los reportes. La fila sale de una tabla de
+        # resultados, pero el campo lo elige quien llama.
+        motivo = whitelist_validacion.motivo_de_rechazo(field, value)
+        if motivo:
+            skipped.append({"index": idx, "motivo": motivo})
+            continue
         clave = (field, value)
         if clave in ya_vigentes:
             skipped.append({"index": idx, "motivo": f"{field} {value} ya está en whitelist vigente"})
@@ -4575,8 +4603,25 @@ def bulk_add_to_whitelist(body: dict):
     })
 
 
-def remove_from_whitelist(whitelist_id: str):
+def remove_from_whitelist(whitelist_id: str, body: dict | None = None):
+    """Saca un cliente de la lista blanca: vuelve a generar alertas.
+
+    SE AUDITA. Volver a alertar sobre un cliente es tan registrable como
+    dejar de hacerlo, y antes esto borraba sin dejar rastro de quién.
+
+    Se lee la entrada ANTES de borrarla: después no hay de dónde sacar sobre
+    qué cliente era, y una línea de auditoría que sólo dice un uuid no sirve
+    para reconstruir nada.
+    """
+    previa = _crm_get("whitelist", whitelist_id) or {}
+    quien = str((body or {}).get("actor_email")
+                or (body or {}).get("removed_by") or "").strip()[:200]
     _crm_delete("whitelist", whitelist_id)
+    _safe_audit(user_email=quien or "unknown", action="whitelist.remove",
+                entity_type="whitelist", entity_id=whitelist_id,
+                new_value={"entity_field": previa.get("entity_field", ""),
+                           "scope": previa.get("scope", ""),
+                           "reason": previa.get("reason", "")[:200]})
     return resp(200, {"message": f"Whitelist entry '{whitelist_id}' removed"})
 
 

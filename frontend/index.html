@@ -10277,6 +10277,10 @@
 
       async addWhitelist() {
         const payload = { ...this.newWL };
+        // Quién lo agregó. El alta desde el caso ya lo manda; esta
+        // pantalla no, así que las entradas que salían de acá quedaban
+        // sin autor y no se podía saber quién silenció a ese cliente.
+        payload.created_by = this.currentUserEmail || this.userEmail || '';
         if (payload.scope !== 'report') delete payload.report_name;
         const d = await this.api('POST', '/whitelist', payload);
         if (d) {
