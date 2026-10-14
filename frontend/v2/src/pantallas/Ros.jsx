@@ -31,6 +31,7 @@ import {
 import { soloLectura } from '../permisos.js';
 import { Gereo } from './ros/Gereo.jsx';
 import { Formulario } from './ros/Formulario.jsx';
+import { Aprobar } from './ros/Aprobar.jsx';
 
 function Estado({ r }) {
   const c = colorDe(r.estado);
@@ -385,6 +386,23 @@ function Detalle({ r, reguladores, transiciones, lectura, email, api,
           )}
 
           <BorradorDeGereo r={r} />
+
+          {/* Revisar y aprobar. Va ARRIBA del formulario: quien abre un ROS
+              que ya tiene versión viene a mirarlo y moverlo, no a editarlo —
+              editar es la excepción. */}
+          {r.version_actual > 0 && (
+            <>
+              <h3 style={{ fontSize: 'var(--texto-xs)', textTransform: 'uppercase',
+                           letterSpacing: 'var(--track-ancho)',
+                           color: 'var(--texto-mute)',
+                           margin: 'var(--e-5) 0 var(--e-2)' }}>
+                Revisión y aprobación
+              </h3>
+              <Aprobar api={api} folio={r.folio} version={r.version_actual}
+                       etapa={r.etapa_gereo} lectura={lectura || !puedeEditar}
+                       alCambiar={alRecargar} />
+            </>
+          )}
 
           {/* El formulario editable. Plegado: la mayoría de las veces el
               borrador de GEREO se revisa y no se corrige, y desplegado de
