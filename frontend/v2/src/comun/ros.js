@@ -124,3 +124,186 @@ export function periodoTexto(reporte) {
   const f = (t) => fecha(t)?.toLocaleDateString('es-CL') || t;
   return p.desde === p.hasta ? f(p.desde) : `${f(p.desde)} – ${f(p.hasta)}`;
 }
+
+/* ── La etapa del ROS, en la lista de casos ───────────────────────────────
+   El caso y el ROS son dos registros distintos: la etapa vive en el ROS y la
+   lista muestra casos. Se cruzan por `case_id` acá, del lado del front,
+   porque `/cases` lo usan varias pantallas y sumarle una lectura de ROS por
+   caso lo encarecería para todas — y los ROS son pocos.                    */
+
+/* Lo que se muestra por etapa. El texto sale de `ros_etapas.ETAPAS` del
+   backend; acá va sólo cómo se ve. */
+export const ETAPAS_ROS = {
+  sin_ros: { texto: 'Sin ROS', color: 'neutro' },
+  /* El registro de ROS no se pudo leer. NO es «Sin ROS»: con `/ros` caído, la
+     lista entera afirmaría que ningún caso tiene reporte. */
+  no_disponible: { texto: 'No disponible', color: 'neutro' },
+  /* Se evaluó y se decidió no reportar. Sin reloj: no falta trabajo. */
+  descartado: { texto: 'Descartado', color: 'neutro' },
+  recibido: { texto: 'Recibido', color: 'info' },
+  revisado: { texto: 'Revisado', color: 'medio' },
+  enviando: { texto: 'Enviando…', color: 'medio' },
+  enviado: { texto: 'Enviado', color: 'ok' },
+  error_envio: { texto: 'Error de envío', color: 'alto' },
+  /* NO es «Sin ROS». El reporte existe: lo que falló fue guardar su versión,
+     y mostrarlo como si no existiera esconde la falla detrás de un estado
+     normal — que es justo lo que no puede pasar con un registro regulatorio. */
+  sin_version: { texto: 'Sin versión guardada', color: 'alto' },
+};
+
+/**
+ * Qué ROS tiene cada caso. `{case_id: {etapa, folio, pais, estado}}`.
+ *
+ * Si un caso tiene más de un ROS —se puede: un caso puede reportarse dos
+ * veces— gana el más avanzado, que es el que describe dónde está el trabajo.
+ */
+/* QUÉ ROS DEFINE LA COLUMNA cuando un caso tiene varios.
+   NO es el más avanzado. Un caso con un ROS enviado y otro en `error_envio`
+   se vería «Enviado» y la falla del segundo desaparecería — y el trabajo está
+   justamente en el que NO terminó. Se ordena por cuánta atención pide: lo
+   roto primero, lo terminado último. */
+const ATENCION = ['sin_version', 'error_envio', 'enviando', 'revisado',
+                  'recibido', 'enviado', 'descartado', 'sin_ros'];
+
+export function rosPorCaso(listaRos) {
+  const fuera = {};
+  for (const r of listaRos || []) {
+    const caso = r?.case_id;
+    if (!caso) continue;
+    const etapa = etapaDeRos(r);
+    const previo = fuera[caso];
+    const gana = !previo
+      || ATENCION.indexOf(etapa) < ATENCION.indexOf(previo.etapa);
+    const antes = previo ? previo.cuantos : 0;
+    if (gana) {
+      fuera[caso] = {
+        etapa, folio: r.folio, estado: r.estado,
+        regulador: r.regulador, version: r.version_actual || 0,
+        // Los hechos del caso: de ahí sale desde cuándo corre el plazo.
+        evidencia: r.evidencia,
+        cuantos: antes + 1,
+      };
+    } else {
+      fuera[caso] = { ...previo, cuantos: antes + 1 };
+    }
+  }
+  return fuera;
+}
+
+/** La etapa de UN ros, con la falla de versión por delante. */
+export function etapaDeRos(r) {
+  // Un ROS que se descartó no sigue camino: mostrar «Recibido» con el reloj
+  // corriendo diría que falta trabajo sobre algo ya decidido.
+  if (String(r?.estado || '').trim() === 'descartado') return 'descartado';
+  if (r?.version_error && !(r?.version_actual > 0)) return 'sin_version';
+  const e = String(r?.etapa_gereo || '').trim();
+  return Object.prototype.hasOwnProperty.call(ETAPAS_ROS, e) ? e : 'sin_ros';
+}
+
+/** Si en esta etapa todavía corre el plazo. */
+export function correPlazo(ros) {
+  return Boolean(ros) && !['sin_ros', 'enviado', 'descartado', 'no_disponible']
+    .includes(ros.etapa);
+}
+
+/** Cómo se dibuja la etapa de un caso que puede no tener ROS. */
+export function etiquetaEtapa(ros) {
+  const etapa = ros?.etapa || 'sin_ros';
+  return ETAPAS_ROS[etapa] || ETAPAS_ROS.sin_ros;
+}
+
+/**
+ * Los casos que pasan el filtro de etapa y de país.
+ *
+ * `''` en cualquiera de los dos significa «todos»: es lo que hace que los dos
+ * filtros se puedan combinar sin escribir las cuatro combinaciones.
+ */
+export function filtrarPorRos(casos, mapa, { etapa = '', regulador = '' } = {}) {
+  if (!etapa && !regulador) return casos;
+  return (casos || []).filter((c) => {
+    const r = mapa[c.case_id];
+    const suEtapa = r?.etapa || 'sin_ros';
+    if (etapa && suEtapa !== etapa) return false;
+    // Un caso sin ROS no tiene país de reporte: filtrar por país lo saca,
+    // que es lo que espera quien filtró «Chile».
+    if (regulador && r?.regulador !== regulador) return false;
+    return true;
+  });
+}
+
+/* ── El plazo legal ───────────────────────────────────────────────────────
+   LOS DÍAS NO ESTÁN DEFINIDOS, y no se inventan. Cada regulador tiene su
+   plazo y ninguno está confirmado por Compliance; poner un número supuesto
+   sería peor que no mostrar nada, porque alguien lo tomaría por bueno y
+   podría dejar pasar un plazo real creyendo que le sobra tiempo.
+
+   Mientras tanto se muestran los DÍAS TRANSCURRIDOS, sin semáforo. Eso ya
+   sirve —ordena y deja ver cuál lleva más— y no afirma nada que no sepamos.
+   El día que Compliance defina los plazos, se llenan acá y el semáforo
+   aparece solo.                                                            */
+
+export const PLAZO_LEGAL_DIAS = {
+  'UAF-CL': null,
+  'UIF-AR': null,
+  'UIAF-CO': null,
+};
+
+/* QUÉ EVENTO DISPARA EL PLAZO tampoco está confirmado. Acá se cuenta desde la
+   primera alerta del caso, que es lo más cercano a «cuando se detectó la
+   operación». Puede que el regulador lo cuente desde otra cosa —la operación
+   en sí, la conclusión del análisis—. Lo confirma Compliance junto con los
+   días; hasta entonces sólo se muestran días transcurridos, que no afirman
+   nada sobre el plazo. */
+
+/**
+ * Desde cuándo se cuenta el plazo, y por qué.
+ *
+ * NUNCA desde que se creó el ROS. Esa es la fecha en que un analista abrió el
+ * reporte, no en la que se detectó la operación: si el ROS se abre veinte días
+ * después de la alerta, contar desde ahí diría «2 días» con el plazo legal ya
+ * casi consumido — y el día que se carguen los plazos, el semáforo estaría en
+ * verde sobre un plazo vencido.
+ */
+export function origenDelPlazo(ros) {
+  const ev = ros?.evidencia || {};
+  const primera = ev.periodo?.desde;
+  if (primera) return { fecha: primera, desde: 'la primera alerta' };
+  const caso = ev.caso?.creado_at;
+  if (caso) return { fecha: caso, desde: 'la apertura del caso' };
+  return null;
+}
+
+/** Los días desde una fecha. `null` si no se puede saber. */
+export function diasDesde(fechaIso, ahora = new Date()) {
+  if (!fechaIso) return null;
+  const d = new Date(String(fechaIso).replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return null;
+  return Math.max(0, Math.floor((ahora - d) / 86400000));
+}
+
+/**
+ * El indicador de plazo: cuántos días van y, si el plazo está definido,
+ * cuánto queda.
+ *
+ * `semaforo` es `''` mientras no haya plazo: la pantalla no pinta nada en vez
+ * de pintar verde, que afirmaría que hay tiempo de sobra sin saberlo.
+ */
+export function plazoDe(ros, ahora = new Date()) {
+  const origen = origenDelPlazo(ros);
+  const dias = origen ? diasDesde(origen.fecha, ahora) : null;
+  if (dias === null) return null;
+  const limite = PLAZO_LEGAL_DIAS[ros?.regulador];
+  if (!limite) {
+    return { dias, limite: null, restantes: null, semaforo: '',
+             desde: origen.desde,
+             texto: `${dias} día${dias === 1 ? '' : 's'}` };
+  }
+  const restantes = limite - dias;
+  const semaforo = restantes < 0 ? 'alto' : restantes <= 2 ? 'medio' : 'ok';
+  return {
+    dias, limite, restantes, semaforo, desde: origen.desde,
+    texto: restantes < 0
+      ? `vencido hace ${-restantes} día${restantes === -1 ? '' : 's'}`
+      : `quedan ${restantes} de ${limite}`,
+  };
+}

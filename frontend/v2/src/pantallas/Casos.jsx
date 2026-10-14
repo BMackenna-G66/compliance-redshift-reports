@@ -24,6 +24,9 @@ import {
   prepararCaso, tiempoDeCierre,
 } from '../comun/casos.js';
 import { ESTADOS_CASO } from '../dominio.js';
+import {
+  ETAPAS_ROS, correPlazo, etiquetaEtapa, filtrarPorRos, plazoDe, rosPorCaso,
+} from '../comun/ros.js';
 
 function Estado({ caso }) {
   const d = ESTADOS_CASO[caso.status];
@@ -34,7 +37,51 @@ function Estado({ caso }) {
   );
 }
 
-function columnas(navegar) {
+const COLOR_ETAPA = {
+  neutro: 'var(--texto-mute)',
+  info: 'var(--g66-azul-texto)',
+  medio: 'var(--nivel-medio-texto)',
+  ok: 'var(--nivel-bajo-texto)',
+  alto: 'var(--nivel-alto-texto)',
+};
+
+function EtapaRos({ ros, disponible }) {
+  // CON EL REGISTRO CAÍDO NO SE DICE «SIN ROS». Eso afirmaría, fila por fila,
+  // que ningún caso tiene reporte.
+  const efectivo = disponible ? ros : { etapa: 'no_disponible' };
+  const d = etiquetaEtapa(efectivo);
+  const apagado = !efectivo || ['sin_ros', 'no_disponible'].includes(efectivo.etapa);
+  const plazo = correPlazo(efectivo) ? plazoDe(efectivo) : null;
+  const titulo = [
+    efectivo?.folio && `${efectivo.folio}${efectivo.version ? ` · v${efectivo.version}` : ''}`,
+    plazo?.desde && `cuenta desde ${plazo.desde}`,
+  ].filter(Boolean).join(' · ');
+  return (
+    <>
+      <span style={{ color: COLOR_ETAPA[d.color] || 'var(--texto-2)',
+                     fontWeight: apagado ? 'inherit' : 'var(--peso-medio)' }}
+            title={titulo}>
+        {d.texto}
+        {efectivo?.cuantos > 1 && (
+          <span style={{ color: 'var(--texto-mute)',
+                         fontWeight: 'inherit' }}>
+            {' '}+{efectivo.cuantos - 1}
+          </span>
+        )}
+      </span>
+      {plazo && (
+        <span style={{ display: 'block', fontSize: 'var(--texto-xs)',
+                       /* Sin plazo definido no se pinta: el verde afirmaría
+                          que hay tiempo de sobra sin que nadie lo sepa. */
+                       color: COLOR_ETAPA[plazo.semaforo] || 'var(--texto-mute)' }}>
+          {plazo.texto}
+        </span>
+      )}
+    </>
+  );
+}
+
+function columnas(navegar, hayRos) {
   return [
     {
       clave: 'entity_id',
@@ -66,6 +113,12 @@ function columnas(navegar) {
         : <span style={{ color: 'var(--texto-mute)' }}>manual</span>),
     },
     { clave: '_estado', titulo: 'Estado', ancho: '9%', render: (c) => <Estado caso={c} /> },
+    {
+      clave: '_etapaRos',
+      titulo: 'Etapa ROS',
+      ancho: '10%',
+      render: (c) => <EtapaRos ros={c._ros} disponible={hayRos} />,
+    },
     {
       clave: '_slaOrden',
       titulo: 'Plazo',
@@ -142,6 +195,13 @@ export function Casos({ api, navegar }) {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [filtro, setFiltro] = useState('abiertos');
+  const [ros, setRos] = useState([]);
+  // `null` mientras no se sabe; `false` si el registro no se pudo leer. La
+  // diferencia importa: con `false`, la columna dice «No disponible» en vez
+  // de «Sin ROS».
+  const [rosDisponible, setRosDisponible] = useState(true);
+  const [filtroEtapa, setFiltroEtapa] = useState('');
+  const [filtroPais, setFiltroPais] = useState('');
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -149,8 +209,26 @@ export function Casos({ api, navegar }) {
     try {
       // `status=all` porque el filtro se hace acá: cambiar de filtro no
       // debería costar un viaje a la API cuando son 89 filas.
-      const d = await api.get('/cases?status=all');
+      // Los dos en paralelo: la etapa del ROS vive en el ROS y la lista
+      // muestra casos. Se cruzan acá y no en `/cases`, que lo usan varias
+      // pantallas y encarecerlo para todas por una columna no se justifica.
+      //
+      // El registro de ROS es chico; si algún día deja de serlo, esto se
+      // mueve al backend.
+      const [d, dr] = await Promise.all([
+        api.get('/cases?status=all'),
+        // Que falle el ROS no puede dejar sin casos la pantalla. Pero sí hay
+        // que DECIRLO: sin esto, un registro caído haría que todas las filas
+        // afirmen «Sin ROS».
+        api.get('/ros').then((x) => x, () => null),
+      ]);
       setCasos(d?.cases || []);
+      setRos(dr?.ros || []);
+      // `dr !== null` sólo cubre el error de red o HTTP. `listar_ros` atrapa
+      // su propia excepción y devuelve 200 con `{ros: [], warning}` — que es
+      // el modo de falla MÁS probable, y leído sin el `warning` dice «hay
+      // cero ROS» en vez de «no se pudo leer».
+      setRosDisponible(dr !== null && !dr.warning);
       setConfig(d?.sla_config || null);
       if (d?.warning) setError(`La API respondió con un aviso: ${d.warning}`);
     } catch (e) {
@@ -162,10 +240,23 @@ export function Casos({ api, navegar }) {
 
   useEffect(() => { cargar(); }, [cargar]);
 
-  const preparados = useMemo(() => casos.map(prepararCaso), [casos]);
+  const porCaso = useMemo(() => rosPorCaso(ros), [ros]);
+  const preparados = useMemo(
+    () => casos.map((c) => ({ ...prepararCaso(c), _ros: porCaso[c.case_id] })),
+    [casos, porCaso]);
   const ind = useMemo(() => indicadores(casos), [casos]);
   const cierre = useMemo(() => tiempoDeCierre(casos), [casos]);
-  const visibles = useMemo(() => aplicarFiltro(preparados, filtro), [preparados, filtro]);
+  const visibles = useMemo(
+    () => filtrarPorRos(aplicarFiltro(preparados, filtro), porCaso,
+                        { etapa: filtroEtapa, regulador: filtroPais }),
+    [preparados, filtro, porCaso, filtroEtapa, filtroPais]);
+
+  /* Sólo los reguladores que de verdad aparecen: ofrecer «Colombia» cuando no
+     hay ningún ROS colombiano manda a filtrar a la nada. */
+  const reguladoresPresentes = useMemo(() => {
+    const s = new Set(Object.values(porCaso).map((r) => r.regulador).filter(Boolean));
+    return [...s].sort();
+  }, [porCaso]);
 
   const sinDatos = (cargando || Boolean(error)) && casos.length === 0;
   const n = (v) => (sinDatos ? '—' : v);
@@ -210,9 +301,51 @@ export function Casos({ api, navegar }) {
         </p>
       )}
 
+      {/* Los filtros de ROS SÓLO aparecen cuando hay ROS. Mostrarlos con el
+          registro vacío ofrece filtrar por algo que no existe y hace pensar
+          que la pantalla está rota. */}
+      {!rosDisponible && !cargando && (
+        <p className="wt-nota wt-nota-alarma">
+          <strong>No se pudo leer el registro de ROS.</strong> La columna
+          «Etapa ROS» no muestra nada en esta carga — no significa que los
+          casos no tengan reporte. Lo demás de la pantalla está al día.
+        </p>
+      )}
+
+      {rosDisponible && Object.keys(porCaso).length > 0 && (
+        <div style={{ display: 'flex', gap: 'var(--e-2)', alignItems: 'center',
+                      marginBottom: 'var(--e-3)', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
+            ROS:
+          </span>
+          <select className="wt-input" style={{ width: 'auto' }}
+                  value={filtroEtapa} onChange={(e) => setFiltroEtapa(e.target.value)}>
+            <option value="">Todas las etapas</option>
+            {Object.entries(ETAPAS_ROS).map(([clave, d]) => (
+              <option key={clave} value={clave}>{d.texto}</option>
+            ))}
+          </select>
+          {reguladoresPresentes.length > 1 && (
+            <select className="wt-input" style={{ width: 'auto' }}
+                    value={filtroPais} onChange={(e) => setFiltroPais(e.target.value)}>
+              <option value="">Todos los reguladores</option>
+              {reguladoresPresentes.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          )}
+          {(filtroEtapa || filtroPais) && (
+            <button className="wt-btn" type="button"
+                    onClick={() => { setFiltroEtapa(''); setFiltroPais(''); }}>
+              Quitar el filtro de ROS
+            </button>
+          )}
+        </div>
+      )}
+
       <Tabla
         titulo="Casos"
-        columnas={columnas(navegar)}
+        columnas={columnas(navegar, rosDisponible)}
         filas={visibles}
         cargando={cargando}
         error={error}
