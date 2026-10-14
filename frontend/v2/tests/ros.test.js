@@ -322,3 +322,20 @@ describe('un ROS descartado no pide trabajo', () => {
     assert.equal(m.c1.folio, 'B');
   });
 });
+
+test('UN 200 CON `warning` ES EL REGISTRO CAÍDO, no «cero ROS»', () => {
+  /* `listar_ros` atrapa su propia excepción y devuelve 200 con
+     `{ros: [], warning: "..."}`. Es el modo de falla más probable —una falla
+     de S3, por ejemplo— y leerlo como una lista vacía hace que todos los
+     casos digan «Sin ROS»: la pantalla afirma que ninguno tiene reporte.
+
+     La regla vive en `Casos.jsx`; acá se fija la forma de la respuesta que
+     la dispara, que es lo que no puede cambiar sin que alguien se entere. */
+  const caido = { ros: [], warning: 'no pude leer el registro' };
+  const ok = { ros: [] };
+  const disponible = (dr) => dr !== null && !dr.warning;
+
+  assert.equal(disponible(caido), false, 'un warning se leyó como registro sano');
+  assert.equal(disponible(ok), true, 'un registro vacío de verdad no es una falla');
+  assert.equal(disponible(null), false);
+});

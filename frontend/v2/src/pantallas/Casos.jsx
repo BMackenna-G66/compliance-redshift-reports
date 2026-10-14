@@ -224,7 +224,11 @@ export function Casos({ api, navegar }) {
       ]);
       setCasos(d?.cases || []);
       setRos(dr?.ros || []);
-      setRosDisponible(dr !== null);
+      // `dr !== null` sólo cubre el error de red o HTTP. `listar_ros` atrapa
+      // su propia excepción y devuelve 200 con `{ros: [], warning}` — que es
+      // el modo de falla MÁS probable, y leído sin el `warning` dice «hay
+      // cero ROS» en vez de «no se pudo leer».
+      setRosDisponible(dr !== null && !dr.warning);
       setConfig(d?.sla_config || null);
       if (d?.warning) setError(`La API respondió con un aviso: ${d.warning}`);
     } catch (e) {
