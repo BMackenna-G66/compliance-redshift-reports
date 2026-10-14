@@ -422,8 +422,7 @@ class DONDE_TIENE_QUE_ESTAR_EL_REPORTE(unittest.TestCase):
         r = reporte([v(1, "gereo", "ana@example.com")], **extra)
         return AP.bloqueos_para_aprobar(
             r, "oficial@example.com", OFICIALES, acuse_ia=True,
-            narrativa_es_de_ia=False, etapa=extra.get("etapa_gereo", "revisado"),
-            pendientes=extra.pop("_pendientes", ()))
+            narrativa_es_de_ia=False)
 
     def test_SIN_REVISAR_NO_SE_APRUEBA(self):
         faltan = self._faltan(etapa_gereo="recibido")
@@ -447,10 +446,13 @@ class DONDE_TIENE_QUE_ESTAR_EL_REPORTE(unittest.TestCase):
     def test_LOS_PENDIENTES_DE_GEREO_NO_SE_SALTEAN(self):
         """Es el control del PR #97; el camino nuevo no puede esquivarlo."""
         r = reporte([v(1, "gereo", "ana@example.com")])
+        # Los pendientes salen del `borrador_gereo` del propio reporte.
+        r["borrador_gereo"] = {
+            "senales": [{"id": "R1"}],
+            "advertencias": ["Textos narrativos redactados con IA (borrador)."]}
         faltan = AP.bloqueos_para_aprobar(
             r, "oficial@example.com", OFICIALES, acuse_ia=True,
-            narrativa_es_de_ia=False, etapa="revisado",
-            pendientes=["Textos narrativos redactados con IA (borrador)."])
+            narrativa_es_de_ia=False)
         self.assertTrue(any("IA" in f for f in faltan))
 
     def test_en_revisado_y_revision_legal_pasa(self):
@@ -468,7 +470,7 @@ class UNA_VERSION_NO_SE_APRUEBA_DOS_VECES(unittest.TestCase):
     def test_la_segunda_se_rechaza(self):
         faltan = AP.bloqueos_para_aprobar(
             self._con_aprobacion(), "oficial@example.com", OFICIALES,
-            acuse_ia=True, narrativa_es_de_ia=False, etapa="revisado")
+            acuse_ia=True, narrativa_es_de_ia=False)
         self.assertTrue(any("ya está aprobada" in f for f in faltan))
 
     def test_NADIE_LEE_APROBACION_A_PELO(self):
@@ -688,3 +690,74 @@ class UNA_EDICION_EN_EL_MEDIO_NO_SE_PISA(unittest.TestCase):
         self.assertEqual(res["statusCode"], 409)
         self.assertIn("mientras aprobabas", json.loads(res["body"])["error"])
         self.assertEqual(guardado, {}, "pisó la versión nueva")
+
+
+class NINGUN_DEFAULT_FALLA_ABIERTO(unittest.TestCase):
+    """La etapa y los pendientes se calculan DENTRO de la función.
+
+    Como parámetros con default, un llamador que no los pasara saltearía el
+    control en silencio — y el próximo que use esta función sin ese kwarg
+    reabriría exactamente lo que cierra. Un control que depende de que lo
+    invoquen bien no es un control.
+    """
+
+    def test_llamada_minima_sobre_un_ros_sin_revisar__BLOQUEA(self):
+        r = reporte([v(1, "gereo", "ana@example.com")], etapa_gereo="recibido")
+        faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
+                                          acuse_ia=True, narrativa_es_de_ia=False)
+        self.assertTrue(any("revisado" in f for f in faltan))
+
+    def test_llamada_minima_con_pendientes__BLOQUEA(self):
+        r = reporte([v(1, "gereo", "ana@example.com")])
+        r["borrador_gereo"] = {"senales": [{"id": "R1"}],
+                               "advertencias": ["Falta la temática."]}
+        faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
+                                          acuse_ia=True, narrativa_es_de_ia=False)
+        self.assertTrue(any("temática" in f for f in faltan))
+
+    def test_la_firma_ya_no_acepta_esos_kwargs(self):
+        """Si alguien los vuelve a agregar, esto lo dice."""
+        import inspect
+        params = inspect.signature(AP.bloqueos_para_aprobar).parameters
+        self.assertNotIn("etapa", params)
+        self.assertNotIn("pendientes", params)
+
+
+class NI_LA_PUNTUACION_NI_LAS_MAYUSCULAS_SON_AUTORIA(unittest.TestCase):
+    """Un punto final o una letra capital no convierten texto de IA en texto
+    humano: es la misma evasión que el espacio, con otra ropa."""
+
+    V1 = {"1_antecedentes_operaciones_sospechosas": {
+        "1_descripcion_hechos_orden_cronologico": "El cliente operó fuera de perfil",
+        "2_que_se_considero_sospechoso": "Los montos no cuadran"}}
+
+    def _con(self, a, b):
+        return {"1_antecedentes_operaciones_sospechosas": {
+            "1_descripcion_hechos_orden_cronologico": a,
+            "2_que_se_considero_sospechoso": b}}
+
+    def test_un_punto_final(self):
+        casi = self._con("El cliente operó fuera de perfil.",
+                         "Los montos no cuadran.")
+        self.assertTrue(AP.narrativa_sin_tocar(self.V1, casi, "Chile"))
+
+    def test_mayusculas(self):
+        casi = self._con("EL CLIENTE OPERÓ FUERA DE PERFIL",
+                         "los montos no cuadran")
+        self.assertTrue(AP.narrativa_sin_tocar(self.V1, casi, "Chile"))
+
+    def test_comas_y_comillas(self):
+        casi = self._con("El cliente, operó fuera de perfil",
+                         "«Los montos» no cuadran")
+        self.assertTrue(AP.narrativa_sin_tocar(self.V1, casi, "Chile"))
+
+    def test_PERO_CAMBIAR_UNA_PALABRA_SI_ES_REESCRIBIR(self):
+        otro = self._con("El cliente operó dentro de perfil",
+                         "Los montos no cuadran")
+        self.assertFalse(AP.narrativa_sin_tocar(self.V1, otro, "Chile"))
+
+    def test_y_las_tildes_siguen_contando(self):
+        """`operó` y `opero` son dos palabras distintas."""
+        otro = self._con("El cliente opero fuera de perfil",
+                         "Los montos no cuadran")
+        self.assertFalse(AP.narrativa_sin_tocar(self.V1, otro, "Chile"))

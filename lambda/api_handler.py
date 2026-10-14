@@ -3818,9 +3818,7 @@ def aprobar_ros(folio: str, body: dict, actor: str):
     de_ia = ros_aprobacion.narrativa_sin_tocar(v1, actual, pais)
     faltan = ros_aprobacion.bloqueos_para_aprobar(
         r, actor, _oficiales_cumplimiento(),
-        acuse_ia=bool(body.get("acuse_ia")), narrativa_es_de_ia=de_ia,
-        etapa=ros_etapas.etapa_de(r),
-        pendientes=ros_mod.pendientes_gereo(r))
+        acuse_ia=bool(body.get("acuse_ia")), narrativa_es_de_ia=de_ia)
     # UN REPORTE SIN NARRATIVA NO SE APRUEBA. Es lo que lee el regulador: lo
     # que se aprobaría es un documento que no dice nada.
     if not ros_aprobacion.hay_narrativa(actual, pais):

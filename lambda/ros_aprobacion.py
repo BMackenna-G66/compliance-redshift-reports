@@ -36,6 +36,10 @@ hoy nadie la podría contestar.
 """
 from __future__ import annotations
 
+import re
+
+import ros
+import ros_etapas
 import ros_gereo
 import ros_versiones
 
@@ -134,8 +138,7 @@ def aprobacion_vigente(reporte: dict) -> dict | None:
 
 
 def bloqueos_para_aprobar(reporte: dict, quien: str, oficiales,
-                          acuse_ia: bool, narrativa_es_de_ia: bool,
-                          *, etapa: str = "", pendientes=()) -> list:
+                          acuse_ia: bool, narrativa_es_de_ia: bool) -> list:
     """Por qué no se puede aprobar. Lista vacía = se puede.
 
     El orden importa poco salvo en una cosa: se devuelven TODOS los motivos y
@@ -150,7 +153,14 @@ def bloqueos_para_aprobar(reporte: dict, quien: str, oficiales,
     # «recibido» que nadie revisó —el oficial aprobando solo, sin segundo par
     # de ojos, que es justo lo que el cuatro ojos existe para impedir—, uno
     # descartado, o uno ya enviado.
-    if etapa and etapa != "revisado":
+    #
+    # LA ETAPA Y LOS PENDIENTES SE CALCULAN ACÁ, no se reciben. Como
+    # parámetros con default, un llamador que no los pasara saltearía el
+    # control en silencio — y el próximo que use esta función sin ese kwarg
+    # reabriría exactamente lo que cierra. Un control que depende de que lo
+    # invoquen bien no es un control.
+    etapa = ros_etapas.etapa_de(reporte)
+    if etapa != "revisado":
         faltan.append("Para aprobar, el reporte tiene que estar marcado como "
                       f"revisado (hoy está en «{etapa}»).")
     estado = str(reporte.get("estado") or "").strip()
@@ -162,7 +172,7 @@ def bloqueos_para_aprobar(reporte: dict, quien: str, oficiales,
 
     # Lo que GEREO dejó pendiente de criterio humano. Es el control del PR #97
     # y no puede saltearse por el camino nuevo.
-    for p in (pendientes or []):
+    for p in ros.pendientes_gereo(reporte):
         faltan.append(str(p))
 
     # UNA VERSIÓN NO SE APRUEBA DOS VECES. La segunda pisaría la primera y la
@@ -250,8 +260,14 @@ def _normalizar(t: str) -> str:
     con un espacio: agregar un punto al final o un salto de línea volvía el
     texto «distinto» y el control desaparecía. Nadie lo haría a propósito —y
     justamente por eso: pasaría sin que nadie lo note.
+
+    Se ignoran espacios, PUNTUACIÓN y mayúsculas. Un cambio que es sólo un
+    punto final o una letra capital no es autoría humana; es la misma evasión
+    que el espacio con otra ropa. Qué hacer cuando el texto cambió de verdad
+    pero poco —un umbral de parecido— es otra decisión, y es de negocio.
     """
-    return " ".join(str(t or "").split())
+    sin_puntuacion = re.sub(r"[^\w\s]", " ", str(t or ""), flags=re.UNICODE)
+    return " ".join(sin_puntuacion.casefold().split())
 
 
 def hay_narrativa(version: dict, pais: str) -> bool:
