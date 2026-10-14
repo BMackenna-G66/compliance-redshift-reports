@@ -135,6 +135,11 @@ export function periodoTexto(reporte) {
    backend; acá va sólo cómo se ve. */
 export const ETAPAS_ROS = {
   sin_ros: { texto: 'Sin ROS', color: 'neutro' },
+  /* El registro de ROS no se pudo leer. NO es «Sin ROS»: con `/ros` caído, la
+     lista entera afirmaría que ningún caso tiene reporte. */
+  no_disponible: { texto: 'No disponible', color: 'neutro' },
+  /* Se evaluó y se decidió no reportar. Sin reloj: no falta trabajo. */
+  descartado: { texto: 'Descartado', color: 'neutro' },
   recibido: { texto: 'Recibido', color: 'info' },
   revisado: { texto: 'Revisado', color: 'medio' },
   enviando: { texto: 'Enviando…', color: 'medio' },
@@ -152,22 +157,34 @@ export const ETAPAS_ROS = {
  * Si un caso tiene más de un ROS —se puede: un caso puede reportarse dos
  * veces— gana el más avanzado, que es el que describe dónde está el trabajo.
  */
+/* QUÉ ROS DEFINE LA COLUMNA cuando un caso tiene varios.
+   NO es el más avanzado. Un caso con un ROS enviado y otro en `error_envio`
+   se vería «Enviado» y la falla del segundo desaparecería — y el trabajo está
+   justamente en el que NO terminó. Se ordena por cuánta atención pide: lo
+   roto primero, lo terminado último. */
+const ATENCION = ['sin_version', 'error_envio', 'enviando', 'revisado',
+                  'recibido', 'enviado', 'descartado', 'sin_ros'];
+
 export function rosPorCaso(listaRos) {
-  const orden = ['sin_ros', 'sin_version', 'error_envio', 'recibido',
-                 'revisado', 'enviando', 'enviado'];
   const fuera = {};
   for (const r of listaRos || []) {
     const caso = r?.case_id;
     if (!caso) continue;
     const etapa = etapaDeRos(r);
     const previo = fuera[caso];
-    if (!previo || orden.indexOf(etapa) > orden.indexOf(previo.etapa)) {
+    const gana = !previo
+      || ATENCION.indexOf(etapa) < ATENCION.indexOf(previo.etapa);
+    const antes = previo ? previo.cuantos : 0;
+    if (gana) {
       fuera[caso] = {
         etapa, folio: r.folio, estado: r.estado,
         regulador: r.regulador, version: r.version_actual || 0,
-        // Para el indicador de plazo: cuánto lleva abierto este reporte.
-        creado_at: r.creado_at,
+        // Los hechos del caso: de ahí sale desde cuándo corre el plazo.
+        evidencia: r.evidencia,
+        cuantos: antes + 1,
       };
+    } else {
+      fuera[caso] = { ...previo, cuantos: antes + 1 };
     }
   }
   return fuera;
@@ -175,9 +192,18 @@ export function rosPorCaso(listaRos) {
 
 /** La etapa de UN ros, con la falla de versión por delante. */
 export function etapaDeRos(r) {
+  // Un ROS que se descartó no sigue camino: mostrar «Recibido» con el reloj
+  // corriendo diría que falta trabajo sobre algo ya decidido.
+  if (String(r?.estado || '').trim() === 'descartado') return 'descartado';
   if (r?.version_error && !(r?.version_actual > 0)) return 'sin_version';
   const e = String(r?.etapa_gereo || '').trim();
   return Object.prototype.hasOwnProperty.call(ETAPAS_ROS, e) ? e : 'sin_ros';
+}
+
+/** Si en esta etapa todavía corre el plazo. */
+export function correPlazo(ros) {
+  return Boolean(ros) && !['sin_ros', 'enviado', 'descartado', 'no_disponible']
+    .includes(ros.etapa);
 }
 
 /** Cómo se dibuja la etapa de un caso que puede no tener ROS. */
@@ -222,7 +248,32 @@ export const PLAZO_LEGAL_DIAS = {
   'UIAF-CO': null,
 };
 
-/** Los días desde que se creó el ROS. `null` si no se puede saber. */
+/* QUÉ EVENTO DISPARA EL PLAZO tampoco está confirmado. Acá se cuenta desde la
+   primera alerta del caso, que es lo más cercano a «cuando se detectó la
+   operación». Puede que el regulador lo cuente desde otra cosa —la operación
+   en sí, la conclusión del análisis—. Lo confirma Compliance junto con los
+   días; hasta entonces sólo se muestran días transcurridos, que no afirman
+   nada sobre el plazo. */
+
+/**
+ * Desde cuándo se cuenta el plazo, y por qué.
+ *
+ * NUNCA desde que se creó el ROS. Esa es la fecha en que un analista abrió el
+ * reporte, no en la que se detectó la operación: si el ROS se abre veinte días
+ * después de la alerta, contar desde ahí diría «2 días» con el plazo legal ya
+ * casi consumido — y el día que se carguen los plazos, el semáforo estaría en
+ * verde sobre un plazo vencido.
+ */
+export function origenDelPlazo(ros) {
+  const ev = ros?.evidencia || {};
+  const primera = ev.periodo?.desde;
+  if (primera) return { fecha: primera, desde: 'la primera alerta' };
+  const caso = ev.caso?.creado_at;
+  if (caso) return { fecha: caso, desde: 'la apertura del caso' };
+  return null;
+}
+
+/** Los días desde una fecha. `null` si no se puede saber. */
 export function diasDesde(fechaIso, ahora = new Date()) {
   if (!fechaIso) return null;
   const d = new Date(String(fechaIso).replace(' ', 'T'));
@@ -238,17 +289,19 @@ export function diasDesde(fechaIso, ahora = new Date()) {
  * de pintar verde, que afirmaría que hay tiempo de sobra sin saberlo.
  */
 export function plazoDe(ros, ahora = new Date()) {
-  const dias = diasDesde(ros?.creado_at, ahora);
+  const origen = origenDelPlazo(ros);
+  const dias = origen ? diasDesde(origen.fecha, ahora) : null;
   if (dias === null) return null;
   const limite = PLAZO_LEGAL_DIAS[ros?.regulador];
   if (!limite) {
     return { dias, limite: null, restantes: null, semaforo: '',
+             desde: origen.desde,
              texto: `${dias} día${dias === 1 ? '' : 's'}` };
   }
   const restantes = limite - dias;
   const semaforo = restantes < 0 ? 'alto' : restantes <= 2 ? 'medio' : 'ok';
   return {
-    dias, limite, restantes, semaforo,
+    dias, limite, restantes, semaforo, desde: origen.desde,
     texto: restantes < 0
       ? `vencido hace ${-restantes} día${restantes === -1 ? '' : 's'}`
       : `quedan ${restantes} de ${limite}`,

@@ -23,9 +23,9 @@ import { dirname, join } from 'node:path';
 import test, { describe, it } from 'node:test';
 
 import {
-  ETAPAS_ROS, PLAZO_LEGAL_DIAS, destinosDe, diasDesde, editable, etapaDeRos,
-  etiquetaEtapa, faltaParaEnviar, filtrarPorRos, pendientesGereo, plazoDe,
-  puedeMover, rosPorCaso,
+  ETAPAS_ROS, PLAZO_LEGAL_DIAS, correPlazo, destinosDe, diasDesde, editable,
+  etapaDeRos, etiquetaEtapa, faltaParaEnviar, filtrarPorRos, origenDelPlazo,
+  pendientesGereo, plazoDe, puedeMover, rosPorCaso,
 } from '../src/comun/ros.js';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
@@ -129,14 +129,18 @@ test('una etapa que el front no conoce no deja la celda rota', () => {
   assert.equal(etiquetaEtapa(undefined).texto, 'Sin ROS');
 });
 
-test('si un caso tiene dos ROS, gana el más avanzado', () => {
+test('si un caso tiene dos ROS, gana el que pide atención', () => {
   // Un caso se puede reportar dos veces; lo que importa mostrar es dónde está
-  // el trabajo.
+  // el trabajo — y el trabajo está en el que NO terminó.
+  //
+  // La primera versión de esto se quedaba con el más AVANZADO, y así un caso
+  // con un ROS enviado y otro a medias se veía «Enviado»: el que faltaba
+  // desaparecía de la lista.
   const m = rosPorCaso([
-    { case_id: 'c1', folio: 'A', etapa_gereo: 'recibido' },
-    { case_id: 'c1', folio: 'B', etapa_gereo: 'enviado' },
+    { case_id: 'c1', folio: 'A', etapa_gereo: 'enviado' },
+    { case_id: 'c1', folio: 'B', etapa_gereo: 'recibido' },
   ]);
-  assert.equal(m.c1.etapa, 'enviado');
+  assert.equal(m.c1.etapa, 'recibido');
   assert.equal(m.c1.folio, 'B');
 });
 
@@ -187,7 +191,8 @@ describe('el plazo legal', () => {
   });
 
   it('mientras tanto muestra los días, sin semáforo', () => {
-    const p = plazoDe({ creado_at: hace(10), regulador: 'UAF-CL' });
+    const p = plazoDe({ evidencia: { periodo: { desde: hace(10) } },
+                        regulador: 'UAF-CL' });
     assert.equal(p.dias, 10);
     assert.equal(p.limite, null);
     assert.equal(p.semaforo, '', 'pintó un semáforo sin saber el plazo');
@@ -200,9 +205,11 @@ describe('el plazo legal', () => {
     const original = PLAZO_LEGAL_DIAS['UAF-CL'];
     try {
       PLAZO_LEGAL_DIAS['UAF-CL'] = 15;
-      assert.equal(plazoDe({ creado_at: hace(10), regulador: 'UAF-CL' }).semaforo, 'ok');
-      assert.equal(plazoDe({ creado_at: hace(14), regulador: 'UAF-CL' }).semaforo, 'medio');
-      const vencido = plazoDe({ creado_at: hace(20), regulador: 'UAF-CL' });
+      const conAlerta = (d) => ({ evidencia: { periodo: { desde: hace(d) } },
+                                  regulador: 'UAF-CL' });
+      assert.equal(plazoDe(conAlerta(10)).semaforo, 'ok');
+      assert.equal(plazoDe(conAlerta(14)).semaforo, 'medio');
+      const vencido = plazoDe(conAlerta(20));
       assert.equal(vencido.semaforo, 'alto');
       assert.equal(vencido.texto, 'vencido hace 5 días');
     } finally {
@@ -213,11 +220,105 @@ describe('el plazo legal', () => {
   it('una fecha ilegible no inventa días', () => {
     for (const mala of [undefined, '', 'ayer', null]) {
       assert.equal(diasDesde(mala), null, String(mala));
-      assert.equal(plazoDe({ creado_at: mala, regulador: 'UAF-CL' }), null);
+      assert.equal(plazoDe({ evidencia: { periodo: { desde: mala } },
+                             regulador: 'UAF-CL' }), null);
     }
   });
 
   it('una fecha futura no da días negativos', () => {
     assert.equal(diasDesde(hace(-5)), 0);
+  });
+});
+
+/* ── Los tres hallazgos de la revisión del #105 ─────────────────────────── */
+
+describe('EL PLAZO CUENTA DESDE LA DETECCIÓN, no desde que se abrió el ROS', () => {
+  it('cuenta desde la primera alerta', () => {
+    // Si el ROS se abre 20 días después de la alerta, contar desde su creación
+    // diría «2 días» con el plazo legal casi consumido — y el día que se
+    // carguen los plazos, el semáforo estaría verde sobre un plazo vencido.
+    const ros = { creado_at: hace(2), regulador: 'UAF-CL',
+                  evidencia: { periodo: { desde: hace(22) },
+                               caso: { creado_at: hace(21) } } };
+    assert.equal(plazoDe(ros).dias, 22);
+    assert.equal(origenDelPlazo(ros).desde, 'la primera alerta');
+  });
+
+  it('sin alertas, desde la apertura del caso', () => {
+    const ros = { creado_at: hace(2), regulador: 'UAF-CL',
+                  evidencia: { periodo: { desde: '' },
+                               caso: { creado_at: hace(21) } } };
+    assert.equal(plazoDe(ros).dias, 21);
+    assert.equal(origenDelPlazo(ros).desde, 'la apertura del caso');
+  });
+
+  it('NUNCA desde la creación del ROS', () => {
+    const ros = { creado_at: hace(2), regulador: 'UAF-CL', evidencia: {} };
+    assert.equal(origenDelPlazo(ros), null);
+    assert.equal(plazoDe(ros), null, 'se cayó a la fecha equivocada');
+  });
+});
+
+describe('CON EL REGISTRO DE ROS CAÍDO no se afirma «Sin ROS»', () => {
+  it('«No disponible» es su propia etapa y no se confunde', () => {
+    assert.equal(etiquetaEtapa({ etapa: 'no_disponible' }).texto, 'No disponible');
+    assert.notEqual(ETAPAS_ROS.no_disponible.texto, ETAPAS_ROS.sin_ros.texto);
+  });
+
+  it('y no corre ningún plazo', () => {
+    assert.equal(correPlazo({ etapa: 'no_disponible' }), false);
+  });
+});
+
+describe('GANA EL QUE PIDE ATENCIÓN, no el más avanzado', () => {
+  it('una falla no queda tapada por un ROS enviado', () => {
+    // El trabajo está en el que NO terminó.
+    const m = rosPorCaso([
+      { case_id: 'c1', folio: 'A', etapa_gereo: 'enviado' },
+      { case_id: 'c1', folio: 'B', etapa_gereo: 'error_envio' },
+    ]);
+    assert.equal(m.c1.etapa, 'error_envio');
+    assert.equal(m.c1.folio, 'B');
+  });
+
+  it('una versión que no se guardó va primero que todo', () => {
+    const m = rosPorCaso([
+      { case_id: 'c1', etapa_gereo: 'revisado' },
+      { case_id: 'c1', version_error: { motivo: 'x' } },
+    ]);
+    assert.equal(m.c1.etapa, 'sin_version');
+  });
+
+  it('cuenta cuántos hay, para poder decir «+1»', () => {
+    const m = rosPorCaso([
+      { case_id: 'c1', etapa_gereo: 'enviado' },
+      { case_id: 'c1', etapa_gereo: 'error_envio' },
+      { case_id: 'c1', etapa_gereo: 'recibido' },
+    ]);
+    assert.equal(m.c1.cuantos, 3);
+  });
+
+  it('con uno solo no hay «+1» que mostrar', () => {
+    assert.equal(rosPorCaso([{ case_id: 'c1', etapa_gereo: 'recibido' }]).c1.cuantos, 1);
+  });
+});
+
+describe('un ROS descartado no pide trabajo', () => {
+  it('se ve «Descartado» y no su etapa', () => {
+    // Mostrar «Recibido» con el reloj corriendo diría que falta trabajo sobre
+    // algo que ya se decidió no reportar.
+    assert.equal(etapaDeRos({ etapa_gereo: 'recibido', estado: 'descartado' }),
+                 'descartado');
+    assert.equal(correPlazo({ etapa: 'descartado' }), false);
+    assert.equal(ETAPAS_ROS.descartado.color, 'neutro');
+  });
+
+  it('y no define la columna si hay otro ROS vivo', () => {
+    const m = rosPorCaso([
+      { case_id: 'c1', folio: 'A', etapa_gereo: 'recibido', estado: 'descartado' },
+      { case_id: 'c1', folio: 'B', etapa_gereo: 'recibido' },
+    ]);
+    assert.equal(m.c1.etapa, 'recibido');
+    assert.equal(m.c1.folio, 'B');
   });
 });

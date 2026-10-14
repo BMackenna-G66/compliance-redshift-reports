@@ -25,7 +25,7 @@ import {
 } from '../comun/casos.js';
 import { ESTADOS_CASO } from '../dominio.js';
 import {
-  ETAPAS_ROS, etiquetaEtapa, filtrarPorRos, plazoDe, rosPorCaso,
+  ETAPAS_ROS, correPlazo, etiquetaEtapa, filtrarPorRos, plazoDe, rosPorCaso,
 } from '../comun/ros.js';
 
 function Estado({ caso }) {
@@ -45,19 +45,29 @@ const COLOR_ETAPA = {
   alto: 'var(--nivel-alto-texto)',
 };
 
-function EtapaRos({ ros }) {
-  const d = etiquetaEtapa(ros);
-  const sinRos = !ros || ros.etapa === 'sin_ros';
-  // El reloj sólo corre mientras el reporte no salió. Mostrar «12 días» en
-  // uno ya enviado sugiere que falta algo.
-  const corriendo = ros && !['sin_ros', 'enviado'].includes(ros.etapa);
-  const plazo = corriendo ? plazoDe(ros) : null;
+function EtapaRos({ ros, disponible }) {
+  // CON EL REGISTRO CAÍDO NO SE DICE «SIN ROS». Eso afirmaría, fila por fila,
+  // que ningún caso tiene reporte.
+  const efectivo = disponible ? ros : { etapa: 'no_disponible' };
+  const d = etiquetaEtapa(efectivo);
+  const apagado = !efectivo || ['sin_ros', 'no_disponible'].includes(efectivo.etapa);
+  const plazo = correPlazo(efectivo) ? plazoDe(efectivo) : null;
+  const titulo = [
+    efectivo?.folio && `${efectivo.folio}${efectivo.version ? ` · v${efectivo.version}` : ''}`,
+    plazo?.desde && `cuenta desde ${plazo.desde}`,
+  ].filter(Boolean).join(' · ');
   return (
     <>
       <span style={{ color: COLOR_ETAPA[d.color] || 'var(--texto-2)',
-                     fontWeight: sinRos ? 'inherit' : 'var(--peso-medio)' }}
-            title={ros?.folio ? `${ros.folio}${ros.version ? ` · v${ros.version}` : ''}` : ''}>
+                     fontWeight: apagado ? 'inherit' : 'var(--peso-medio)' }}
+            title={titulo}>
         {d.texto}
+        {efectivo?.cuantos > 1 && (
+          <span style={{ color: 'var(--texto-mute)',
+                         fontWeight: 'inherit' }}>
+            {' '}+{efectivo.cuantos - 1}
+          </span>
+        )}
       </span>
       {plazo && (
         <span style={{ display: 'block', fontSize: 'var(--texto-xs)',
@@ -71,7 +81,7 @@ function EtapaRos({ ros }) {
   );
 }
 
-function columnas(navegar) {
+function columnas(navegar, hayRos) {
   return [
     {
       clave: 'entity_id',
@@ -107,7 +117,7 @@ function columnas(navegar) {
       clave: '_etapaRos',
       titulo: 'Etapa ROS',
       ancho: '10%',
-      render: (c) => <EtapaRos ros={c._ros} />,
+      render: (c) => <EtapaRos ros={c._ros} disponible={hayRos} />,
     },
     {
       clave: '_slaOrden',
@@ -186,6 +196,10 @@ export function Casos({ api, navegar }) {
   const [error, setError] = useState('');
   const [filtro, setFiltro] = useState('abiertos');
   const [ros, setRos] = useState([]);
+  // `null` mientras no se sabe; `false` si el registro no se pudo leer. La
+  // diferencia importa: con `false`, la columna dice «No disponible» en vez
+  // de «Sin ROS».
+  const [rosDisponible, setRosDisponible] = useState(true);
   const [filtroEtapa, setFiltroEtapa] = useState('');
   const [filtroPais, setFiltroPais] = useState('');
 
@@ -203,12 +217,14 @@ export function Casos({ api, navegar }) {
       // mueve al backend.
       const [d, dr] = await Promise.all([
         api.get('/cases?status=all'),
-        // Que falle el ROS no puede dejar sin casos la pantalla: la columna
-        // queda vacía y lo demás sigue.
-        api.get('/ros').catch(() => null),
+        // Que falle el ROS no puede dejar sin casos la pantalla. Pero sí hay
+        // que DECIRLO: sin esto, un registro caído haría que todas las filas
+        // afirmen «Sin ROS».
+        api.get('/ros').then((x) => x, () => null),
       ]);
       setCasos(d?.cases || []);
       setRos(dr?.ros || []);
+      setRosDisponible(dr !== null);
       setConfig(d?.sla_config || null);
       if (d?.warning) setError(`La API respondió con un aviso: ${d.warning}`);
     } catch (e) {
@@ -284,7 +300,15 @@ export function Casos({ api, navegar }) {
       {/* Los filtros de ROS SÓLO aparecen cuando hay ROS. Mostrarlos con el
           registro vacío ofrece filtrar por algo que no existe y hace pensar
           que la pantalla está rota. */}
-      {Object.keys(porCaso).length > 0 && (
+      {!rosDisponible && !cargando && (
+        <p className="wt-nota wt-nota-alarma">
+          <strong>No se pudo leer el registro de ROS.</strong> La columna
+          «Etapa ROS» no muestra nada en esta carga — no significa que los
+          casos no tengan reporte. Lo demás de la pantalla está al día.
+        </p>
+      )}
+
+      {rosDisponible && Object.keys(porCaso).length > 0 && (
         <div style={{ display: 'flex', gap: 'var(--e-2)', alignItems: 'center',
                       marginBottom: 'var(--e-3)', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
@@ -317,7 +341,7 @@ export function Casos({ api, navegar }) {
 
       <Tabla
         titulo="Casos"
-        columnas={columnas(navegar)}
+        columnas={columnas(navegar, rosDisponible)}
         filas={visibles}
         cargando={cargando}
         error={error}
