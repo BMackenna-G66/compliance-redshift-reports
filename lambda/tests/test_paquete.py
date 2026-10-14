@@ -99,3 +99,4 @@ class ElZipSeRecreaYNoSeActualiza(unittest.TestCase):
         self.assertLess(texto.index("rm -f lambda_package.zip"),
                         texto.index("zip -r ../lambda_package.zip"),
                         "el borrado quedó después de armar el zip")
+
