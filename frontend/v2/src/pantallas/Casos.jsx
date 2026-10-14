@@ -24,6 +24,9 @@ import {
   prepararCaso, tiempoDeCierre,
 } from '../comun/casos.js';
 import { ESTADOS_CASO } from '../dominio.js';
+import {
+  ETAPAS_ROS, etiquetaEtapa, filtrarPorRos, plazoDe, rosPorCaso,
+} from '../comun/ros.js';
 
 function Estado({ caso }) {
   const d = ESTADOS_CASO[caso.status];
@@ -31,6 +34,40 @@ function Estado({ caso }) {
     <span style={{ color: d?.color || 'var(--texto-2)', fontWeight: 'var(--peso-medio)' }}>
       {d?.etiqueta || caso.status || '—'}
     </span>
+  );
+}
+
+const COLOR_ETAPA = {
+  neutro: 'var(--texto-mute)',
+  info: 'var(--g66-azul-texto)',
+  medio: 'var(--nivel-medio-texto)',
+  ok: 'var(--nivel-bajo-texto)',
+  alto: 'var(--nivel-alto-texto)',
+};
+
+function EtapaRos({ ros }) {
+  const d = etiquetaEtapa(ros);
+  const sinRos = !ros || ros.etapa === 'sin_ros';
+  // El reloj sólo corre mientras el reporte no salió. Mostrar «12 días» en
+  // uno ya enviado sugiere que falta algo.
+  const corriendo = ros && !['sin_ros', 'enviado'].includes(ros.etapa);
+  const plazo = corriendo ? plazoDe(ros) : null;
+  return (
+    <>
+      <span style={{ color: COLOR_ETAPA[d.color] || 'var(--texto-2)',
+                     fontWeight: sinRos ? 'inherit' : 'var(--peso-medio)' }}
+            title={ros?.folio ? `${ros.folio}${ros.version ? ` · v${ros.version}` : ''}` : ''}>
+        {d.texto}
+      </span>
+      {plazo && (
+        <span style={{ display: 'block', fontSize: 'var(--texto-xs)',
+                       /* Sin plazo definido no se pinta: el verde afirmaría
+                          que hay tiempo de sobra sin que nadie lo sepa. */
+                       color: COLOR_ETAPA[plazo.semaforo] || 'var(--texto-mute)' }}>
+          {plazo.texto}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -66,6 +103,12 @@ function columnas(navegar) {
         : <span style={{ color: 'var(--texto-mute)' }}>manual</span>),
     },
     { clave: '_estado', titulo: 'Estado', ancho: '9%', render: (c) => <Estado caso={c} /> },
+    {
+      clave: '_etapaRos',
+      titulo: 'Etapa ROS',
+      ancho: '10%',
+      render: (c) => <EtapaRos ros={c._ros} />,
+    },
     {
       clave: '_slaOrden',
       titulo: 'Plazo',
@@ -142,6 +185,9 @@ export function Casos({ api, navegar }) {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
   const [filtro, setFiltro] = useState('abiertos');
+  const [ros, setRos] = useState([]);
+  const [filtroEtapa, setFiltroEtapa] = useState('');
+  const [filtroPais, setFiltroPais] = useState('');
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -149,8 +195,20 @@ export function Casos({ api, navegar }) {
     try {
       // `status=all` porque el filtro se hace acá: cambiar de filtro no
       // debería costar un viaje a la API cuando son 89 filas.
-      const d = await api.get('/cases?status=all');
+      // Los dos en paralelo: la etapa del ROS vive en el ROS y la lista
+      // muestra casos. Se cruzan acá y no en `/cases`, que lo usan varias
+      // pantallas y encarecerlo para todas por una columna no se justifica.
+      //
+      // El registro de ROS es chico; si algún día deja de serlo, esto se
+      // mueve al backend.
+      const [d, dr] = await Promise.all([
+        api.get('/cases?status=all'),
+        // Que falle el ROS no puede dejar sin casos la pantalla: la columna
+        // queda vacía y lo demás sigue.
+        api.get('/ros').catch(() => null),
+      ]);
       setCasos(d?.cases || []);
+      setRos(dr?.ros || []);
       setConfig(d?.sla_config || null);
       if (d?.warning) setError(`La API respondió con un aviso: ${d.warning}`);
     } catch (e) {
@@ -162,10 +220,23 @@ export function Casos({ api, navegar }) {
 
   useEffect(() => { cargar(); }, [cargar]);
 
-  const preparados = useMemo(() => casos.map(prepararCaso), [casos]);
+  const porCaso = useMemo(() => rosPorCaso(ros), [ros]);
+  const preparados = useMemo(
+    () => casos.map((c) => ({ ...prepararCaso(c), _ros: porCaso[c.case_id] })),
+    [casos, porCaso]);
   const ind = useMemo(() => indicadores(casos), [casos]);
   const cierre = useMemo(() => tiempoDeCierre(casos), [casos]);
-  const visibles = useMemo(() => aplicarFiltro(preparados, filtro), [preparados, filtro]);
+  const visibles = useMemo(
+    () => filtrarPorRos(aplicarFiltro(preparados, filtro), porCaso,
+                        { etapa: filtroEtapa, regulador: filtroPais }),
+    [preparados, filtro, porCaso, filtroEtapa, filtroPais]);
+
+  /* Sólo los reguladores que de verdad aparecen: ofrecer «Colombia» cuando no
+     hay ningún ROS colombiano manda a filtrar a la nada. */
+  const reguladoresPresentes = useMemo(() => {
+    const s = new Set(Object.values(porCaso).map((r) => r.regulador).filter(Boolean));
+    return [...s].sort();
+  }, [porCaso]);
 
   const sinDatos = (cargando || Boolean(error)) && casos.length === 0;
   const n = (v) => (sinDatos ? '—' : v);
@@ -208,6 +279,40 @@ export function Casos({ api, navegar }) {
           {diasTexto(Math.min(...conReloj.map((c) => c.sla_dias)))} a{' '}
           {diasTexto(Math.max(...conReloj.map((c) => c.sla_dias)))} abiertos.
         </p>
+      )}
+
+      {/* Los filtros de ROS SÓLO aparecen cuando hay ROS. Mostrarlos con el
+          registro vacío ofrece filtrar por algo que no existe y hace pensar
+          que la pantalla está rota. */}
+      {Object.keys(porCaso).length > 0 && (
+        <div style={{ display: 'flex', gap: 'var(--e-2)', alignItems: 'center',
+                      marginBottom: 'var(--e-3)', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
+            ROS:
+          </span>
+          <select className="wt-input" style={{ width: 'auto' }}
+                  value={filtroEtapa} onChange={(e) => setFiltroEtapa(e.target.value)}>
+            <option value="">Todas las etapas</option>
+            {Object.entries(ETAPAS_ROS).map(([clave, d]) => (
+              <option key={clave} value={clave}>{d.texto}</option>
+            ))}
+          </select>
+          {reguladoresPresentes.length > 1 && (
+            <select className="wt-input" style={{ width: 'auto' }}
+                    value={filtroPais} onChange={(e) => setFiltroPais(e.target.value)}>
+              <option value="">Todos los reguladores</option>
+              {reguladoresPresentes.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          )}
+          {(filtroEtapa || filtroPais) && (
+            <button className="wt-btn" type="button"
+                    onClick={() => { setFiltroEtapa(''); setFiltroPais(''); }}>
+              Quitar el filtro de ROS
+            </button>
+          )}
+        </div>
       )}
 
       <Tabla
