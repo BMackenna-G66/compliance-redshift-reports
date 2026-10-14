@@ -2556,16 +2556,31 @@ def handler(event, context):  # noqa: ARG001
         body = {}
 
     try:
-        # EL CORS NO SE DECLARA ACÁ. Lo contesta API Gateway, con la
-        # `CorsConfiguration` de la API (`aws apigatewayv2 get-api --api-id
-        # qwvd2t33uc`); este código nunca corre para un preflight.
+        # ═══════════════════════════════════════════════════════════════
+        # ESTO SÍ CORRE, Y SIN ESTO LA APLICACIÓN ENTERA SE CAE.
+        # ═══════════════════════════════════════════════════════════════
         #
-        # Acá había un handler de OPTIONS que declaraba su propia política, y
-        # decía cosas que NO regían: permitía `PUT` y el header
-        # `Authorization`, que API Gateway rechazaba. Eso escondió durante
-        # meses que editar una configuración documental de alerta estaba roto
-        # en v1 — alguien leía el código, veía `PUT` permitido y seguía de
-        # largo. Una política falsa es peor que ninguna.
+        # NO BORRAR. Ya se borró una vez —el 13-10-2026, con el argumento de
+        # que era código muerto— y dejó a todo el equipo sin WatchTower, v1 y
+        # v2, durante quince horas.
+        #
+        # POR QUÉ CORRE. La API tiene una ruta `$default` (ANY → Lambda), así
+        # que API Gateway le pasa TAMBIÉN el OPTIONS a la Lambda y recién
+        # después le agrega sus headers CORS encima. Si la Lambda no contesta
+        # un 2xx, el preflight termina en 404 — con los headers correctos, que
+        # es lo que engaña— y el navegador bloquea la llamada. Todas: v1 manda
+        # `Content-Type: application/json` en cada request, incluidos los GET,
+        # así que todas pasan por preflight.
+        #
+        # NO SE DECLARA NINGUNA POLÍTICA ACÁ. Los headers los pone API Gateway
+        # (`CorsConfiguration` de la API: `aws apigatewayv2 get-api --api-id
+        # qwvd2t33uc`). El handler anterior declaraba la suya, que NO regía
+        # —permitía `PUT` y `Authorization` cuando API Gateway no— y eso
+        # escondió durante meses que editar una configuración documental
+        # estaba roto en v1. Lo que había que sacar era la política falsa, no
+        # la respuesta.
+        if method == "OPTIONS":
+            return {"statusCode": 204, "headers": {}, "body": ""}
 
         # GET /reports
         if method == "GET" and not parts:
