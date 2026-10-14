@@ -151,6 +151,12 @@ except Exception as _e:  # pragma: no cover
     print(f"[api] verificación de sesión no disponible: {_e}")
 
 try:
+    import ros_aprobacion
+except Exception as _e:  # pragma: no cover
+    ros_aprobacion = None
+    print(f"[api] aprobación de ROS no disponible: {_e}")
+
+try:
     import informe_alertas
     import informe_email
 except Exception as _e:  # pragma: no cover
@@ -2677,6 +2683,28 @@ def handler(event, context):  # noqa: ARG001
                 if error:
                     return error
                 return guardar_version_ros(parts[1], body, exigido["email"])
+
+            # Revisar y aprobar. RUTAS NUEVAS: token desde el día uno y el
+            # actor como ARGUMENTO. Acá el actor no es un dato de auditoría:
+            # es lo que decide si la persona puede hacerlo, por el rol y por
+            # el cuatro ojos. Leerlo del cuerpo haría que los dos controles
+            # los escriba quien llama.
+            if (method == "POST" and len(parts) == 3
+                    and parts[2] in ("revisar", "aprobar")):
+                exigido, error = _identidad(event, exige=True)
+                if error:
+                    return error
+                if parts[2] == "revisar":
+                    return marcar_revisado_ros(parts[1], body, exigido["email"])
+                return aprobar_ros(parts[1], body, exigido["email"])
+
+            # GET /ros/{folio}/diff — qué tocó una persona desde que GEREO lo
+            # generó. Es lo que mira quien aprueba.
+            if method == "GET" and len(parts) == 3 and parts[2] == "diff":
+                exigido, error = _identidad(event, exige=True)
+                if error:
+                    return error
+                return diff_version_ros(parts[1])
             # GET /ros/{folio}/versiones/{n}/{json|pdf} — una URL prefirmada.
             if (method == "GET" and len(parts) == 5
                     and parts[2] == "versiones" and parts[4] in ("json", "pdf")):
@@ -3637,6 +3665,24 @@ def guardar_version_ros(folio: str, body: dict, actor: str):
         print(f"[ros] no pude guardar la edición de {folio}: {type(e).__name__}")
         return resp(502, {"error": "No pude guardar la versión. Reintentá."})
 
+    # EDITAR ANULA LA APROBACIÓN. Lo aprobado era la versión anterior: dejar
+    # viva la firma sobre un contenido que cambió es exactamente lo que el
+    # `json_sha256` existe para impedir. Se saca del registro y se anota qué
+    # se invalidó, porque un campo que desaparece sin rastro es peor que no
+    # haberlo tenido.
+    previa = actualizado.get("aprobacion")
+    if previa:
+        actualizado = dict(actualizado)
+        actualizado.pop("aprobacion", None)
+        actualizado.pop("narrativa_enviada", None)
+        actualizado = ros_etapas.anotar(
+            actualizado, "aprobacion_invalidada", actor, momento=_now_str(),
+            nota=(f"La aprobación de la v{previa.get('version')} "
+                  f"({previa.get('quien')}) ya no vale: se editó el contenido "
+                  f"y ahora es la v{actualizado.get('version_actual')}."),
+            datos={"version_invalidada": previa.get("version"),
+                   "aprobada_por": previa.get("quien")})
+
     # EDITAR ANULA LA REVISIÓN. Lo revisado era la versión anterior, y darla
     # por buena sobre un contenido que cambió es exactamente lo que el control
     # existe para evitar.
@@ -3650,6 +3696,187 @@ def guardar_version_ros(folio: str, body: dict, actor: str):
                 entity_id=folio,
                 new_value={"version": actualizado.get("version_actual")})
     return resp(201, {"ros": _con_pendientes(actualizado)})
+
+
+def _oficiales_cumplimiento() -> list:
+    """El padrón, leído de S3 EN CADA LLAMADA.
+
+    Sin caché a propósito: una baja tiene que tener efecto ahora, no cuando
+    Lambda recicle el contenedor. Son unos pocos correos y una lectura.
+
+    FALLA CERRADO. Si el objeto no existe, no se puede leer o viene con otra
+    forma, la lista queda vacía y no aprueba nadie. Un padrón que no se puede
+    leer no significa «todos pueden»: significa que no sabemos quién puede.
+    """
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=ros_aprobacion.CLAVE_PADRON)
+        return ros_aprobacion.oficiales_de(json.loads(obj["Body"].read()))
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[ros] no pude leer el padrón de oficiales: {type(e).__name__}")
+        return []
+
+
+def _version_a_aprobar(reporte: dict):
+    """La versión actual y la v1, que es la que generó GEREO."""
+    base = reporte.get("version_actual") or 0
+    actual = _leer_version_ros(reporte, base)
+    v1 = actual if base == 1 else _leer_version_ros(reporte, 1)
+    return base, actual, v1
+
+
+def marcar_revisado_ros(folio: str, body: dict, actor: str):
+    """«Lo miré». No aprueba nada: es el primer par de ojos."""
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte \'{folio}\'."})
+    if not (ros_etapas and ros_aprobacion):
+        return resp(503, {"error": "La revisión no está disponible en este "
+                                   "despliegue."})
+    faltan = ros_aprobacion.bloqueos_para_revisar(r) + \
+        ros_etapas.bloqueos(r, "revisado")
+    if faltan:
+        return resp(409, {"error": "; ".join(faltan)})
+
+    nuevo = ros_etapas.cambiar(r, "revisado", actor, momento=_now_str(),
+                               nota=str(body.get("nota") or "").strip()[:500])
+    _crm_put("ros", folio, nuevo)
+    _safe_audit(user_email=actor, action="ros.revisado", entity_type="ros",
+                entity_id=folio,
+                new_value={"version": nuevo.get("version_actual")})
+    return resp(200, {"ros": _con_pendientes(nuevo)})
+
+
+def diff_version_ros(folio: str):
+    """Qué tocó una persona desde que GEREO generó el reporte.
+
+    Es lo que mira quien aprueba. Los campos VACIADOS van marcados: borrar un
+    dato que GEREO sí trajo es la consecuencia del comodín `nulo`, y el
+    documento va a salir sin ese dato.
+    """
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte \'{folio}\'."})
+    if not (ros_aprobacion and ros_versiones and ros_gereo):
+        return resp(503, {"error": "No disponible en este despliegue."})
+    if not (r.get("version_actual") or 0):
+        return resp(409, {"error": "Este reporte no tiene ninguna versión "
+                                   "guardada."})
+    try:
+        base, actual, v1 = _version_a_aprobar(r)
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[ros] no pude leer las versiones de {folio}: {type(e).__name__}")
+        return resp(502, {"error": "No pude leer las versiones del reporte."})
+
+    pais = ros_versiones.pais_largo(r)
+    cambios = ros_aprobacion.diferencias_contra_v1(v1, actual)
+    oficiales = _oficiales_cumplimiento()
+    de_ia = ros_aprobacion.narrativa_sin_tocar(v1, actual, pais)
+    return resp(200, {
+        "folio": folio, "version": base, "pais": pais,
+        "cambios": cambios,
+        "vaciados": [c for c in cambios if c["vaciado"]],
+        # Si el texto es el de la IA sin tocar, quien firma lo tiene que
+        # acusar expresamente. La pantalla necesita saberlo para pedirlo.
+        "narrativa_es_de_ia": de_ia,
+        "narrativa": ros_aprobacion.narrativa_para_el_registro(actual, pais),
+        "hay_oficiales": bool(oficiales),
+    })
+
+
+def aprobar_ros(folio: str, body: dict, actor: str):
+    """Aprueba UNA VERSIÓN, con su hash. El actor llega verificado."""
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte \'{folio}\'."})
+    if not (ros_etapas and ros_aprobacion and ros_versiones):
+        return resp(503, {"error": "La aprobación no está disponible en este "
+                                   "despliegue."})
+
+    base = r.get("version_actual") or 0
+    if not base:
+        return resp(409, {"error": "Este reporte no tiene ninguna versión "
+                                   "guardada."})
+    # Se aprueba la versión que se miró, no «la última». Si alguien guardó
+    # entremedio, lo revisado ya no es lo que se aprobaría.
+    try:
+        sobre = int(body.get("version"))
+    except (TypeError, ValueError):
+        return resp(400, {"error": "Falta decir qué versión se aprueba."})
+    if sobre != int(base):
+        return resp(409, {
+            "error": f"Se guardó la versión {base} mientras revisabas la "
+                     f"{sobre}. Volvé a mirarla antes de aprobar.",
+            "version_actual": base})
+
+    try:
+        _, actual, v1 = _version_a_aprobar(r)
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[ros] no pude leer las versiones de {folio}: {type(e).__name__}")
+        return resp(502, {"error": "No pude leer las versiones del reporte."})
+
+    pais = ros_versiones.pais_largo(r)
+    de_ia = ros_aprobacion.narrativa_sin_tocar(v1, actual, pais)
+    faltan = ros_aprobacion.bloqueos_para_aprobar(
+        r, actor, _oficiales_cumplimiento(),
+        acuse_ia=bool(body.get("acuse_ia")), narrativa_es_de_ia=de_ia)
+    # UN REPORTE SIN NARRATIVA NO SE APRUEBA. Es lo que lee el regulador: lo
+    # que se aprobaría es un documento que no dice nada.
+    if not ros_aprobacion.hay_narrativa(actual, pais):
+        faltan.append("El reporte no tiene narrativa: es lo que lee el "
+                      "regulador y no puede ir vacía.")
+    if faltan:
+        return resp(403, {"error": " ".join(faltan), "motivos": faltan})
+
+    ficha = ros_versiones.version_de(r, base) or {}
+    ahora = _now_str()
+    nuevo = dict(r)
+    # QUÉ SE APROBÓ, no sólo que se aprobó: la versión, su hash, y si el texto
+    # era el de la IA. Es lo que contesta una auditoría.
+    nuevo["aprobacion"] = {
+        "version": base,
+        "json_sha256": ficha.get("json_sha256", ""),
+        "quien": actor,
+        "cuando": ahora,
+        "texto_de_ia_sin_modificar": de_ia,
+        "acuse_ia": bool(body.get("acuse_ia")),
+        "campos_vaciados": [c["ruta"] for c in
+                            ros_aprobacion.diferencias_contra_v1(v1, actual)
+                            if c["vaciado"]],
+    }
+    # LA NARRATIVA SALE DE LA VERSIÓN APROBADA. Si fuera un campo aparte, el
+    # registro podría decir una cosa y el regulador recibir otra.
+    nuevo["narrativa_enviada"] = {
+        "version": base,
+        "json_sha256": ficha.get("json_sha256", ""),
+        "texto": ros_aprobacion.narrativa_para_el_registro(actual, pais),
+    }
+    # QUE LA FIRMA QUEDE EN EL REGISTRO, no sólo en la auditoría general.
+    # Aprobar no mueve la etapa —sigue «revisado» hasta que se envíe— pero es
+    # el hecho más importante del reporte, y el campo `aprobacion` se pisa.
+    nuevo = ros_etapas.anotar(
+        nuevo, "aprobado", actor, momento=ahora,
+        nota=(f"Aprobada la v{base}"
+              + (" · texto de IA acusado" if de_ia else "")),
+        datos={"json_sha256": ficha.get("json_sha256", ""),
+               "texto_de_ia_sin_modificar": de_ia})
+
+    # ÚLTIMA LECTURA ANTES DE ESCRIBIR. Entre la lectura del principio y acá
+    # se leyó S3 dos veces; si una edición entró en el medio, este `put`
+    # pisaría la versión nueva y el registro volvería a apuntar a la vieja
+    # —con una firma sobre un contenido que ya no es el actual—.
+    fresco = _crm_get("ros", folio)
+    if (fresco or {}).get("version_actual") != base:
+        return resp(409, {
+            "error": "Se guardó una versión nueva mientras aprobabas. "
+                     "Volvé a mirarla antes de aprobar.",
+            "version_actual": (fresco or {}).get("version_actual")})
+
+    _crm_put("ros", folio, nuevo)
+    _safe_audit(user_email=actor, action="ros.aprobado", entity_type="ros",
+                entity_id=folio,
+                new_value={"version": base,
+                           "texto_de_ia": de_ia})
+    return resp(200, {"ros": _con_pendientes(nuevo)})
 
 
 def listar_versiones_ros(folio: str):
