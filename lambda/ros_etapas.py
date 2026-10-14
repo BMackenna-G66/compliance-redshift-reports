@@ -158,3 +158,27 @@ def editable(reporte: dict) -> bool:
     `enviado` no se toca nunca más.
     """
     return etapa_de(reporte) in EDITABLES or etapa_de(reporte) == INICIAL
+
+
+def anotar(reporte: dict, evento: str, quien: str, momento: str = "",
+           nota: str = "", datos: dict | None = None) -> dict:
+    """Un hecho que NO es un cambio de etapa, en el mismo historial.
+
+    Aprobar no mueve la etapa —el reporte sigue «revisado» hasta que se
+    envíe— pero es el hecho más importante del reporte: alguien firmó. Sin
+    esto, la única traza era la auditoría general, que no vive con el registro
+    y donde el campo `aprobacion` se pisa sin dejar rastro de lo anterior.
+
+    NO muta el reporte que recibe.
+    """
+    if not str(quien or "").strip():
+        raise ValueError("falta quién")
+    entrada = {"evento": str(evento), "quien": str(quien).strip(),
+               "cuando": str(momento or ""), "nota": str(nota or "")}
+    if reporte.get("version_actual"):
+        entrada["version"] = reporte["version_actual"]
+    if datos:
+        entrada.update(datos)
+    salida = dict(reporte)
+    salida["historial_gereo"] = historial_de(reporte) + [entrada]
+    return salida

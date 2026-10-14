@@ -3665,6 +3665,24 @@ def guardar_version_ros(folio: str, body: dict, actor: str):
         print(f"[ros] no pude guardar la edición de {folio}: {type(e).__name__}")
         return resp(502, {"error": "No pude guardar la versión. Reintentá."})
 
+    # EDITAR ANULA LA APROBACIÓN. Lo aprobado era la versión anterior: dejar
+    # viva la firma sobre un contenido que cambió es exactamente lo que el
+    # `json_sha256` existe para impedir. Se saca del registro y se anota qué
+    # se invalidó, porque un campo que desaparece sin rastro es peor que no
+    # haberlo tenido.
+    previa = actualizado.get("aprobacion")
+    if previa:
+        actualizado = dict(actualizado)
+        actualizado.pop("aprobacion", None)
+        actualizado.pop("narrativa_enviada", None)
+        actualizado = ros_etapas.anotar(
+            actualizado, "aprobacion_invalidada", actor, momento=_now_str(),
+            nota=(f"La aprobación de la v{previa.get('version')} "
+                  f"({previa.get('quien')}) ya no vale: se editó el contenido "
+                  f"y ahora es la v{actualizado.get('version_actual')}."),
+            datos={"version_invalidada": previa.get("version"),
+                   "aprobada_por": previa.get("quien")})
+
     # EDITAR ANULA LA REVISIÓN. Lo revisado era la versión anterior, y darla
     # por buena sobre un contenido que cambió es exactamente lo que el control
     # existe para evitar.
@@ -3800,7 +3818,14 @@ def aprobar_ros(folio: str, body: dict, actor: str):
     de_ia = ros_aprobacion.narrativa_sin_tocar(v1, actual, pais)
     faltan = ros_aprobacion.bloqueos_para_aprobar(
         r, actor, _oficiales_cumplimiento(),
-        acuse_ia=bool(body.get("acuse_ia")), narrativa_es_de_ia=de_ia)
+        acuse_ia=bool(body.get("acuse_ia")), narrativa_es_de_ia=de_ia,
+        etapa=ros_etapas.etapa_de(r),
+        pendientes=ros_mod.pendientes_gereo(r))
+    # UN REPORTE SIN NARRATIVA NO SE APRUEBA. Es lo que lee el regulador: lo
+    # que se aprobaría es un documento que no dice nada.
+    if not ros_aprobacion.hay_narrativa(actual, pais):
+        faltan.append("El reporte no tiene narrativa: es lo que lee el "
+                      "regulador y no puede ir vacía.")
     if faltan:
         return resp(403, {"error": " ".join(faltan), "motivos": faltan})
 
@@ -3827,6 +3852,27 @@ def aprobar_ros(folio: str, body: dict, actor: str):
         "json_sha256": ficha.get("json_sha256", ""),
         "texto": ros_aprobacion.narrativa_para_el_registro(actual, pais),
     }
+    # QUE LA FIRMA QUEDE EN EL REGISTRO, no sólo en la auditoría general.
+    # Aprobar no mueve la etapa —sigue «revisado» hasta que se envíe— pero es
+    # el hecho más importante del reporte, y el campo `aprobacion` se pisa.
+    nuevo = ros_etapas.anotar(
+        nuevo, "aprobado", actor, momento=ahora,
+        nota=(f"Aprobada la v{base}"
+              + (" · texto de IA acusado" if de_ia else "")),
+        datos={"json_sha256": ficha.get("json_sha256", ""),
+               "texto_de_ia_sin_modificar": de_ia})
+
+    # ÚLTIMA LECTURA ANTES DE ESCRIBIR. Entre la lectura del principio y acá
+    # se leyó S3 dos veces; si una edición entró en el medio, este `put`
+    # pisaría la versión nueva y el registro volvería a apuntar a la vieja
+    # —con una firma sobre un contenido que ya no es el actual—.
+    fresco = _crm_get("ros", folio)
+    if (fresco or {}).get("version_actual") != base:
+        return resp(409, {
+            "error": "Se guardó una versión nueva mientras aprobabas. "
+                     "Volvé a mirarla antes de aprobar.",
+            "version_actual": (fresco or {}).get("version_actual")})
+
     _crm_put("ros", folio, nuevo)
     _safe_audit(user_email=actor, action="ros.aprobado", entity_type="ros",
                 entity_id=folio,

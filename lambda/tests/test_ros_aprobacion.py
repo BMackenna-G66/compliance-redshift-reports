@@ -411,3 +411,280 @@ class AprobarDePuntaAPunta(unittest.TestCase):
         self.assertEqual(res["statusCode"], 200)
         self.assertEqual(guardado["aprobacion"]["campos_vaciados"],
                          ["2_identificacion_reportados.nombre_o_razon_social"])
+
+
+class DONDE_TIENE_QUE_ESTAR_EL_REPORTE(unittest.TestCase):
+    """Sin estos controles se podía aprobar un ROS en «recibido» que NADIE
+    revisó: el oficial aprobando solo, sin segundo par de ojos — que es justo
+    lo que el cuatro ojos existe para impedir."""
+
+    def _faltan(self, **extra):
+        r = reporte([v(1, "gereo", "ana@example.com")], **extra)
+        return AP.bloqueos_para_aprobar(
+            r, "oficial@example.com", OFICIALES, acuse_ia=True,
+            narrativa_es_de_ia=False, etapa=extra.get("etapa_gereo", "revisado"),
+            pendientes=extra.pop("_pendientes", ()))
+
+    def test_SIN_REVISAR_NO_SE_APRUEBA(self):
+        faltan = self._faltan(etapa_gereo="recibido")
+        self.assertTrue(any("revisado" in f for f in faltan))
+
+    def test_un_ros_descartado_tampoco(self):
+        faltan = self._faltan(estado="descartado")
+        self.assertTrue(any("descartado" in f for f in faltan))
+
+    def test_fuera_de_revision_legal_tampoco(self):
+        for estado in ("borrador", "enviado", ""):
+            with self.subTest(estado=estado):
+                faltan = self._faltan(estado=estado)
+                self.assertTrue(any("revisión legal" in f for f in faltan))
+
+    def test_ya_enviado_o_enviando_tampoco(self):
+        for etapa in ("enviando", "enviado"):
+            with self.subTest(etapa=etapa):
+                self.assertTrue(self._faltan(etapa_gereo=etapa))
+
+    def test_LOS_PENDIENTES_DE_GEREO_NO_SE_SALTEAN(self):
+        """Es el control del PR #97; el camino nuevo no puede esquivarlo."""
+        r = reporte([v(1, "gereo", "ana@example.com")])
+        faltan = AP.bloqueos_para_aprobar(
+            r, "oficial@example.com", OFICIALES, acuse_ia=True,
+            narrativa_es_de_ia=False, etapa="revisado",
+            pendientes=["Textos narrativos redactados con IA (borrador)."])
+        self.assertTrue(any("IA" in f for f in faltan))
+
+    def test_en_revisado_y_revision_legal_pasa(self):
+        self.assertEqual(self._faltan(), [])
+
+
+class UNA_VERSION_NO_SE_APRUEBA_DOS_VECES(unittest.TestCase):
+    """La segunda pisaría la primera y la firma original desaparecería."""
+
+    def _con_aprobacion(self, version=1, sha="sha1"):
+        return reporte([v(1, "gereo", "ana@example.com")],
+                       aprobacion={"version": version, "json_sha256": sha,
+                                   "quien": "otro@example.com"})
+
+    def test_la_segunda_se_rechaza(self):
+        faltan = AP.bloqueos_para_aprobar(
+            self._con_aprobacion(), "oficial@example.com", OFICIALES,
+            acuse_ia=True, narrativa_es_de_ia=False, etapa="revisado")
+        self.assertTrue(any("ya está aprobada" in f for f in faltan))
+
+    def test_NADIE_LEE_APROBACION_A_PELO(self):
+        """Una aprobación de otra versión no vale para la actual."""
+        r = self._con_aprobacion(version=1)
+        r["version_actual"] = 2
+        r["versiones"].append(v(2, "edicion", "beto@example.com"))
+        self.assertIsNone(AP.aprobacion_vigente(r))
+
+    def test_ni_una_con_otro_hash(self):
+        """Si el contenido cambió, la firma no lo alcanza."""
+        self.assertIsNone(AP.aprobacion_vigente(self._con_aprobacion(sha="otro")))
+
+    def test_la_de_la_version_actual_con_su_hash_si(self):
+        self.assertIsNotNone(AP.aprobacion_vigente(self._con_aprobacion()))
+
+    def test_sin_aprobacion_no_inventa_una(self):
+        for basura in (None, "", 0, [], "sí"):
+            with self.subTest(basura=basura):
+                r = reporte([v(1, "gereo", "a@example.com")], aprobacion=basura)
+                self.assertIsNone(AP.aprobacion_vigente(r))
+
+
+class EL_ACUSE_DE_IA_NO_SE_ESQUIVA_CON_UN_ESPACIO(unittest.TestCase):
+    """Agregar un punto final o un salto de línea volvía el texto «distinto»
+    y el control desaparecía. Nadie lo haría a propósito — y justamente por
+    eso: pasaría sin que nadie lo note."""
+
+    V1 = {"1_antecedentes_operaciones_sospechosas": {
+        "1_descripcion_hechos_orden_cronologico": "Lo escribió la IA.",
+        "2_que_se_considero_sospechoso": "Esto también."}}
+
+    def _con(self, a, b):
+        return {"1_antecedentes_operaciones_sospechosas": {
+            "1_descripcion_hechos_orden_cronologico": a,
+            "2_que_se_considero_sospechoso": b}}
+
+    def test_un_espacio_de_mas_no_lo_convierte_en_humano(self):
+        casi = self._con("Lo escribió la IA. ", " Esto también.")
+        self.assertTrue(AP.narrativa_sin_tocar(self.V1, casi, "Chile"))
+
+    def test_un_salto_de_linea_tampoco(self):
+        casi = self._con("Lo escribió\nla IA.", "Esto  también.")
+        self.assertTrue(AP.narrativa_sin_tocar(self.V1, casi, "Chile"))
+
+    def test_una_reescritura_de_verdad_si(self):
+        otro = self._con("Esto lo escribí yo, a mano.", "Y esto también.")
+        self.assertFalse(AP.narrativa_sin_tocar(self.V1, otro, "Chile"))
+
+    def test_UN_REPORTE_SIN_NARRATIVA_NO_SE_APRUEBA(self):
+        """Es lo que lee el regulador: lo que se aprobaría es un documento
+        que no dice nada."""
+        self.assertFalse(AP.hay_narrativa({}, "Chile"))
+        self.assertFalse(AP.hay_narrativa(self._con("", ""), "Chile"))
+        self.assertTrue(AP.hay_narrativa(self.V1, "Chile"))
+
+
+class EDITAR_INVALIDA_LA_APROBACION(unittest.TestCase):
+    """La spec es explícita: si alguien edita después de aprobar, la
+    aprobación se pierde. Sin esto el ROS seguía llevando la firma de la
+    versión anterior sobre un contenido que ya cambió."""
+
+    DOC = {"meta": {}, "reglas": [],
+           "1_antecedentes_operaciones_sospechosas": {"monto": 1, "txt": "a"},
+           "2_identificacion_reportados": {"nombre": "X"}}
+
+    def _editar(self):
+        guardado = {}
+        r = {"folio": "ROS-2026-0001", "regulador": "UAF-CL",
+             "estado": "revision_legal", "creado_at": "2026-10-14 11:00:00",
+             "etapa_gereo": "revisado", "version_actual": 1,
+             "versiones": [v(1, "gereo", "ana@example.com")],
+             "historial_gereo": [{"etapa": "revisado", "quien": "beto@example.com",
+                                  "cuando": "x", "nota": ""}],
+             "aprobacion": {"version": 1, "json_sha256": "sha1",
+                            "quien": "oficial@example.com", "cuando": "antes"},
+             "narrativa_enviada": {"version": 1, "texto": "lo firmado"}}
+
+        class _S3:
+            def get_object(self, **kw):
+                return {"Body": io.BytesIO(json.dumps(
+                    EDITAR_INVALIDA_LA_APROBACION.DOC).encode())}
+            def put_object(self, **kw):
+                pass
+
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_put", "_safe_audit")}
+        A.s3 = _S3()
+        A._crm_get = lambda t, k: r if t == "ros" else None
+        A._crm_put = lambda t, k, x: guardado.update(ros=x)
+        A._safe_audit = lambda **k: None
+        try:
+            res = A.guardar_version_ros(
+                "ROS-2026-0001",
+                {"secciones": {"1_antecedentes_operaciones_sospechosas":
+                               {"monto": 99, "txt": "b"}},
+                 "sobre_version": 1},
+                "beto@example.com")
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+        return res, guardado.get("ros", {})
+
+    def test_LA_APROBACION_SE_VA_DEL_REGISTRO(self):
+        res, guardado = self._editar()
+        self.assertEqual(res["statusCode"], 201)
+        self.assertNotIn("aprobacion", guardado)
+        self.assertNotIn("narrativa_enviada", guardado)
+
+    def test_y_queda_anotado_QUE_se_invalidó(self):
+        """Un campo que desaparece sin rastro es peor que no haberlo tenido."""
+        _, guardado = self._editar()
+        eventos = [h for h in guardado["historial_gereo"]
+                   if h.get("evento") == "aprobacion_invalidada"]
+        self.assertEqual(len(eventos), 1)
+        self.assertEqual(eventos[0]["version_invalidada"], 1)
+        self.assertEqual(eventos[0]["aprobada_por"], "oficial@example.com")
+
+    def test_aprobacion_vigente_lo_confirma(self):
+        _, guardado = self._editar()
+        self.assertIsNone(AP.aprobacion_vigente(guardado))
+
+    def test_sin_aprobacion_previa_no_anota_nada(self):
+        guardado = {}
+        r = {"folio": "ROS-2026-0001", "regulador": "UAF-CL",
+             "estado": "revision_legal", "creado_at": "2026-10-14 11:00:00",
+             "etapa_gereo": "recibido", "version_actual": 1,
+             "versiones": [v(1, "gereo", "ana@example.com")]}
+
+        class _S3:
+            def get_object(self, **kw):
+                return {"Body": io.BytesIO(json.dumps(
+                    EDITAR_INVALIDA_LA_APROBACION.DOC).encode())}
+            def put_object(self, **kw):
+                pass
+
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_put", "_safe_audit")}
+        A.s3 = _S3()
+        A._crm_get = lambda t, k: r if t == "ros" else None
+        A._crm_put = lambda t, k, x: guardado.update(ros=x)
+        A._safe_audit = lambda **k: None
+        try:
+            A.guardar_version_ros(
+                "ROS-2026-0001",
+                {"secciones": {"1_antecedentes_operaciones_sospechosas":
+                               {"monto": 99, "txt": "b"}},
+                 "sobre_version": 1},
+                "beto@example.com")
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+        self.assertEqual(
+            [h for h in guardado.get("historial_gereo", [])
+             if h.get("evento") == "aprobacion_invalidada"], [])
+
+
+class LaFirmaQuedaEnElRegistro(unittest.TestCase):
+    """Aprobar no mueve la etapa, pero es el hecho más importante del
+    reporte. Sin esto la única traza era la auditoría general, y el campo
+    `aprobacion` se pisa."""
+
+    def test_queda_el_evento_con_la_version_y_el_hash(self):
+        caso = AprobarDePuntaAPunta()
+        res, guardado = caso._aprobar({"version": 1, "acuse_ia": True},
+                                      padron=["oficial@example.com"])
+        self.assertEqual(res["statusCode"], 200)
+        eventos = [h for h in guardado["historial_gereo"]
+                   if h.get("evento") == "aprobado"]
+        self.assertEqual(len(eventos), 1)
+        self.assertEqual(eventos[0]["quien"], "oficial@example.com")
+        self.assertEqual(eventos[0]["json_sha256"], "sha1")
+        self.assertTrue(eventos[0]["texto_de_ia_sin_modificar"])
+
+
+class UNA_EDICION_EN_EL_MEDIO_NO_SE_PISA(unittest.TestCase):
+    """Entre la lectura del principio y el `put` se lee S3 dos veces. Si una
+    edición entra ahí, escribir sin releer pisaría la versión nueva y el
+    registro volvería a apuntar a la vieja — con una firma sobre un contenido
+    que ya no es el actual."""
+
+    def test_se_rechaza_con_409(self):
+        lecturas = []
+        r1 = reporte([v(1, "gereo", "ana@example.com")], version_actual=1)
+        # La segunda lectura ve que alguien guardó la v2 entremedio.
+        r2 = reporte([v(1, "gereo", "ana@example.com"),
+                      v(2, "edicion", "beto@example.com")], version_actual=2)
+        guardado = {}
+
+        class _S3:
+            def get_object(self, **kw):
+                if kw["Key"] == AP.CLAVE_PADRON:
+                    return {"Body": io.BytesIO(json.dumps(
+                        {"oficiales": ["oficial@example.com"]}).encode())}
+                return {"Body": io.BytesIO(json.dumps(DOC_V1).encode())}
+
+        def _get(tipo, clave):
+            if tipo != "ros":
+                return None
+            lecturas.append(1)
+            return r1 if len(lecturas) == 1 else r2
+
+        orig = {n: getattr(A, n) for n in
+                ("s3", "_crm_get", "_crm_put", "_safe_audit")}
+        A.s3 = _S3()
+        A._crm_get = _get
+        A._crm_put = lambda t, k, x: guardado.update(ros=x)
+        A._safe_audit = lambda **k: None
+        try:
+            res = A.aprobar_ros("ROS-2026-0001",
+                                {"version": 1, "acuse_ia": True},
+                                "oficial@example.com")
+        finally:
+            for n, f in orig.items():
+                setattr(A, n, f)
+
+        self.assertEqual(res["statusCode"], 409)
+        self.assertIn("mientras aprobabas", json.loads(res["body"])["error"])
+        self.assertEqual(guardado, {}, "pisó la versión nueva")

@@ -112,8 +112,30 @@ def bloqueos_para_revisar(reporte: dict) -> list:
     return faltan
 
 
+def aprobacion_vigente(reporte: dict) -> dict | None:
+    """La aprobación SI sigue valiendo para la versión actual.
+
+    NADIE LEE `aprobacion` A PELO. El campo puede haber quedado de una versión
+    anterior —aunque al editar se limpia, un registro viejo o una escritura a
+    medias pueden dejarlo—, y leerlo directo haría pasar por aprobado algo que
+    no lo está. Se compara la versión Y el hash: si el contenido cambió, la
+    firma no lo alcanza.
+    """
+    ap = reporte.get("aprobacion")
+    if not isinstance(ap, dict):
+        return None
+    actual = reporte.get("version_actual") or 0
+    if int(ap.get("version") or 0) != int(actual):
+        return None
+    ficha = ros_versiones.version_de(reporte, actual) or {}
+    if ap.get("json_sha256") and ap["json_sha256"] != ficha.get("json_sha256"):
+        return None
+    return ap
+
+
 def bloqueos_para_aprobar(reporte: dict, quien: str, oficiales,
-                          acuse_ia: bool, narrativa_es_de_ia: bool) -> list:
+                          acuse_ia: bool, narrativa_es_de_ia: bool,
+                          *, etapa: str = "", pendientes=()) -> list:
     """Por qué no se puede aprobar. Lista vacía = se puede.
 
     El orden importa poco salvo en una cosa: se devuelven TODOS los motivos y
@@ -123,6 +145,30 @@ def bloqueos_para_aprobar(reporte: dict, quien: str, oficiales,
     faltan = []
     correo = str(quien or "").strip().lower()
     lista = [str(o).strip().lower() for o in (oficiales or [])]
+
+    # DÓNDE TIENE QUE ESTAR EL REPORTE. Sin esto se podía aprobar un ROS en
+    # «recibido» que nadie revisó —el oficial aprobando solo, sin segundo par
+    # de ojos, que es justo lo que el cuatro ojos existe para impedir—, uno
+    # descartado, o uno ya enviado.
+    if etapa and etapa != "revisado":
+        faltan.append("Para aprobar, el reporte tiene que estar marcado como "
+                      f"revisado (hoy está en «{etapa}»).")
+    estado = str(reporte.get("estado") or "").strip()
+    if estado == "descartado":
+        faltan.append("Este ROS está descartado: se decidió no reportarlo.")
+    elif estado != "revision_legal":
+        faltan.append("El reporte tiene que estar en revisión legal (hoy está "
+                      f"en «{estado or 'sin estado'}»).")
+
+    # Lo que GEREO dejó pendiente de criterio humano. Es el control del PR #97
+    # y no puede saltearse por el camino nuevo.
+    for p in (pendientes or []):
+        faltan.append(str(p))
+
+    # UNA VERSIÓN NO SE APRUEBA DOS VECES. La segunda pisaría la primera y la
+    # firma original desaparecería del registro.
+    if aprobacion_vigente(reporte):
+        faltan.append("Esta versión ya está aprobada.")
 
     if not lista:
         faltan.append("Todavía no hay ningún Oficial de Cumplimiento "
@@ -197,18 +243,35 @@ def _valores(obj, prefijo: str = "") -> dict:
     return fuera
 
 
+def _normalizar(t: str) -> str:
+    """El texto sin lo que no cambia lo que dice.
+
+    SE NORMALIZA ANTES DE COMPARAR porque, si no, el acuse de IA se esquiva
+    con un espacio: agregar un punto al final o un salto de línea volvía el
+    texto «distinto» y el control desaparecía. Nadie lo haría a propósito —y
+    justamente por eso: pasaría sin que nadie lo note.
+    """
+    return " ".join(str(t or "").split())
+
+
+def hay_narrativa(version: dict, pais: str) -> bool:
+    return bool(ros_gereo.narrativa_borrador(version, pais))
+
+
 def narrativa_sin_tocar(v1: dict, version: dict, pais: str) -> bool:
     """Si el texto que se va a reportar es el de GEREO, palabra por palabra.
 
     Se compara sólo la narrativa y no el documento entero: corregir un monto
     no cambia que el TEXTO lo escribió una IA, que es lo que hay que acusar.
     """
-    de_gereo = ros_gereo.narrativa_borrador(v1, pais)
     de_ahora = ros_gereo.narrativa_borrador(version, pais)
     if not de_ahora:
+        # Sin narrativa no hay texto de IA que acusar. Que no se pueda
+        # aprobar un reporte sin narrativa es otro control, aparte.
         return False
-    return [(n["titulo"], n["texto"]) for n in de_gereo] == \
-           [(n["titulo"], n["texto"]) for n in de_ahora]
+    de_gereo = ros_gereo.narrativa_borrador(v1, pais)
+    return [(n["titulo"], _normalizar(n["texto"])) for n in de_gereo] == \
+           [(n["titulo"], _normalizar(n["texto"])) for n in de_ahora]
 
 
 def narrativa_para_el_registro(version: dict, pais: str) -> str:
