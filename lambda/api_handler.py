@@ -4428,6 +4428,11 @@ def get_whitelist():
                 "reason": i.get("reason", ""),
                 "scope": i.get("scope", "global"),
                 "report_name": i.get("report_name", ""),
+                # QUIÉN LA AGREGÓ. Se guarda desde el PR de la inyección, pero
+                # esta proyección es explícita y no lo incluía: el dato estaba
+                # en S3 y no llegaba a la pantalla, así que seguía sin poder
+                # saberse quién silenció a ese cliente — que era el punto.
+                "created_by": i.get("created_by", ""),
                 "created_at": i.get("created_at", ""),
                 "expires_at": i.get("expires_at_str", ""),
             })

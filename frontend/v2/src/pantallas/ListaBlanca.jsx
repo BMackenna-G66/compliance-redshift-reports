@@ -40,6 +40,18 @@ function columnas(alQuitar, lectura, quitando) {
     { clave: 'entity_value', titulo: 'Cliente', tipo: 'mono', ancho: '14%' },
     { clave: 'entity_field', titulo: 'Campo', ancho: '12%' },
     {
+      clave: 'created_by',
+      titulo: 'Quién',
+      ancho: '14%',
+      // Las entradas anteriores a octubre de 2026 no tienen autor: el backend
+      // recibía el dato y lo descartaba. Se muestra el hueco en vez de
+      // esconderlo — «—» dice que no se sabe, que es la verdad.
+      render: (w) => (w.created_by
+        ? <span title={w.created_by}>{String(w.created_by).split('@')[0]}</span>
+        : <span style={{ color: 'var(--texto-mute)' }}>—</span>),
+      exportar: (w) => w.created_by || '',
+    },
+    {
       clave: '_vigencia',
       titulo: 'Vigencia',
       ancho: '16%',

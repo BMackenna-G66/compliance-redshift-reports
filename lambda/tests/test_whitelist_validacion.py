@@ -282,3 +282,40 @@ class LaBajaTambienSeAudita(unittest.TestCase):
         self.assertEqual(r["statusCode"], 200)
         self.assertEqual(borrado, ["w-1"])
         self.assertEqual(len(auditado), 1)
+
+
+class ElAutorLlegaALaPantalla(unittest.TestCase):
+    """Se guardaba y no se devolvía: el dato quedaba en S3 sin llegar a
+    ninguna pantalla, así que seguía sin poder saberse quién silenció a ese
+    cliente — que era el punto de guardarlo."""
+
+    def test_get_whitelist_devuelve_created_by(self):
+        entradas = [{"whitelist_id": "w1", "entity_field": "customer_id",
+                     "entity_value": "9000001", "duration_days": 30,
+                     "reason": "x", "scope": "global", "report_name": "",
+                     "created_by": "analista@example.com",
+                     "created_at": "2026-10-15 10:00:00",
+                     "expires_at": 9999999999, "expires_at_str": "2027-01-01"}]
+        orig = A._crm_list
+        A._crm_list = lambda t: entradas
+        try:
+            r = A.get_whitelist()
+        finally:
+            A._crm_list = orig
+        w = json.loads(r["body"])["whitelist"][0]
+        self.assertEqual(w["created_by"], "analista@example.com")
+
+    def test_una_entrada_vieja_sin_autor_no_revienta(self):
+        """Las 49 vigentes no lo tienen."""
+        entradas = [{"whitelist_id": "w1", "entity_field": "customer_id",
+                     "entity_value": "9000001", "duration_days": 30,
+                     "reason": "", "scope": "global", "report_name": "",
+                     "created_at": "2026-09-01 10:00:00",
+                     "expires_at": 9999999999, "expires_at_str": "2027-01-01"}]
+        orig = A._crm_list
+        A._crm_list = lambda t: entradas
+        try:
+            r = A.get_whitelist()
+        finally:
+            A._crm_list = orig
+        self.assertEqual(json.loads(r["body"])["whitelist"][0]["created_by"], "")
