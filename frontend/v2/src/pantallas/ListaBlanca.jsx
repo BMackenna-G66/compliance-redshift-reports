@@ -92,7 +92,7 @@ function columnas(alQuitar, lectura, quitando) {
   return cols;
 }
 
-function Agregar({ onAgregar, guardando }) {
+function Agregar({ onAgregar, guardando, email }) {
   const [valor, setValor] = useState('');
   const [dias, setDias] = useState('90');
   const [motivo, setMotivo] = useState('');
@@ -106,6 +106,10 @@ function Agregar({ onAgregar, guardando }) {
       duration_days: Number(dias) || 90,
       reason: motivo.trim(),
       scope: 'global',
+      // Quién lo agregó. El alta desde el caso ya lo manda y ésta no, así
+      // que las entradas de esta pantalla quedaban sin autor y no se
+      // podía saber quién silenció a ese cliente.
+      created_by: email || '',
     });
     setValor(''); setMotivo('');
   }
@@ -150,7 +154,7 @@ function Agregar({ onAgregar, guardando }) {
   );
 }
 
-export function ListaBlanca({ api, perfil }) {
+export function ListaBlanca({ api, perfil, email }) {
   const [entradas, setEntradas] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
@@ -280,7 +284,7 @@ export function ListaBlanca({ api, perfil }) {
         </p>
       )}
 
-      {!lectura && <Agregar onAgregar={agregar} guardando={guardando} />}
+      {!lectura && <Agregar onAgregar={agregar} guardando={guardando} email={email} />}
 
       {masiva && (
         <section className="wt-carta" style={{ marginBottom: 'var(--e-4)' }}>
