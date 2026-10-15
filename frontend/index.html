@@ -1192,6 +1192,7 @@
                 <th class="text-left px-4 py-3 text-slate-400 font-medium">Reporte</th>
                 <th class="text-left px-4 py-3 text-slate-400 font-medium">Vence</th>
                 <th class="text-left px-4 py-3 text-slate-400 font-medium">Razón</th>
+                <th class="text-left px-4 py-3 text-slate-400 font-medium">Quién</th>
                 <th class="text-center px-4 py-3 text-slate-400 font-medium">Acciones</th>
               </tr>
             </thead>
@@ -1207,6 +1208,11 @@
                   <td class="px-4 py-2.5 text-slate-400 text-xs" x-text="entry.report_name||'—'"></td>
                   <td class="px-4 py-2.5 text-slate-400 text-xs" x-text="formatDate(entry.expires_at)"></td>
                   <td class="px-4 py-2.5 text-slate-400 text-xs max-w-xs truncate" x-text="entry.reason||'—'"></td>
+                  <!-- Quién la agregó. Las entradas anteriores a octubre de 2026
+                       no lo tienen: el backend recibía el dato y lo descartaba.
+                       Se muestra «—» en vez de esconder el hueco. -->
+                  <td class="px-4 py-2.5 text-slate-400 text-xs" :title="entry.created_by||''"
+                      x-text="entry.created_by ? entry.created_by.split('@')[0] : '—'"></td>
                   <td class="px-4 py-2.5 text-center">
                     <button @click="removeWhitelist(entry.whitelist_id)"
                       class="text-xs text-red-400 hover:text-white bg-red-900/30 hover:bg-red-600 border border-red-800 px-2 py-1 rounded transition">
@@ -10320,7 +10326,10 @@
 
       async removeWhitelist(id) {
         if (!confirm('¿Eliminar esta entrada de la lista blanca?')) return;
-        await this.api('DELETE', '/whitelist/' + id);
+        // Quién la saca. Volver a alertar sobre un cliente es tan registrable
+        // como dejar de hacerlo, y antes esto borraba sin dejar rastro.
+        await this.api('DELETE', '/whitelist/' + id,
+          { actor_email: this.currentUserEmail || this.userEmail || '' });
         await this.loadWhitelist();
       },
 
