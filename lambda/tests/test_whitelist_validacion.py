@@ -15,6 +15,7 @@ LA LISTA ES CERRADA, no de prohibidos. Prohibir la comilla y la barra es una
 carrera que se pierde: siempre queda una forma de escapar que nadie pensó.
 """
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -70,12 +71,43 @@ class LO_QUE_SI_ENTRA(unittest.TestCase):
             with self.subTest(bueno=bueno):
                 self.assertTrue(V.es_valida("customer_id", bueno), bueno)
 
-    def test_los_cuatro_campos(self):
-        self.assertEqual(V.CAMPOS,
-                         ("customer_id", "company_id", "beneficiary_id", "email"))
+    def test_los_cinco_campos(self):
+        self.assertEqual(V.CAMPOS, ("customer_id", "company_id",
+                                    "beneficiary_id", "email", "customer_email"))
         for campo in ("customer_id", "company_id", "beneficiary_id"):
             with self.subTest(campo=campo):
                 self.assertTrue(V.es_valida(campo, "123"))
+
+    def test_CUSTOMER_EMAIL_TAMBIEN(self):
+        """Casi se pierde. Lo ofrecen los dos formularios manuales de v1 y lo
+        devuelven 23 de los 41 reportes: dejarlo afuera habría roto una
+        opción que hoy funciona."""
+        self.assertTrue(V.es_valida("customer_email", "alguien@example.com"))
+        self.assertFalse(V.es_valida("customer_email", "a'b@x.com"))
+
+    def test_LA_LISTA_CUBRE_TODO_LO_QUE_LOS_FRONTS_OFRECEN(self):
+        """La regresión. La primera versión salió del inventario de lo que
+        hay GUARDADO (todo `customer_id`) y no de lo que puede LLEGAR, así
+        que dejaba afuera opciones que las pantallas ofrecen y nadie usó
+        todavía. Esto lee los fronts de verdad."""
+        raiz = Path(__file__).resolve().parents[2]
+        ofrecidos = set()
+
+        v1 = (raiz / "frontend" / "index.html").read_text(encoding="utf-8")
+        # Los <option> del selector de campo del formulario de whitelist.
+        for m in re.finditer(r'value="(customer_id|company_id|beneficiary_id'
+                             r'|email|customer_email)"', v1):
+            ofrecidos.add(m.group(1))
+
+        for arch in (raiz / "frontend" / "v2" / "src").rglob("*.js*"):
+            for m in re.finditer(r"entity_field:\s*'([a-z_]+)'",
+                                 arch.read_text(encoding="utf-8")):
+                ofrecidos.add(m.group(1))
+
+        faltan = sorted(ofrecidos - set(V.CAMPOS))
+        self.assertEqual(faltan, [], (
+            "los fronts ofrecen campos que la validación rechaza, así que "
+            f"elegirlos daría 400: {faltan}"))
 
     def test_un_correo_normal(self):
         for bueno in ("alguien@example.com", "a.b+c@sub.dominio.cl"):

@@ -46,10 +46,26 @@ import re
 
 # Los campos por los que se puede excluir. Cualquier otro se rechaza.
 #
-# Salen de lo que hay vigente hoy (las 47 entradas son todas `customer_id`) más
-# los que las pantallas pueden mandar. Agregar uno nuevo es una línea acá y una
-# decisión consciente, que es el punto.
-CAMPOS = ("customer_id", "company_id", "beneficiary_id", "email")
+# SALEN DE UN INVENTARIO DE TODO LO QUE PUEDE LLEGAR, no de lo que hay
+# guardado. Las 49 entradas vigentes son todas `customer_id`, y quedarse con
+# eso habría roto opciones que las pantallas ofrecen y nadie usó todavía:
+#
+#   v1 · formulario manual (dos pantallas)  customer_id, email,
+#                                           beneficiary_id, customer_email
+#   v1 · desde el caso                      customer_id, company_id
+#   v2 · Caso.jsx                           customer_id, company_id
+#   v2 · ListaBlanca (alta y masiva)        customer_id, company_id
+#   backend · alta masiva por fila          customer_id, company_id,
+#                                           beneficiary_id, email
+#
+# `customer_email` es el que casi se pierde: lo ofrecen los dos formularios de
+# v1 y lo devuelven 23 de los 41 reportes. Agregar uno nuevo es una línea acá
+# y una decisión consciente, que es el punto.
+CAMPOS = ("customer_id", "company_id", "beneficiary_id",
+          "email", "customer_email")
+
+# Los que son correo y no id. El resto son ids numéricos.
+CAMPOS_CORREO = ("email", "customer_email")
 
 # Un id es sólo dígitos. No hay ninguno en producción que no lo sea.
 RE_ID = re.compile(r"^\d{1,20}$")
@@ -74,14 +90,17 @@ def motivo_de_rechazo(entity_field, entity_value) -> str:
     if not campo:
         return "falta el campo por el que excluir"
     if campo not in CAMPOS:
-        return (f"el campo «{campo}» no está permitido; los válidos son "
+        # SIN REPETIR EL CAMPO. Lo controla quien llama igual que el valor, y
+        # este texto va al cliente y al log: devolverlo es el mismo problema
+        # que devolver el valor.
+        return ("ese campo no está permitido; los válidos son "
                 + ", ".join(CAMPOS))
     if not valor:
         return "falta el valor a excluir"
     if len(valor) > MAX_VALOR:
         return f"el valor supera los {MAX_VALOR} caracteres"
 
-    if campo == "email":
+    if campo in CAMPOS_CORREO:
         if not RE_EMAIL.match(valor):
             return "el correo tiene una forma que no se reconoce"
         return ""
