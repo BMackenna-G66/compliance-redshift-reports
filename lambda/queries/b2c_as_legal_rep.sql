@@ -1,3 +1,7 @@
+-- Las columnas de `customer.compliance` se renombraron en Redshift
+-- (compliance_status → status, status_created_at → created_at). Se leen con
+-- el nombre nuevo y se exponen con el alias de siempre, para que el resto de
+-- la consulta y el consumidor del reporte no cambien.
 WITH latest_kyc_document AS (
     SELECT
         kd.customer_id,
@@ -33,11 +37,11 @@ latest_customer_kyc AS (
 latest_customer_compliance AS (
     SELECT
         c.customer_id,
-        c.compliance_status,
-        c.status_created_at,
+        c.status AS compliance_status,
+        c.created_at AS status_created_at,
         ROW_NUMBER() OVER (
             PARTITION BY c.customer_id
-            ORDER BY c.status_created_at DESC
+            ORDER BY c.created_at DESC
         ) AS rn
     FROM "db_prod"."customer"."compliance" AS c
 ),
