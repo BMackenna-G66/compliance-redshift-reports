@@ -2632,36 +2632,33 @@ def handler(event, context):  # noqa: ARG001
             # —que el cliente se entere de que lo reportaron— es exactamente
             # lo que la normativa castiga.
             #
-            # Mientras dure el tramo transitorio, estas rutas aceptan token y
-            # también siguen sin él; un token PRESENTE pero inválido es 401
-            # igual. Ver `_identidad`.
-            quien, error = _identidad(event, exige=False)
+            # EXIGE TOKEN, SIN EXCEPCIONES. Antes aceptaba también sin él,
+            # mientras se medía si quedaba algún bundle viejo llamando. Ya no.
+            quien, error = _identidad(event)
             if error:
                 return error
-            if quien["modo"] == "sin_token":
-                _contar_sin_token(method, "/".join(parts))
-            else:
-                # CON TOKEN, EL ACTOR SALE DEL TOKEN. Se pisa lo que haya
-                # venido en el cuerpo en vez de compararlo: si alguien manda
-                # un correo distinto del suyo, lo que corresponde no es
-                # rechazar la request —puede ser el front mandando un dato
-                # viejo— sino registrar a quien realmente la hizo. El campo
-                # del cuerpo deja de tener efecto, que es el punto.
-                #
-                # SON CUATRO NOMBRES PARA LA MISMA COSA, y enumerarlos es
-                # frágil. La primera versión de esto pisaba `actor_email` y
-                # `quien` y se olvidaba de `creado_por` — que es justamente el
-                # que `crear_ros` prefiere. Con un token válido se podía crear
-                # un ROS a nombre de otra persona, y ese nombre entraba al
-                # historial de un registro regulatorio.
-                #
-                # Por eso en el PR 6 las funciones nuevas reciben el actor
-                # como ARGUMENTO desde acá y no lo leen del cuerpo nunca. Esta
-                # lista existe sólo para las que ya estaban escritas, y falla
-                # exactamente así: por el campo que nadie puso en la lista.
-                body = dict(body or {})
-                for campo in ("actor_email", "quien", "creado_por", "user_email"):
-                    body[campo] = quien["email"]
+            _anotar_llamada_autenticada(method, "/".join(parts), quien["email"])
+            # CON TOKEN, EL ACTOR SALE DEL TOKEN. Se pisa lo que haya
+            # venido en el cuerpo en vez de compararlo: si alguien manda
+            # un correo distinto del suyo, lo que corresponde no es
+            # rechazar la request —puede ser el front mandando un dato
+            # viejo— sino registrar a quien realmente la hizo. El campo
+            # del cuerpo deja de tener efecto, que es el punto.
+            #
+            # SON CUATRO NOMBRES PARA LA MISMA COSA, y enumerarlos es
+            # frágil. La primera versión de esto pisaba `actor_email` y
+            # `quien` y se olvidaba de `creado_por` — que es justamente el
+            # que `crear_ros` prefiere. Con un token válido se podía crear
+            # un ROS a nombre de otra persona, y ese nombre entraba al
+            # historial de un registro regulatorio.
+            #
+            # Por eso en el PR 6 las funciones nuevas reciben el actor
+            # como ARGUMENTO desde acá y no lo leen del cuerpo nunca. Esta
+            # lista existe sólo para las que ya estaban escritas, y falla
+            # exactamente así: por el campo que nadie puso en la lista.
+            body = dict(body or {})
+            for campo in ("actor_email", "quien", "creado_por", "user_email"):
+                body[campo] = quien["email"]
 
             if method == "GET" and parts == ["ros"]:
                 return listar_ros()
@@ -2682,7 +2679,7 @@ def handler(event, context):  # noqa: ARG001
             # ningún bundle viejo la llama.
             if (method == "GET" and len(parts) == 4
                     and parts[2] == "versiones"):
-                exigido, error = _identidad(event, exige=True)
+                exigido, error = _identidad(event)
                 if error:
                     return error
                 return ver_version_ros(parts[1], parts[3])
@@ -2696,7 +2693,7 @@ def handler(event, context):  # noqa: ARG001
             # campos de identidad que hay que pisar ya falló una vez, por el
             # que nadie listó.
             if method == "POST" and len(parts) == 3 and parts[2] == "versiones":
-                exigido, error = _identidad(event, exige=True)
+                exigido, error = _identidad(event)
                 if error:
                     return error
                 return guardar_version_ros(parts[1], body, exigido["email"])
@@ -2708,7 +2705,7 @@ def handler(event, context):  # noqa: ARG001
             # los escriba quien llama.
             if (method == "POST" and len(parts) == 3
                     and parts[2] in ("revisar", "aprobar")):
-                exigido, error = _identidad(event, exige=True)
+                exigido, error = _identidad(event)
                 if error:
                     return error
                 if parts[2] == "revisar":
@@ -2718,7 +2715,7 @@ def handler(event, context):  # noqa: ARG001
             # GET /ros/{folio}/diff — qué tocó una persona desde que GEREO lo
             # generó. Es lo que mira quien aprueba.
             if method == "GET" and len(parts) == 3 and parts[2] == "diff":
-                exigido, error = _identidad(event, exige=True)
+                exigido, error = _identidad(event)
                 if error:
                     return error
                 return diff_version_ros(parts[1])
@@ -6047,40 +6044,44 @@ def _actor(body: dict) -> str:
 
 # ── Quién llama, de verdad ────────────────────────────────────────────────
 #
-# TRAMO TRANSITORIO, y por qué existe. Si la API empezara a exigir el token
-# de golpe, la pantalla de ROS se rompería para todo el que tenga el bundle
-# viejo —y el caché de la SPA tarda hasta un día en renovarse, medido—. No es
-# sólo `Ros.jsx`: `/ros` lo llaman también `ros/Gereo.jsx`, `Caso.jsx`,
-# `comun/ros.js` y `dominio.js`, así que la ficha del caso también se caería.
+# TODO EL ÁRBOL /ros EXIGE TOKEN. El tramo transitorio que lo aceptaba sin
+# token existió entre el 13 y el 16-10-2026 y se borró acá; no quedó ninguna
+# perilla que lo vuelva a abrir, a propósito: una variable de entorno que
+# apague la autenticación la puede mover cualquiera sin PR y sin revisión.
 #
-# Entonces: las rutas que YA EXISTEN aceptan token y también siguen sin él,
-# y cada llamada sin token queda contada. Cuando pase un día hábil completo
-# sin ninguna, un PR BORRA este camino. No hay perilla de entorno que apague
-# la autenticación: el endurecimiento tiene que quedar en git, revisado y sin
-# marcha atrás silenciosa.
+# POR QUÉ SE PUDO CERRAR. No hizo falta probar que todos mandan el token
+# —una llamada con token no deja log, así que eso no se puede afirmar—, sino
+# algo más chico y sí verificable: que cerrar no rompe a nadie que lo esté
+# usando. El 15-10 completo hubo cero llamadas sin token y cero 4xx de
+# usuarios; si alguien tocó /ros, fue con token, porque sin token habría
+# quedado contado.
 #
-# Las rutas NUEVAS (revisar, aprobar, enviar, editar una versión) exigen
-# token desde el día uno: ningún bundle viejo las llama, así que no hay
-# compatibilidad que cuidar.
-RUTAS_ROS_EN_TRANSICION = ("ros",)
+# Lo que queda es una pestaña con un bundle anterior al 13-10 22:35 UTC:
+# recibe 401 con «Sesión expirada», se arregla recargando, y la lista de
+# casos sigue cargando porque /ros falla aparte y se muestra «No disponible».
+# Degradado y auto-recuperable, no un corte mudo.
 
 
-def _identidad(event: dict, *, exige: bool):
+def _identidad(event: dict):
     """Quién llama, verificado. Devuelve `(identidad, respuesta_de_error)`.
 
-    `identidad` es `{"email", "uid", "modo"}` con `modo` en `token` o
-    `sin_token`. Si hay respuesta de error, el llamador la devuelve y corta.
+    `identidad` es `{"email", "uid"}`. Si hay respuesta de error, el llamador
+    la devuelve y corta.
 
-    UN TOKEN PRESENTE PERO INVÁLIDO ES SIEMPRE 401, exija la ruta o no. No se
-    degrada a anónimo: si se degradara, un bug del front que mandara tokens
-    vencidos pasaría invisible —todo seguiría andando— hasta el día del corte,
-    que es cuando se rompería todo junto y sin pista de por qué.
+    SIN TOKEN NO SE PASA. Tuvo un parámetro `exige` mientras duró el tramo
+    transitorio; se sacó al cerrarlo, y no por prolijidad: un parámetro que
+    deja pasar sin credencial es una perilla, y una perilla la mueve
+    cualquiera sin PR. Lo mismo que el código muerto que declaraba una
+    política CORS que no regía y escondió un bug durante meses: lo que no se
+    usa, se borra.
+
+    UN TOKEN PRESENTE PERO INVÁLIDO ES 401, no anónimo. Si se degradara, un
+    bug del front que mandara tokens vencidos pasaría invisible hasta que se
+    rompiera todo junto y sin pista de por qué.
     """
     if not auth_firebase:
-        if exige:
-            return None, resp(503, {"error": "La verificación de sesión no "
-                                             "está disponible en este despliegue."})
-        return {"email": "", "uid": "", "modo": "sin_token"}, None
+        return None, resp(503, {"error": "La verificación de sesión no "
+                                         "está disponible en este despliegue."})
 
     try:
         crudo = auth_firebase.token_del_evento(event)
@@ -6088,10 +6089,8 @@ def _identidad(event: dict, *, exige: bool):
         return None, resp(401, {"error": str(e)})
 
     if not crudo:
-        if exige:
-            return None, resp(401, {"error": "Esta acción necesita tu sesión. "
-                                             "Volvé a entrar y reintentá."})
-        return {"email": "", "uid": "", "modo": "sin_token"}, None
+        return None, resp(401, {"error": "Esta acción necesita tu sesión. "
+                                         "Volvé a entrar y reintentá."})
 
     try:
         quien = auth_firebase.verificar(crudo)
@@ -6105,23 +6104,27 @@ def _identidad(event: dict, *, exige: bool):
         return None, resp(503, {"error": "No pude verificar tu sesión en este "
                                          "momento. Reintentá en un minuto."})
 
-    return {**quien, "modo": "token"}, None
+    return quien, None
 
 
-def _contar_sin_token(metodo: str, ruta: str) -> None:
-    """Deja constancia de una llamada sin token, para saber cuándo cerrar.
+def _anotar_llamada_autenticada(metodo: str, ruta: str, correo: str) -> None:
+    """Deja constancia de una llamada que SÍ trajo token.
 
-    Se audita con la ruta y SIN inventar un actor: poner `unknown` donde no
-    se sabe quién fue es exactamente lo que hace que un registro de auditoría
-    deje de servir.
+    POR QUÉ HACE FALTA. Hasta ahora sólo se registraban las llamadas sin
+    token, y eso deja una métrica que no se puede leer: un cero es
+    indistinguible de «nadie usó la pantalla». Con esto, «N llamadas, todas
+    con token» pasa a ser una afirmación verificable en vez de una inferencia.
 
-    El criterio del corte es cero de estas durante un día hábil completo
-    después de que el front nuevo esté publicado — medido por ventana de
-    despliegue, no con las dos primeras horas.
+    NI EL TOKEN NI EL CORREO COMPLETO. Va el dominio y un hash corto del
+    correo, que alcanza para contar personas distintas sin escribir quién es
+    cada una en un log que se retiene y que lee más gente que el registro de
+    auditoría. El correo completo, cuando corresponde, ya queda en la
+    auditoría de la acción.
     """
-    print(f"[auth] sin_token {metodo} /{ruta}")
-    _safe_audit(user_email="sin_token", action="api.sin_token",
-                entity_type="ruta", entity_id=f"{metodo} /{ruta}"[:200])
+    correo = str(correo or "").strip().lower()
+    dominio = correo.split("@")[-1] if "@" in correo else "?"
+    corto = hashlib.sha256(correo.encode()).hexdigest()[:8] if correo else "-"
+    print(f"[auth] ok {metodo} /{ruta} · @{dominio} · {corto}")
 
 
 def _require_admin(body: dict):

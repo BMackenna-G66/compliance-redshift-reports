@@ -193,11 +193,12 @@ if __name__ == "__main__":
 import api_handler as A  # noqa: E402
 
 
-class ElTramoTransitorio(unittest.TestCase):
-    """Las rutas que YA EXISTEN aceptan token y también siguen sin él,
-    porque el caché de la SPA tarda hasta un día en renovarse y romperlas de
-    golpe dejaría sin pantalla de ROS a medio equipo. Cada llamada sin token
-    queda contada; cuando no quede ninguna, un PR borra este camino."""
+class TodoElArbolRosExigeToken(unittest.TestCase):
+    """El tramo transitorio se cerró el 16-10-2026.
+
+    Existió entre el 13 y el 16 para que un bundle viejo no se quedara sin
+    pantalla, y se midió: el 15-10 completo hubo cero llamadas sin token y
+    cero 4xx de usuarios. No quedó ninguna perilla que lo vuelva a abrir."""
 
     def _llamar(self, headers=None, metodo="GET", ruta="/ros", cuerpo=None,
                 verifica=None):
@@ -227,24 +228,53 @@ class ElTramoTransitorio(unittest.TestCase):
                 setattr(A, n, f)
         return r, vistos
 
-    def test_sin_token_la_pantalla_sigue_andando(self):
+    def test_SIN_TOKEN_YA_NO_PASA(self):
+        """El cambio del paso 2. Antes devolvía 200."""
         r, vistos = self._llamar()
+        self.assertEqual(r["statusCode"], 401)
+        self.assertEqual(vistos["listar"], 0, "atendió igual")
+
+    def test_no_quedo_ninguna_perilla_para_reabrirlo(self):
+        """Una variable de entorno que apague la autenticación la mueve
+        cualquiera sin PR y sin revisión."""
+        import inspect
+        fuente = inspect.getsource(A.handler)
+        self.assertNotIn("RUTAS_ROS_EN_TRANSICION", fuente)
+        self.assertNotIn("_contar_sin_token", fuente)
+        self.assertFalse(hasattr(A, "_contar_sin_token"))
+
+    def test_LA_LLAMADA_CON_TOKEN_QUEDA_REGISTRADA(self):
+        """Sin esto la métrica no se puede leer: un cero de «sin token» es
+        indistinguible de «nadie usó la pantalla»."""
+        salida = []
+        orig = A.print if hasattr(A, "print") else None
+        import builtins
+        real = builtins.print
+        builtins.print = lambda *a, **k: salida.append(" ".join(str(x) for x in a))
+        try:
+            r, _ = self._llamar(headers={"Authorization": f"Bearer {TOKEN}"})
+        finally:
+            builtins.print = real
         self.assertEqual(r["statusCode"], 200)
-        self.assertEqual(vistos["listar"], 1)
+        ok = [l for l in salida if l.startswith("[auth] ok")]
+        self.assertEqual(len(ok), 1, salida)
+        self.assertIn("/ros", ok[0])
 
-    def test_y_queda_contada_con_la_ruta(self):
-        _, vistos = self._llamar()
-        sin = [a for a in vistos["auditoria"] if a.get("action") == "api.sin_token"]
-        self.assertEqual(len(sin), 1)
-        self.assertEqual(sin[0]["user_email"], "sin_token")
-        self.assertIn("/ros", sin[0]["entity_id"])
-
-    def test_NO_SE_INVENTA_UN_ACTOR(self):
-        """Poner `unknown` donde no se sabe quién fue es exactamente lo que
-        hace que un registro de auditoría deje de servir."""
-        _, vistos = self._llamar()
-        sin = [a for a in vistos["auditoria"] if a.get("action") == "api.sin_token"]
-        self.assertNotEqual(sin[0]["user_email"], "unknown")
+    def test_el_registro_NO_lleva_el_token_ni_el_correo_completo(self):
+        """Va a CloudWatch, que se retiene y lo lee más gente que el registro
+        de auditoría."""
+        salida = []
+        import builtins
+        real = builtins.print
+        builtins.print = lambda *a, **k: salida.append(" ".join(str(x) for x in a))
+        try:
+            self._llamar(headers={"Authorization": f"Bearer {TOKEN}"})
+        finally:
+            builtins.print = real
+        linea = next(l for l in salida if l.startswith("[auth] ok"))
+        self.assertNotIn(TOKEN, linea)
+        self.assertNotIn("analista@global66.com", linea)
+        self.assertIn("@global66.com", linea)  # el dominio sí
 
     def test_UN_TOKEN_INVALIDO_ES_401_AUNQUE_LA_RUTA_NO_LO_EXIJA(self):
         """Si se degradara a anónimo, un bug del front que mandara tokens
@@ -278,11 +308,10 @@ class ElTramoTransitorio(unittest.TestCase):
                          "analista@global66.com")
         self.assertEqual(vistos["crear"][0]["quien"], "analista@global66.com")
 
-    def test_con_token_no_se_cuenta_como_sin_token(self):
-        _, vistos = self._llamar(headers={"Authorization": f"Bearer {TOKEN}"})
-        self.assertEqual(
-            [a for a in vistos["auditoria"] if a.get("action") == "api.sin_token"],
-            [])
+    def test_con_token_la_pantalla_funciona(self):
+        r, vistos = self._llamar(headers={"Authorization": f"Bearer {TOKEN}"})
+        self.assertEqual(r["statusCode"], 200)
+        self.assertEqual(vistos["listar"], 1)
 
 
 class SOLO_EL_400_ES_UN_TOKEN_INVALIDO(unittest.TestCase):
@@ -328,7 +357,7 @@ class SOLO_EL_400_ES_UN_TOKEN_INVALIDO(unittest.TestCase):
     def test_un_403_termina_en_503_y_no_en_401(self):
         """De punta a punta por el ruteo: es la diferencia entre «reintentá»
         y «tu sesión no vale»."""
-        caso = ElTramoTransitorio()
+        caso = TodoElArbolRosExigeToken()
         def _403(t):
             raise RuntimeError("no pude verificar la sesión: HTTP 403")
         r, _ = caso._llamar(headers={"Authorization": f"Bearer {TOKEN}"},
@@ -352,7 +381,7 @@ class ELCREADO_POR_TAMPOCO_SALE_DEL_CUERPO(unittest.TestCase):
     historial de un registro regulatorio."""
 
     def test_con_token_el_creado_por_del_cuerpo_no_tiene_efecto(self):
-        caso = ElTramoTransitorio()
+        caso = TodoElArbolRosExigeToken()
         _, vistos = caso._llamar(
             headers={"Authorization": f"Bearer {TOKEN}"}, metodo="POST",
             cuerpo={"case_id": "c-1", "creado_por": "otro@global66.com",
@@ -361,7 +390,7 @@ class ELCREADO_POR_TAMPOCO_SALE_DEL_CUERPO(unittest.TestCase):
                          "analista@global66.com")
 
     def test_se_pisan_los_cuatro_nombres_de_lo_mismo(self):
-        caso = ElTramoTransitorio()
+        caso = TodoElArbolRosExigeToken()
         _, vistos = caso._llamar(
             headers={"Authorization": f"Bearer {TOKEN}"}, metodo="POST",
             cuerpo={"case_id": "c-1", "actor_email": "a@global66.com",
