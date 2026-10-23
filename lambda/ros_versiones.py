@@ -238,7 +238,23 @@ def diferencias_de_forma(antes, despues) -> list:
     return _comparar(antes, despues, "")
 
 
-def _comparar(a, b, ruta: str) -> list:
+def _todo_vacio(v) -> bool:
+    """Si no queda ningún dato adentro.
+
+    Un elemento AGREGADO con todo en blanco termina como un reportado sin
+    nombre ni documento en el reporte que se le manda al regulador. No es una
+    edición a medias que alguien complete después: una vez aprobado, sale así.
+    """
+    if isinstance(v, dict):
+        return all(_todo_vacio(x) for x in v.values())
+    if isinstance(v, list):
+        return all(_todo_vacio(x) for x in v)
+    return v is None or (isinstance(v, str) and not v.strip())
+
+
+def _comparar(a, b, ruta: str, *, agregado: bool = False) -> list:
+    """`agregado` marca que `b` es un elemento que sumó una persona y `a` es
+    la plantilla. Ver el bloque de listas más abajo."""
     ta, tb = _tipo(a), _tipo(b)
 
     # `nulo` es comodín ENTRE HOJAS, en los dos sentidos: un campo vacío se
@@ -259,7 +275,8 @@ def _comparar(a, b, ruta: str) -> list:
         for k in sorted(set(b) - set(a)):
             problemas.append(f"sobra «{_ruta(ruta, k)}»")
         for k in sorted(set(a) & set(b)):
-            problemas += _comparar(a[k], b[k], _ruta(ruta, k))
+            problemas += _comparar(a[k], b[k], _ruta(ruta, k),
+                                   agregado=agregado)
         return problemas
 
     # ── Listas ────────────────────────────────────────────────────────────
@@ -274,11 +291,21 @@ def _comparar(a, b, ruta: str) -> list:
     # exactamente cómo se manda al regulador un registro al que le falta un
     # dato obligatorio: ahí se pide otra generación a GEREO.
     problemas = []
-    if len(b) < len(a):
+
+    # DENTRO DE UN ELEMENTO AGREGADO, EL LARGO ES LIBRE. Lo que hay que
+    # preservar es lo que generó GEREO, no lo que sumó una persona: si un
+    # reportado trae `telefonos`, el reportado NUEVO puede tener uno, tres o
+    # ninguno. Sin esto, agregar una persona fallaba SIEMPRE en cuanto el
+    # modelo devolviera cualquier lista adentro —el caso normal—, y fallaba
+    # recién al guardar.
+    #
+    # La forma de cada elemento se sigue verificando contra el [0] de la
+    # plantilla; lo único que se suelta es cuántos hay.
+    if not agregado and len(b) < len(a):
         for i in range(len(b), len(a)):
             problemas.append(f"falta «{ruta}[{i}]»")
     for i in range(min(len(a), len(b))):
-        problemas += _comparar(a[i], b[i], f"{ruta}[{i}]")
+        problemas += _comparar(a[i], b[i], f"{ruta}[{i}]", agregado=agregado)
     if len(b) > len(a):
         if not a:
             problemas.append(
@@ -286,7 +313,16 @@ def _comparar(a, b, ruta: str) -> list:
                 "elemento nuevo; pedí otra generación a GEREO")
         else:
             for i in range(len(a), len(b)):
-                problemas += _comparar(a[0], b[i], f"{ruta}[{i}]")
+                # De acá para abajo, todo es agregado.
+                problemas += _comparar(a[0], b[i], f"{ruta}[{i}]",
+                                       agregado=True)
+                # UN AGREGADO VACÍO NO SE GUARDA. Si no, «Agregar» y guardar
+                # sin llenar nada deja en el reporte al regulador un
+                # reportado sin nombre ni documento.
+                if _todo_vacio(b[i]):
+                    problemas.append(
+                        f"«{ruta}[{i}]» se agregó y quedó sin ningún dato: "
+                        "llenalo o sacalo antes de guardar")
     return problemas
 
 

@@ -772,10 +772,12 @@ class SE_PUEDE_SUMAR_A_UNA_LISTA(unittest.TestCase):
                            "monto": 200, "pep": True})
         self.assertEqual(V.diferencias_de_forma(self.V1, nuevo), [])
 
-    def test_agregar_uno_con_los_campos_VACIOS_tambien(self):
-        """El formulario lo ofrece en blanco para que lo llene una persona."""
+    def test_agregar_uno_con_ALGUNOS_campos_vacios(self):
+        """El formulario lo ofrece en blanco y la persona llena lo que sabe.
+        Que quede TODO vacío sí se rechaza: ver
+        `UN_AGREGADO_VACIO_NO_SE_GUARDA`."""
         nuevo = self._con(self.V1["reportados"][0],
-                          {"nombre": None, "rut": None, "monto": None,
+                          {"nombre": "Dos", "rut": None, "monto": None,
                            "pep": None})
         self.assertEqual(V.diferencias_de_forma(self.V1, nuevo), [])
 
@@ -830,3 +832,85 @@ class SE_PUEDE_SUMAR_A_UNA_LISTA(unittest.TestCase):
         self.assertEqual(
             V.diferencias_de_forma(v1, {"motivos": ["uno", 2]}),
             ["«motivos[1]» era texto y llegó como numero"])
+
+
+class DENTRO_DE_UN_AGREGADO_EL_LARGO_ES_LIBRE(unittest.TestCase):
+    """El hallazgo de la revisión del #113, y era el caso típico.
+
+    Si un reportado de GEREO trae cualquier lista adentro —teléfonos,
+    cuentas, documentos— agregar una persona fallaba SIEMPRE: la plantilla
+    del front la armaba vacía y el control exigía el mismo largo. Y fallaba
+    recién al guardar.
+
+    Lo que hay que preservar es lo que generó GEREO, no lo que sumó una
+    persona.
+    """
+
+    V1 = {"rep": [{"nombre": "Uno", "telefonos": ["+56 9 1111"]}]}
+
+    def _con(self, *elementos):
+        return {"rep": list(elementos)}
+
+    def test_el_agregado_puede_traer_la_lista_VACIA(self):
+        nuevo = self._con(self.V1["rep"][0],
+                          {"nombre": "Dos", "telefonos": []})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo), [])
+
+    def test_y_puede_traer_MAS_que_la_plantilla(self):
+        nuevo = self._con(self.V1["rep"][0],
+                          {"nombre": "Dos", "telefonos": ["a", "b", "c"]})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo), [])
+
+    def test_pero_la_FORMA_de_cada_uno_se_sigue_verificando(self):
+        nuevo = self._con(self.V1["rep"][0],
+                          {"nombre": "Dos", "telefonos": [123]})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo),
+                         ["«rep[1].telefonos[0]» era texto y llegó como numero"])
+
+    def test_AL_QUE_YA_ESTABA_NO_SE_LE_SUELTA_EL_LARGO(self):
+        """Lo que generó GEREO se preserva: quitarle un teléfono al reportado
+        que vino del modelo sigue prohibido."""
+        nuevo = self._con({"nombre": "Uno", "telefonos": []})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo),
+                         ["falta «rep[0].telefonos[0]»"])
+
+    def test_una_lista_anidada_vacia_en_la_plantilla_tampoco_da_plantilla(self):
+        v1 = {"rep": [{"nombre": "Uno", "telefonos": []}]}
+        nuevo = {"rep": [v1["rep"][0], {"nombre": "Dos", "telefonos": ["a"]}]}
+        d = V.diferencias_de_forma(v1, nuevo)
+        self.assertEqual(len(d), 1)
+        self.assertIn("venía vacía", d[0])
+
+
+class UN_AGREGADO_VACIO_NO_SE_GUARDA(unittest.TestCase):
+    """«Agregar» y guardar sin llenar nada dejaba en el reporte al regulador
+    un reportado sin nombre ni documento. No es una edición a medias que
+    alguien complete después: una vez aprobado, sale así."""
+
+    V1 = {"rep": [{"nombre": "Uno", "rut": "11.111.111-1"}]}
+
+    def test_todo_en_blanco_se_rechaza(self):
+        nuevo = {"rep": [self.V1["rep"][0], {"nombre": None, "rut": None}]}
+        d = V.diferencias_de_forma(self.V1, nuevo)
+        self.assertEqual(len(d), 1)
+        self.assertIn("sin ningún dato", d[0])
+
+    def test_los_espacios_en_blanco_tampoco_cuentan(self):
+        nuevo = {"rep": [self.V1["rep"][0], {"nombre": "   ", "rut": ""}]}
+        self.assertTrue(V.diferencias_de_forma(self.V1, nuevo))
+
+    def test_con_UN_dato_alcanza(self):
+        nuevo = {"rep": [self.V1["rep"][0], {"nombre": "Dos", "rut": None}]}
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo), [])
+
+    def test_un_cero_ES_un_dato(self):
+        """`0` y `False` son valores, no vacíos."""
+        v1 = {"rep": [{"monto": 100, "pep": True}]}
+        nuevo = {"rep": [v1["rep"][0], {"monto": 0, "pep": False}]}
+        self.assertEqual(V.diferencias_de_forma(v1, nuevo), [])
+
+    def test_el_que_YA_ESTABA_puede_quedar_vacio(self):
+        """Vaciar un campo que GEREO llenó es otra decisión, con su propio
+        control: se resalta en la aprobación. Acá no se bloquea."""
+        nuevo = {"rep": [{"nombre": None, "rut": None}]}
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo), [])

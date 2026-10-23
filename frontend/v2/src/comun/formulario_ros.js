@@ -236,6 +236,32 @@ export function sePuedeAgregar(original) {
   return Array.isArray(original) && original.length > 0;
 }
 
+/** Si no quedó ningún dato adentro. Espeja `_todo_vacio` del backend. */
+export function todoVacio(v) {
+  if (Array.isArray(v)) return v.every(todoVacio);
+  if (v && typeof v === 'object') return Object.values(v).every(todoVacio);
+  return v === null || v === undefined || (typeof v === 'string' && !v.trim());
+}
+
+/**
+ * Los elementos agregados que quedaron sin ningún dato.
+ *
+ * Se avisa ANTES de guardar. El backend también los rechaza, pero enterarse
+ * al apretar «Guardar» es el mismo rechazo tardío que ya nos pasó con los
+ * montos: el control del backend es la red, esto es no caerse.
+ */
+export function agregadosVacios(contenido, original) {
+  const fuera = [];
+  for (const l of listasDe(contenido)) {
+    const base = leer(original, l.ruta);
+    const yaEstaban = Array.isArray(base) ? base.length : 0;
+    l.lista.forEach((el, i) => {
+      if (i >= yaEstaban && todoVacio(el)) fuera.push(`${l.ruta}[${i}]`);
+    });
+  }
+  return fuera;
+}
+
 /** La lista con un elemento más, vacío y con la forma del primero. */
 export function conUnoMas(lista, original) {
   if (!sePuedeAgregar(original)) return lista;
@@ -251,16 +277,36 @@ export function conUnoMas(lista, original) {
  * igual — y si la actual está vacía, la v1 también lo estaba, porque quitar
  * no se puede.
  */
-export function listasDe(valor, prefijo = '') {
+export function listasDe(valor, prefijo = '', raiz = null) {
+  const contenido = raiz ?? valor;
   const tipo = tipoDe(valor);
   if (tipo === 'lista') {
-    const propias = valor.flatMap((v, i) => listasDe(v, `${prefijo}[${i}]`));
-    return [{ ruta: prefijo, etiqueta: etiqueta(prefijo.split('.').pop()),
-              largo: valor.length, lista: valor }, ...propias];
+    const propias = valor.flatMap((v, i) =>
+      listasDe(v, `${prefijo}[${i}]`, contenido));
+    return [{
+      ruta: prefijo,
+      etiqueta: etiqueta(prefijo.replace(/\[\d+\]/g, '').split('.').pop()),
+      largo: valor.length,
+      lista: valor,
+      plantilla: plantillaDeLista(contenido, prefijo),
+    }, ...propias];
   }
   if (tipo === 'objeto') {
     return Object.entries(valor).flatMap(([k, v]) =>
-      listasDe(v, prefijo ? `${prefijo}.${k}` : k));
+      listasDe(v, prefijo ? `${prefijo}.${k}` : k, contenido));
   }
   return [];
+}
+
+/**
+ * La lista de la que copiar la forma, para una ruta cualquiera.
+ *
+ * SIEMPRE SALE DEL ELEMENTO 0. Una lista anidada dentro de un elemento recién
+ * agregado está vacía —no tiene de dónde copiarse a sí misma— pero el
+ * elemento 0 sí conserva la forma que devolvió GEREO. Por eso cada índice de
+ * la ruta se reemplaza por 0: `rep[1].telefonos` busca en `rep[0].telefonos`.
+ */
+export function plantillaDeLista(contenido, ruta) {
+  const base = leer(contenido, String(ruta).replace(/\[\d+\]/g, '[0]'));
+  return Array.isArray(base) ? base : [];
 }
