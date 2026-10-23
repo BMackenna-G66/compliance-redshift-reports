@@ -222,6 +222,11 @@ describe('el plazo legal', () => {
     assert.equal(plazoDe(conAlerta(35)).texto, 'vencido hace 5 días');
   });
 
+  it('el último día dice «queda 1», en singular', () => {
+    assert.equal(plazoDe(conAlerta(29)).texto, 'queda 1 de 30');
+    assert.equal(plazoDe(conAlerta(28)).texto, 'quedan 2 de 30');
+  });
+
   it('el día exacto del vencimiento dice «vence hoy»', () => {
     // «quedan 0 de 30» en rojo se lee como si todavía hubiera margen.
     assert.equal(plazoDe(conAlerta(30)).texto, 'vence hoy');

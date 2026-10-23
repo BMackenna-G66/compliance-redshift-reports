@@ -314,6 +314,6 @@ export function plazoDe(ros, ahora = new Date()) {
       ? `vencido hace ${-restantes} día${restantes === -1 ? '' : 's'}`
       : restantes === 0
         ? 'vence hoy'
-        : `quedan ${restantes} de ${limite}`,
+        : `${restantes === 1 ? 'queda' : 'quedan'} ${restantes} de ${limite}`,
   };
 }
