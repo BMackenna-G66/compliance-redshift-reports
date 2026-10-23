@@ -21,8 +21,8 @@
 import { useEffect, useState } from 'react';
 
 import {
-  campos, coaccionar, cuerpoDeGuardado, escribir, esTextoLargo, leer,
-  paraMostrar,
+  agregadosVacios, campos, coaccionar, conUnoMas, cuerpoDeGuardado, escribir,
+  esTextoLargo, leer, listasDe, paraMostrar, plantillaDeLista, sePuedeAgregar,
 } from '../../comun/formulario_ros.js';
 
 function Campo({ campo, alCambiar, crudo, enError }) {
@@ -87,7 +87,10 @@ function Campo({ campo, alCambiar, crudo, enError }) {
   );
 }
 
-function Seccion({ seccion, contenido, alCambiar, crudos, errores }) {
+function Seccion({ seccion, contenido, alCambiar, alAgregar, crudos, errores }) {
+  // Un «Agregar» por lista. Compliance lo habilitó el 23-10-2026: a un
+  // reporte le puede faltar un reportado. QUITAR sigue sin poder.
+  const listas = listasDe(contenido);
   return (
     <section className="wt-carta" style={{ marginBottom: 'var(--e-3)' }}>
       <header className="wt-carta-cabecera">
@@ -105,6 +108,26 @@ function Seccion({ seccion, contenido, alCambiar, crudos, errores }) {
                    alCambiar={(ruta, crudo) => alCambiar(seccion.clave, ruta, crudo)} />
           );
         })}
+
+        {listas.map((l) => (
+          <div key={l.ruta}>
+            <button className="wt-btn" type="button"
+                    disabled={!sePuedeAgregar(l.plantilla)}
+                    title={sePuedeAgregar(l.plantilla) ? ''
+                      : 'GEREO no devolvió ningún elemento acá, así que no hay '
+                        + 'de dónde copiar la forma. Pedí otra generación.'}
+                    onClick={() => alAgregar(seccion.clave, l.ruta)}>
+              + Agregar a «{l.etiqueta}»
+            </button>
+            {!sePuedeAgregar(l.plantilla) && (
+              <span style={{ marginLeft: 'var(--e-2)',
+                             fontSize: 'var(--texto-xs)',
+                             color: 'var(--texto-mute)' }}>
+                vacía en el reporte original: pedí otra generación a GEREO
+              </span>
+            )}
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -158,6 +181,24 @@ export function Formulario({ api, folio, version, alGuardar, lectura }) {
     setBorradores((b) => ({ ...b, [claveSeccion]: escribir(base, ruta, valor) }));
   }
 
+  function agregar(claveSeccion, ruta) {
+    const base = Object.prototype.hasOwnProperty.call(borradores, claveSeccion)
+      ? borradores[claveSeccion]
+      : (datos.secciones.find((s) => s.clave === claveSeccion) || {}).contenido;
+    // La plantilla sale de la lista TAL COMO ESTÁ. El control de forma del
+    // backend obliga a que cada elemento existente tenga la forma del de la
+    // v1, así que el primero de acá sirve igual — y si está vacía, la v1
+    // también lo estaba, porque quitar no se puede.
+    const lista = leer(base, ruta) || [];
+    // La plantilla sale del elemento 0, no de esta lista: una lista anidada
+    // dentro de un elemento recién agregado está vacía y no tiene de dónde
+    // copiarse a sí misma.
+    const plantilla = plantillaDeLista(base, ruta);
+    setBorradores((b) => ({
+      ...b, [claveSeccion]: escribir(base, ruta, conUnoMas(lista, plantilla)),
+    }));
+  }
+
   async function guardar() {
     setEstado('guardando'); setError(''); setDiferencias([]);
     try {
@@ -185,6 +226,14 @@ export function Formulario({ api, folio, version, alGuardar, lectura }) {
 
   const tocado = Object.keys(borradores).length > 0;
   const hayErrores = errores.size > 0;
+  // Un elemento agregado y dejado en blanco termina en el reporte al
+  // regulador como un reportado sin nombre ni documento. El backend lo
+  // rechaza; esto lo dice ANTES de apretar «Guardar».
+  const vacios = datos.secciones.flatMap((s) => {
+    const actual = Object.prototype.hasOwnProperty.call(borradores, s.clave)
+      ? borradores[s.clave] : s.contenido;
+    return agregadosVacios(actual, s.contenido).map((r) => `${s.clave}.${r}`);
+  });
 
   return (
     <>
@@ -199,7 +248,7 @@ export function Formulario({ api, folio, version, alGuardar, lectura }) {
         <Seccion key={s.clave} seccion={s} crudos={crudos} errores={errores}
                  contenido={Object.prototype.hasOwnProperty.call(borradores, s.clave)
                    ? borradores[s.clave] : s.contenido}
-                 alCambiar={cambiar} />
+                 alCambiar={cambiar} alAgregar={agregar} />
       ))}
 
       {error && (
@@ -216,8 +265,11 @@ export function Formulario({ api, folio, version, alGuardar, lectura }) {
       {!lectura && (
         <div style={{ display: 'flex', gap: 'var(--e-2)', alignItems: 'center' }}>
           <button className="wt-btn wt-btn-primario" type="button"
-                  disabled={!tocado || hayErrores || estado === 'guardando'}
-                  title={hayErrores ? 'Hay campos que no se entienden como número' : ''}
+                  disabled={!tocado || hayErrores || vacios.length > 0
+                    || estado === 'guardando'}
+                  title={hayErrores ? 'Hay campos que no se entienden como número'
+                    : vacios.length > 0 ? 'Hay elementos agregados sin ningún dato'
+                      : ''}
                   onClick={guardar}>
             {estado === 'guardando' ? 'Guardando…' : 'Guardar como versión nueva'}
           </button>
@@ -225,6 +277,14 @@ export function Formulario({ api, folio, version, alGuardar, lectura }) {
             <span style={{ fontSize: 'var(--texto-sm)',
                            color: 'var(--nivel-alto-texto)' }}>
               {errores.size} campo{errores.size === 1 ? '' : 's'} sin resolver.
+            </span>
+          )}
+          {vacios.length > 0 && (
+            <span style={{ fontSize: 'var(--texto-sm)',
+                           color: 'var(--nivel-alto-texto)' }}>
+              Agregaste {vacios.length} elemento
+              {vacios.length === 1 ? '' : 's'} sin ningún dato: llenalo
+              {vacios.length === 1 ? '' : 's'} antes de guardar.
             </span>
           )}
           {tocado && (

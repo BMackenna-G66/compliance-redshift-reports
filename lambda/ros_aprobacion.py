@@ -233,6 +233,11 @@ def diferencias_contra_v1(v1: dict, version: dict) -> list:
             "antes": _texto(antes),
             "despues": _texto(despues),
             "vaciado": bool(not _vacio(antes) and _vacio(despues)),
+            # AGREGADO: la ruta no existe en la v1, o sea que es un elemento
+            # que sumó una persona. Quien firma tiene que distinguirlo de una
+            # corrección: no es que GEREO se equivocó, es que alguien metió
+            # un reportado que el modelo no encontró.
+            "agregado": ruta not in a,
         })
     return fuera
 

@@ -25,7 +25,12 @@ function Cambio({ c }) {
   return (
     <li style={{ marginBottom: 4 }}>
       <code style={{ fontSize: 'var(--texto-xs)' }}>{c.ruta}</code>
-      {c.vaciado ? (
+      {c.agregado ? (
+        <span style={{ color: 'var(--g66-azul-texto)',
+                       fontWeight: 'var(--peso-medio)' }}>
+          {' '}— agregado: «{c.despues}»
+        </span>
+      ) : c.vaciado ? (
         <span style={{ color: 'var(--nivel-alto-texto)',
                        fontWeight: 'var(--peso-medio)' }}>
           {' '}— se vació: decía «{c.antes}»
@@ -101,6 +106,20 @@ export function Aprobar({ api, folio, version, etapa, lectura, alCambiar }) {
         </p>
       ) : (
         <>
+          {(cambios.filter((c) => c.agregado).length > 0) && (
+            <div className="wt-nota"
+                 style={{ borderColor: 'var(--g66-azul-texto)',
+                          background: 'var(--g66-azul-tenue)',
+                          color: 'var(--g66-azul-texto)' }}>
+              <strong>
+                Se agregaron {cambios.filter((c) => c.agregado).length} dato
+                {cambios.filter((c) => c.agregado).length === 1 ? '' : 's'} que
+                GEREO no había encontrado.
+              </strong>{' '}
+              No son correcciones: los puso una persona.
+            </div>
+          )}
+
           {vaciados.length > 0 && (
             <div className="wt-nota"
                  style={{ borderColor: 'var(--nivel-alto-texto)',

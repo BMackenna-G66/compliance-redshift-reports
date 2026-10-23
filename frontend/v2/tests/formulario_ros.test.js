@@ -15,8 +15,9 @@ import assert from 'node:assert/strict';
 import test, { describe, it } from 'node:test';
 
 import {
-  campos, coaccionar, cuerpoDeGuardado, escribir, esTextoLargo, etiqueta,
-  formatearNumero, leer, paraMostrar, parsearNumero, tipoDe,
+  campos, coaccionar, conUnoMas, cuerpoDeGuardado, escribir, esTextoLargo,
+  agregadosVacios, etiqueta, formatearNumero, leer, listasDe, paraMostrar,
+  parsearNumero, plantillaDe, plantillaDeLista, sePuedeAgregar, tipoDe,
 } from '../src/comun/formulario_ros.js';
 
 const DOC = {
@@ -202,5 +203,120 @@ describe('el cuerpo que se manda a guardar', () => {
   it('sin ediciones manda el contenido tal cual', () => {
     const cuerpo = cuerpoDeGuardado(SECCIONES, {}, 1);
     assert.deepEqual(cuerpo.secciones, { s1: { a: 1 }, s2: { b: 2 } });
+  });
+});
+
+
+describe('SUMAR A UNA LISTA', () => {
+  /* Compliance lo habilitó el 23-10-2026: a un reporte le puede faltar un
+     reportado y el analista lo agrega. QUITAR sigue sin poder — eso lo
+     rechaza el backend. */
+
+  const MODELO = { nombre: 'Uno', rut: '1', monto: 100, pep: false,
+                   direcciones: ['a'] };
+
+  it('la plantilla tiene las mismas claves, con los valores vacíos', () => {
+    assert.deepEqual(plantillaDe(MODELO), {
+      nombre: null, rut: null, monto: null, pep: null, direcciones: [],
+    });
+  });
+
+  it('una lista anidada se copia VACÍA', () => {
+    // Su propio largo lo decide quien edita, no la plantilla.
+    assert.deepEqual(plantillaDe(MODELO).direcciones, []);
+  });
+
+  it('CON LA LISTA VACÍA NO SE PUEDE AGREGAR', () => {
+    // Sin plantilla no hay forma que copiar, y adivinar qué campos lleva un
+    // reportado es cómo se manda al regulador un registro incompleto.
+    assert.equal(sePuedeAgregar([]), false);
+    assert.equal(sePuedeAgregar(undefined), false);
+    assert.equal(sePuedeAgregar([MODELO]), true);
+  });
+
+  it('agregar deja la lista un elemento más larga, sin tocar los que había', () => {
+    const lista = [MODELO];
+    const nueva = conUnoMas(lista, lista);
+    assert.equal(nueva.length, 2);
+    assert.deepEqual(nueva[0], MODELO);
+    assert.equal(nueva[1].nombre, null);
+    assert.equal(lista.length, 1, 'mutó la original');
+  });
+
+  it('sobre una lista vacía no agrega nada', () => {
+    assert.deepEqual(conUnoMas([], []), []);
+  });
+
+  it('encuentra las listas para dibujarles el botón', () => {
+    const contenido = { reportados: [MODELO], nota: 'x',
+                        anidado: { motivos: ['uno'] } };
+    const rutas = listasDe(contenido).map((l) => l.ruta).sort();
+    assert.deepEqual(rutas, ['anidado.motivos', 'reportados',
+                             'reportados[0].direcciones']);
+  });
+
+  it('un contenido sin listas no da ningún botón', () => {
+    assert.deepEqual(listasDe({ a: 1, b: { c: 'x' } }), []);
+  });
+});
+
+describe('LAS LISTAS DENTRO DE UN ELEMENTO AGREGADO', () => {
+  /* El caso típico: un reportado de GEREO trae `telefonos`. Al agregar una
+     persona, su lista de teléfonos nace vacía y hay que poder llenarla — y
+     la plantilla no puede salir de ella misma, que está vacía. */
+
+  const V1 = { rep: [{ nombre: 'Uno', telefonos: ['+56 1'] }] };
+
+  it('la plantilla sale del elemento 0, no del recién agregado', () => {
+    const conDos = { rep: [V1.rep[0], { nombre: null, telefonos: [] }] };
+    assert.deepEqual(plantillaDeLista(conDos, 'rep[1].telefonos'), ['+56 1']);
+  });
+
+  it('así el botón de la lista anidada queda habilitado', () => {
+    const conDos = { rep: [V1.rep[0], { nombre: null, telefonos: [] }] };
+    const l = listasDe(conDos).find((x) => x.ruta === 'rep[1].telefonos');
+    assert.equal(sePuedeAgregar(l.plantilla), true);
+    assert.equal(sePuedeAgregar(l.lista), false, 'la suya está vacía');
+  });
+
+  it('la etiqueta no arrastra el índice', () => {
+    const conDos = { rep: [V1.rep[0], { nombre: null, telefonos: [] }] };
+    const l = listasDe(conDos).find((x) => x.ruta === 'rep[1].telefonos');
+    assert.equal(l.etiqueta, 'Telefonos');
+  });
+});
+
+describe('UN AGREGADO VACÍO SE AVISA ANTES DE GUARDAR', () => {
+  /* El backend lo rechaza. Enterarse al apretar «Guardar» es el mismo
+     rechazo tardío que ya nos pasó con los montos. */
+
+  const ORIGINAL = { rep: [{ nombre: 'Uno', rut: '1' }] };
+
+  it('detecta el agregado en blanco', () => {
+    const actual = { rep: [ORIGINAL.rep[0], { nombre: null, rut: null }] };
+    assert.deepEqual(agregadosVacios(actual, ORIGINAL), ['rep[1]']);
+  });
+
+  it('con un dato ya no avisa', () => {
+    const actual = { rep: [ORIGINAL.rep[0], { nombre: 'Dos', rut: null }] };
+    assert.deepEqual(agregadosVacios(actual, ORIGINAL), []);
+  });
+
+  it('NO avisa por los que ya estaban, aunque se vacíen', () => {
+    // Vaciar un campo que GEREO llenó es otra decisión, con su propio
+    // control: se resalta en la aprobación.
+    const actual = { rep: [{ nombre: null, rut: null }] };
+    assert.deepEqual(agregadosVacios(actual, ORIGINAL), []);
+  });
+
+  it('un cero o un false son datos, no vacíos', () => {
+    const orig = { rep: [{ monto: 1, pep: true }] };
+    const actual = { rep: [orig.rep[0], { monto: 0, pep: false }] };
+    assert.deepEqual(agregadosVacios(actual, orig), []);
+  });
+
+  it('los espacios en blanco no cuentan como dato', () => {
+    const actual = { rep: [ORIGINAL.rep[0], { nombre: '   ', rut: '' }] };
+    assert.deepEqual(agregadosVacios(actual, ORIGINAL), ['rep[1]']);
   });
 });
