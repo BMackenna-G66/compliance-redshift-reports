@@ -184,37 +184,54 @@ describe('los filtros de etapa y de país', () => {
 });
 
 describe('el plazo legal', () => {
-  it('NO SE INVENTAN LOS DÍAS: ninguno está definido todavía', () => {
-    // Poner un número supuesto sería peor que no mostrar nada: alguien lo
-    // tomaría por bueno y podría dejar pasar un plazo real.
-    for (const v of Object.values(PLAZO_LEGAL_DIAS)) assert.equal(v, null);
-  });
-
-  it('mientras tanto muestra los días, sin semáforo', () => {
-    const p = plazoDe({ evidencia: { periodo: { desde: hace(10) } },
-                        regulador: 'UAF-CL' });
-    assert.equal(p.dias, 10);
-    assert.equal(p.limite, null);
-    assert.equal(p.semaforo, '', 'pintó un semáforo sin saber el plazo');
-    assert.equal(p.texto, '10 días');
-  });
-
-  it('EL SEMÁFORO APARECE SOLO cuando se defina el plazo', () => {
-    // El día que Compliance los defina, se llenan y esto funciona sin tocar
-    // una línea más.
-    const original = PLAZO_LEGAL_DIAS['UAF-CL'];
-    try {
-      PLAZO_LEGAL_DIAS['UAF-CL'] = 15;
-      const conAlerta = (d) => ({ evidencia: { periodo: { desde: hace(d) } },
-                                  regulador: 'UAF-CL' });
-      assert.equal(plazoDe(conAlerta(10)).semaforo, 'ok');
-      assert.equal(plazoDe(conAlerta(14)).semaforo, 'medio');
-      const vencido = plazoDe(conAlerta(20));
-      assert.equal(vencido.semaforo, 'alto');
-      assert.equal(vencido.texto, 'vencido hace 5 días');
-    } finally {
-      PLAZO_LEGAL_DIAS['UAF-CL'] = original;
+  it('EL PLAZO ES 15 / 30 PARA LOS TRES REGULADORES', () => {
+    // Definido por Compliance el 23-10-2026. Si alguien lo cambia sin querer,
+    // esto lo dice: un plazo mal puesto muestra verde sobre algo vencido.
+    for (const [reg, p] of Object.entries(PLAZO_LEGAL_DIAS)) {
+      assert.deepEqual(p, { aviso: 15, vencido: 30 }, reg);
     }
+  });
+
+  it('EL VALOR VIVE EN UN SOLO LUGAR', () => {
+    // Los tres apuntan al mismo objeto. Si alguien copia los números por
+    // país, se actualiza uno y se olvida otro — y el olvidado no falla:
+    // muestra verde sobre un plazo vencido.
+    const [a, b, c] = Object.values(PLAZO_LEGAL_DIAS);
+    assert.equal(a, b);
+    assert.equal(b, c);
+  });
+
+  const conAlerta = (d) => ({ evidencia: { periodo: { desde: hace(d) } },
+                              regulador: 'UAF-CL' });
+
+  it('verde hasta el día 14', () => {
+    assert.equal(plazoDe(conAlerta(0)).semaforo, 'ok');
+    assert.equal(plazoDe(conAlerta(14)).semaforo, 'ok');
+  });
+
+  it('AMARILLO DESDE EL DÍA 15, no faltando dos', () => {
+    // Lo que importa es cuánto lleva abierto, no cuánto queda: con 30 días
+    // de plazo, avisar el día 28 no le da a nadie tiempo de hacer nada.
+    assert.equal(plazoDe(conAlerta(15)).semaforo, 'medio');
+    assert.equal(plazoDe(conAlerta(29)).semaforo, 'medio');
+  });
+
+  it('rojo a partir del día 30', () => {
+    assert.equal(plazoDe(conAlerta(30)).semaforo, 'alto');
+    assert.equal(plazoDe(conAlerta(35)).semaforo, 'alto');
+    assert.equal(plazoDe(conAlerta(35)).texto, 'vencido hace 5 días');
+  });
+
+  it('el día exacto del vencimiento dice «vence hoy»', () => {
+    // «quedan 0 de 30» en rojo se lee como si todavía hubiera margen.
+    assert.equal(plazoDe(conAlerta(30)).texto, 'vence hoy');
+  });
+
+  it('un regulador sin plazo definido sigue sin pintar semáforo', () => {
+    const p = plazoDe({ evidencia: { periodo: { desde: hace(10) } },
+                        regulador: 'OTRO-XX' });
+    assert.equal(p.semaforo, '');
+    assert.equal(p.texto, '10 días');
   });
 
   it('una fecha ilegible no inventa días', () => {
