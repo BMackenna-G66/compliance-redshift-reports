@@ -232,20 +232,21 @@ export function filtrarPorRos(casos, mapa, { etapa = '', regulador = '' } = {}) 
 }
 
 /* ── El plazo legal ───────────────────────────────────────────────────────
-   LOS DÍAS NO ESTÁN DEFINIDOS, y no se inventan. Cada regulador tiene su
-   plazo y ninguno está confirmado por Compliance; poner un número supuesto
-   sería peor que no mostrar nada, porque alguien lo tomaría por bueno y
-   podría dejar pasar un plazo real creyendo que le sobra tiempo.
+   Definido por Compliance el 23-10-2026: aviso a los 15 días y vencido a los
+   30 días CORRIDOS, igual para los tres reguladores.
 
-   Mientras tanto se muestran los DÍAS TRANSCURRIDOS, sin semáforo. Eso ya
-   sirve —ordena y deja ver cuál lleva más— y no afirma nada que no sepamos.
-   El día que Compliance defina los plazos, se llenan acá y el semáforo
-   aparece solo.                                                            */
+   EL VALOR VIVE EN UN SOLO LUGAR. Si mañana un regulador pide otro plazo, es
+   reemplazar su entrada por `{ aviso: X, vencido: Y }` — una línea, y las
+   otras dos no se tocan. Repetir los números por país invita a que se
+   actualice uno y se olvide otro, y el que se olvide no falla: muestra verde
+   sobre un plazo vencido.                                                   */
+
+const PLAZO_POR_DEFECTO = { aviso: 15, vencido: 30 };
 
 export const PLAZO_LEGAL_DIAS = {
-  'UAF-CL': null,
-  'UIF-AR': null,
-  'UIAF-CO': null,
+  'UAF-CL': PLAZO_POR_DEFECTO,
+  'UIF-AR': PLAZO_POR_DEFECTO,
+  'UIAF-CO': PLAZO_POR_DEFECTO,
 };
 
 /* QUÉ EVENTO DISPARA EL PLAZO tampoco está confirmado. Acá se cuenta desde la
@@ -292,18 +293,27 @@ export function plazoDe(ros, ahora = new Date()) {
   const origen = origenDelPlazo(ros);
   const dias = origen ? diasDesde(origen.fecha, ahora) : null;
   if (dias === null) return null;
-  const limite = PLAZO_LEGAL_DIAS[ros?.regulador];
-  if (!limite) {
-    return { dias, limite: null, restantes: null, semaforo: '',
+  const plazo = PLAZO_LEGAL_DIAS[ros?.regulador];
+  // Un regulador sin plazo definido muestra los días y NO pinta semáforo:
+  // el verde afirmaría que hay tiempo de sobra sin que nadie lo sepa.
+  if (!plazo) {
+    return { dias, limite: null, aviso: null, restantes: null, semaforo: '',
              desde: origen.desde,
              texto: `${dias} día${dias === 1 ? '' : 's'}` };
   }
+  const { aviso, vencido: limite } = plazo;
   const restantes = limite - dias;
-  const semaforo = restantes < 0 ? 'alto' : restantes <= 2 ? 'medio' : 'ok';
+  // El amarillo arranca EL DÍA DEL AVISO, no faltando dos: lo que importa es
+  // cuánto lleva abierto, no cuánto queda. Con 30 días de plazo, avisar
+  // recién el día 28 no le da a nadie tiempo de hacer nada.
+  const semaforo = dias >= limite ? 'alto' : dias >= aviso ? 'medio' : 'ok';
   return {
-    dias, limite, restantes, semaforo, desde: origen.desde,
+    dias, limite, aviso, restantes, semaforo, desde: origen.desde,
+    // «quedan 0 de 30» en rojo se lee como si todavía hubiera margen.
     texto: restantes < 0
       ? `vencido hace ${-restantes} día${restantes === -1 ? '' : 's'}`
-      : `quedan ${restantes} de ${limite}`,
+      : restantes === 0
+        ? 'vence hoy'
+        : `${restantes === 1 ? 'queda' : 'quedan'} ${restantes} de ${limite}`,
   };
 }
