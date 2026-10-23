@@ -440,13 +440,9 @@ class LA_EDICION_NO_DEFORMA_EL_REPORTE(unittest.TestCase):
                                    {"s": {**self.BASE["s"], "pep": 1}})
         self.assertEqual(d, ["«s.pep» era bool y llegó como numero"])
 
-    def test_EL_LARGO_DE_UNA_LISTA_ES_ESTRUCTURA(self):
-        """Agregar un reportado no es editar un valor: cambia lo que el
-        formulario del regulador va a recibir. Para eso se pide otra
-        generación a GEREO."""
-        mas = {"s": {**self.BASE["s"], "lista": ["a", "b", "c"]}}
-        self.assertEqual(V.diferencias_de_forma(self.BASE, mas),
-                         ["sobra «s.lista[2]»"])
+    def test_QUITAR_DE_UNA_LISTA_SIGUE_PROHIBIDO(self):
+        """Sacar un elemento que GEREO sí trajo es borrar algo que el modelo
+        encontró. Sumar sí se puede; ver la clase de más abajo."""
         menos = {"s": {**self.BASE["s"], "lista": ["a"]}}
         self.assertEqual(V.diferencias_de_forma(self.BASE, menos),
                          ["falta «s.lista[1]»"])
@@ -752,3 +748,85 @@ class LoQueGuardarRechaza(unittest.TestCase):
                 setattr(A, n, f)
         self.assertEqual(r["statusCode"], 409)
         self.assertIn("Recargá", json.loads(r["body"])["error"])
+
+
+class SE_PUEDE_SUMAR_A_UNA_LISTA(unittest.TestCase):
+    """Definición de Compliance del 23-10-2026: a un reporte le puede faltar
+    un reportado y el analista lo agrega. Quitar sigue prohibido.
+
+    EL ELEMENTO NUEVO COPIA LA FORMA DEL PRIMERO de la v1. Adivinar qué
+    campos lleva un reportado es exactamente cómo se le manda al regulador un
+    registro al que le falta un dato obligatorio.
+    """
+
+    V1 = {"reportados": [
+        {"nombre": "Uno", "rut": "11.111.111-1", "monto": 100, "pep": False},
+    ]}
+
+    def _con(self, *elementos):
+        return {"reportados": list(elementos)}
+
+    def test_agregar_uno_valido(self):
+        nuevo = self._con(self.V1["reportados"][0],
+                          {"nombre": "Dos", "rut": "22.222.222-2",
+                           "monto": 200, "pep": True})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo), [])
+
+    def test_agregar_uno_con_los_campos_VACIOS_tambien(self):
+        """El formulario lo ofrece en blanco para que lo llene una persona."""
+        nuevo = self._con(self.V1["reportados"][0],
+                          {"nombre": None, "rut": None, "monto": None,
+                           "pep": None})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo), [])
+
+    def test_uno_con_una_clave_DE_MAS(self):
+        nuevo = self._con(self.V1["reportados"][0],
+                          {"nombre": "Dos", "rut": "22.222.222-2",
+                           "monto": 200, "pep": True, "inventado": "x"})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo),
+                         ["sobra «reportados[1].inventado»"])
+
+    def test_uno_con_una_clave_DE_MENOS(self):
+        nuevo = self._con(self.V1["reportados"][0],
+                          {"nombre": "Dos", "rut": "22.222.222-2",
+                           "monto": 200})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo),
+                         ["falta «reportados[1].pep»"])
+
+    def test_uno_con_un_TIPO_distinto(self):
+        nuevo = self._con(self.V1["reportados"][0],
+                          {"nombre": "Dos", "rut": "22.222.222-2",
+                           "monto": "doscientos", "pep": True})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo),
+                         ["«reportados[1].monto» era numero y llegó como texto"])
+
+    def test_EN_UNA_LISTA_VACIA_NO_SE_PUEDE(self):
+        """Sin plantilla no hay forma que copiar, y adivinarla es cómo se
+        manda un registro incompleto al regulador."""
+        vacia = {"reportados": []}
+        d = V.diferencias_de_forma(vacia, {"reportados": [{"nombre": "Uno"}]})
+        self.assertEqual(len(d), 1)
+        self.assertIn("venía vacía", d[0])
+        self.assertIn("GEREO", d[0])
+
+    def test_se_pueden_agregar_varios(self):
+        nuevo = self._con(self.V1["reportados"][0],
+                          {"nombre": "Dos", "rut": "2", "monto": 2, "pep": True},
+                          {"nombre": "Tres", "rut": "3", "monto": 3, "pep": False})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo), [])
+
+    def test_el_que_YA_ESTABA_se_sigue_verificando(self):
+        """Agregar no afloja el control sobre los que ya venían."""
+        nuevo = self._con({"nombre": "Uno", "rut": "11.111.111-1",
+                           "monto": "cien", "pep": False},
+                          {"nombre": "Dos", "rut": "2", "monto": 2, "pep": True})
+        self.assertEqual(V.diferencias_de_forma(self.V1, nuevo),
+                         ["«reportados[0].monto» era numero y llegó como texto"])
+
+    def test_una_lista_de_textos_tambien(self):
+        """No todas las listas son de objetos."""
+        v1 = {"motivos": ["uno"]}
+        self.assertEqual(V.diferencias_de_forma(v1, {"motivos": ["uno", "dos"]}), [])
+        self.assertEqual(
+            V.diferencias_de_forma(v1, {"motivos": ["uno", 2]}),
+            ["«motivos[1]» era texto y llegó como numero"])

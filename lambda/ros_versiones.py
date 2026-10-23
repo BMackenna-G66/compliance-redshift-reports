@@ -223,21 +223,75 @@ def rutas_de(obj, prefijo: str = "") -> dict:
     return fuera
 
 
+def _es_hoja(v) -> bool:
+    return not isinstance(v, (dict, list))
+
+
 def diferencias_de_forma(antes, despues) -> list:
-    """Qué cambió además de los valores. Lista vacía = sólo cambiaron valores."""
-    a, b = rutas_de(antes), rutas_de(despues)
+    """Qué cambió además de los valores. Lista vacía = la edición es válida.
+
+    SE RECORRE EN PARALELO y no comparando dos mapas planos de rutas, porque
+    una lista más larga tiene que poder evaluarse elemento por elemento: con
+    rutas planas, un elemento agregado sólo se ve como «sobra x[2]» y no hay
+    forma de mirar si respeta la forma de los que ya estaban.
+    """
+    return _comparar(antes, despues, "")
+
+
+def _comparar(a, b, ruta: str) -> list:
+    ta, tb = _tipo(a), _tipo(b)
+
+    # `nulo` es comodín ENTRE HOJAS, en los dos sentidos: un campo vacío se
+    # puede llenar y uno lleno se puede vaciar. Entre una hoja y un objeto o
+    # una lista no: eso cambia la estructura.
+    if _es_hoja(a) and _es_hoja(b):
+        if ta != tb and "nulo" not in (ta, tb):
+            return [f"«{ruta}» era {ta} y llegó como {tb}"]
+        return []
+
+    if ta != tb:
+        return [f"«{ruta}» era {ta} y llegó como {tb}"]
+
+    if ta == "objeto":
+        problemas = []
+        for k in sorted(set(a) - set(b)):
+            problemas.append(f"falta «{_ruta(ruta, k)}»")
+        for k in sorted(set(b) - set(a)):
+            problemas.append(f"sobra «{_ruta(ruta, k)}»")
+        for k in sorted(set(a) & set(b)):
+            problemas += _comparar(a[k], b[k], _ruta(ruta, k))
+        return problemas
+
+    # ── Listas ────────────────────────────────────────────────────────────
+    #
+    # SE PUEDE SUMAR, NO QUITAR. Compliance lo pidió así el 23-10-2026: a un
+    # reporte le puede faltar un reportado y el analista lo agrega. Sacar uno
+    # que GEREO sí trajo es otra cosa —es borrar algo que el modelo encontró—
+    # y no se pidió.
+    #
+    # EL ELEMENTO NUEVO COPIA LA FORMA DEL PRIMERO de la v1. Si la lista venía
+    # vacía no hay plantilla, y adivinar qué campos lleva un reportado es
+    # exactamente cómo se manda al regulador un registro al que le falta un
+    # dato obligatorio: ahí se pide otra generación a GEREO.
     problemas = []
-    for ruta in sorted(set(a) - set(b)):
-        problemas.append(f"falta «{ruta}»")
-    for ruta in sorted(set(b) - set(a)):
-        problemas.append(f"sobra «{ruta}»")
-    for ruta in sorted(set(a) & set(b)):
-        # `nulo` es comodín en los dos sentidos: un campo vacío se puede
-        # llenar, y uno lleno se puede vaciar.
-        if a[ruta] != b[ruta] and "nulo" not in (a[ruta], b[ruta]):
+    if len(b) < len(a):
+        for i in range(len(b), len(a)):
+            problemas.append(f"falta «{ruta}[{i}]»")
+    for i in range(min(len(a), len(b))):
+        problemas += _comparar(a[i], b[i], f"{ruta}[{i}]")
+    if len(b) > len(a):
+        if not a:
             problemas.append(
-                f"«{ruta}» era {a[ruta]} y llegó como {b[ruta]}")
+                f"«{ruta}» venía vacía y no hay de dónde copiar la forma de un "
+                "elemento nuevo; pedí otra generación a GEREO")
+        else:
+            for i in range(len(a), len(b)):
+                problemas += _comparar(a[0], b[i], f"{ruta}[{i}]")
     return problemas
+
+
+def _ruta(prefijo: str, clave) -> str:
+    return f"{prefijo}.{clave}" if prefijo else str(clave)
 
 
 def fundir(doc_anterior: dict, secciones_editadas: dict,

@@ -203,3 +203,64 @@ export function paraMostrar(valor) {
   if (tipoDe(valor) === 'numero') return formatearNumero(valor);
   return valor ?? '';
 }
+
+/* ── Sumar a una lista ────────────────────────────────────────────────────
+   Compliance lo habilitó el 23-10-2026: a un reporte le puede faltar un
+   reportado y el analista lo agrega. QUITAR sigue sin poder.
+
+   EL ELEMENTO NUEVO COPIA LA FORMA DEL PRIMERO, con los valores vacíos. Es
+   la misma regla que aplica el backend contra la v1, y acá existe para que
+   la persona reciba los campos correctos en vez de enterarse al guardar.  */
+
+/** Un elemento con la forma de `modelo` y todos los valores vacíos. */
+export function plantillaDe(modelo) {
+  const tipo = tipoDe(modelo);
+  if (tipo === 'objeto') {
+    return Object.fromEntries(
+      Object.entries(modelo).map(([k, v]) => [k, plantillaDe(v)]));
+  }
+  // Una lista anidada se copia vacía: su propio largo lo decide quien edita.
+  if (tipo === 'lista') return [];
+  // `null` es el valor vacío que el backend acepta para cualquier hoja.
+  return null;
+}
+
+/**
+ * Si se le puede agregar un elemento a esta lista.
+ *
+ * `original` es la lista en la v1 — la que GEREO devolvió. Sin elementos ahí
+ * no hay forma que copiar, y adivinar qué campos lleva un reportado es cómo
+ * se manda al regulador un registro al que le falta un dato obligatorio.
+ */
+export function sePuedeAgregar(original) {
+  return Array.isArray(original) && original.length > 0;
+}
+
+/** La lista con un elemento más, vacío y con la forma del primero. */
+export function conUnoMas(lista, original) {
+  if (!sePuedeAgregar(original)) return lista;
+  return [...(lista || []), plantillaDe(original[0])];
+}
+
+/**
+ * Las listas que hay dentro de un contenido, con su ruta.
+ *
+ * Sirve para dibujar un «Agregar» por lista. Se mira la versión ACTUAL y no
+ * la v1: el control de forma obliga a que cada elemento que ya existe tenga
+ * la forma del de la v1, así que el primero de la actual sirve de plantilla
+ * igual — y si la actual está vacía, la v1 también lo estaba, porque quitar
+ * no se puede.
+ */
+export function listasDe(valor, prefijo = '') {
+  const tipo = tipoDe(valor);
+  if (tipo === 'lista') {
+    const propias = valor.flatMap((v, i) => listasDe(v, `${prefijo}[${i}]`));
+    return [{ ruta: prefijo, etiqueta: etiqueta(prefijo.split('.').pop()),
+              largo: valor.length, lista: valor }, ...propias];
+  }
+  if (tipo === 'objeto') {
+    return Object.entries(valor).flatMap(([k, v]) =>
+      listasDe(v, prefijo ? `${prefijo}.${k}` : k));
+  }
+  return [];
+}

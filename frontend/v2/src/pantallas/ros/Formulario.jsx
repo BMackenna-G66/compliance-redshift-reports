@@ -21,8 +21,8 @@
 import { useEffect, useState } from 'react';
 
 import {
-  campos, coaccionar, cuerpoDeGuardado, escribir, esTextoLargo, leer,
-  paraMostrar,
+  campos, coaccionar, conUnoMas, cuerpoDeGuardado, escribir, esTextoLargo,
+  leer, listasDe, paraMostrar, sePuedeAgregar,
 } from '../../comun/formulario_ros.js';
 
 function Campo({ campo, alCambiar, crudo, enError }) {
@@ -87,7 +87,10 @@ function Campo({ campo, alCambiar, crudo, enError }) {
   );
 }
 
-function Seccion({ seccion, contenido, alCambiar, crudos, errores }) {
+function Seccion({ seccion, contenido, alCambiar, alAgregar, crudos, errores }) {
+  // Un «Agregar» por lista. Compliance lo habilitó el 23-10-2026: a un
+  // reporte le puede faltar un reportado. QUITAR sigue sin poder.
+  const listas = listasDe(contenido);
   return (
     <section className="wt-carta" style={{ marginBottom: 'var(--e-3)' }}>
       <header className="wt-carta-cabecera">
@@ -105,6 +108,26 @@ function Seccion({ seccion, contenido, alCambiar, crudos, errores }) {
                    alCambiar={(ruta, crudo) => alCambiar(seccion.clave, ruta, crudo)} />
           );
         })}
+
+        {listas.map((l) => (
+          <div key={l.ruta}>
+            <button className="wt-btn" type="button"
+                    disabled={!sePuedeAgregar(l.lista)}
+                    title={sePuedeAgregar(l.lista) ? ''
+                      : 'GEREO no devolvió ningún elemento acá, así que no hay '
+                        + 'de dónde copiar la forma. Pedí otra generación.'}
+                    onClick={() => alAgregar(seccion.clave, l.ruta)}>
+              + Agregar a «{l.etiqueta}»
+            </button>
+            {!sePuedeAgregar(l.lista) && (
+              <span style={{ marginLeft: 'var(--e-2)',
+                             fontSize: 'var(--texto-xs)',
+                             color: 'var(--texto-mute)' }}>
+                vacía en el reporte original: pedí otra generación a GEREO
+              </span>
+            )}
+          </div>
+        ))}
       </div>
     </section>
   );
@@ -158,6 +181,20 @@ export function Formulario({ api, folio, version, alGuardar, lectura }) {
     setBorradores((b) => ({ ...b, [claveSeccion]: escribir(base, ruta, valor) }));
   }
 
+  function agregar(claveSeccion, ruta) {
+    const base = Object.prototype.hasOwnProperty.call(borradores, claveSeccion)
+      ? borradores[claveSeccion]
+      : (datos.secciones.find((s) => s.clave === claveSeccion) || {}).contenido;
+    // La plantilla sale de la lista TAL COMO ESTÁ. El control de forma del
+    // backend obliga a que cada elemento existente tenga la forma del de la
+    // v1, así que el primero de acá sirve igual — y si está vacía, la v1
+    // también lo estaba, porque quitar no se puede.
+    const lista = leer(base, ruta);
+    setBorradores((b) => ({
+      ...b, [claveSeccion]: escribir(base, ruta, conUnoMas(lista, lista)),
+    }));
+  }
+
   async function guardar() {
     setEstado('guardando'); setError(''); setDiferencias([]);
     try {
@@ -199,7 +236,7 @@ export function Formulario({ api, folio, version, alGuardar, lectura }) {
         <Seccion key={s.clave} seccion={s} crudos={crudos} errores={errores}
                  contenido={Object.prototype.hasOwnProperty.call(borradores, s.clave)
                    ? borradores[s.clave] : s.contenido}
-                 alCambiar={cambiar} />
+                 alCambiar={cambiar} alAgregar={agregar} />
       ))}
 
       {error && (

@@ -15,8 +15,9 @@ import assert from 'node:assert/strict';
 import test, { describe, it } from 'node:test';
 
 import {
-  campos, coaccionar, cuerpoDeGuardado, escribir, esTextoLargo, etiqueta,
-  formatearNumero, leer, paraMostrar, parsearNumero, tipoDe,
+  campos, coaccionar, conUnoMas, cuerpoDeGuardado, escribir, esTextoLargo,
+  etiqueta, formatearNumero, leer, listasDe, paraMostrar, parsearNumero,
+  plantillaDe, sePuedeAgregar, tipoDe,
 } from '../src/comun/formulario_ros.js';
 
 const DOC = {
@@ -202,5 +203,59 @@ describe('el cuerpo que se manda a guardar', () => {
   it('sin ediciones manda el contenido tal cual', () => {
     const cuerpo = cuerpoDeGuardado(SECCIONES, {}, 1);
     assert.deepEqual(cuerpo.secciones, { s1: { a: 1 }, s2: { b: 2 } });
+  });
+});
+
+
+describe('SUMAR A UNA LISTA', () => {
+  /* Compliance lo habilitó el 23-10-2026: a un reporte le puede faltar un
+     reportado y el analista lo agrega. QUITAR sigue sin poder — eso lo
+     rechaza el backend. */
+
+  const MODELO = { nombre: 'Uno', rut: '1', monto: 100, pep: false,
+                   direcciones: ['a'] };
+
+  it('la plantilla tiene las mismas claves, con los valores vacíos', () => {
+    assert.deepEqual(plantillaDe(MODELO), {
+      nombre: null, rut: null, monto: null, pep: null, direcciones: [],
+    });
+  });
+
+  it('una lista anidada se copia VACÍA', () => {
+    // Su propio largo lo decide quien edita, no la plantilla.
+    assert.deepEqual(plantillaDe(MODELO).direcciones, []);
+  });
+
+  it('CON LA LISTA VACÍA NO SE PUEDE AGREGAR', () => {
+    // Sin plantilla no hay forma que copiar, y adivinar qué campos lleva un
+    // reportado es cómo se manda al regulador un registro incompleto.
+    assert.equal(sePuedeAgregar([]), false);
+    assert.equal(sePuedeAgregar(undefined), false);
+    assert.equal(sePuedeAgregar([MODELO]), true);
+  });
+
+  it('agregar deja la lista un elemento más larga, sin tocar los que había', () => {
+    const lista = [MODELO];
+    const nueva = conUnoMas(lista, lista);
+    assert.equal(nueva.length, 2);
+    assert.deepEqual(nueva[0], MODELO);
+    assert.equal(nueva[1].nombre, null);
+    assert.equal(lista.length, 1, 'mutó la original');
+  });
+
+  it('sobre una lista vacía no agrega nada', () => {
+    assert.deepEqual(conUnoMas([], []), []);
+  });
+
+  it('encuentra las listas para dibujarles el botón', () => {
+    const contenido = { reportados: [MODELO], nota: 'x',
+                        anidado: { motivos: ['uno'] } };
+    const rutas = listasDe(contenido).map((l) => l.ruta).sort();
+    assert.deepEqual(rutas, ['anidado.motivos', 'reportados',
+                             'reportados[0].direcciones']);
+  });
+
+  it('un contenido sin listas no da ningún botón', () => {
+    assert.deepEqual(listasDe({ a: 1, b: { c: 'x' } }), []);
   });
 });
