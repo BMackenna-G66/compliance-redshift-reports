@@ -115,6 +115,14 @@ except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
     api_externa = None
     print(f"[api] api_externa no disponible, las rutas /v1 quedan fuera: {_e}")
 
+# Los controles del alta de whitelist por API. Mismo criterio: si no viaja, la
+# ruta no existe y responde 404 — nunca un alta sin controlar.
+try:
+    import whitelist_api
+except Exception as _e:  # pragma: no cover - sólo si falta en el paquete
+    whitelist_api = None
+    print(f"[api] whitelist_api no disponible, /v1/whitelist queda fuera: {_e}")
+
 # El informe de gestión: la cuenta, y dos dibujos de los mismos números.
 # `informe_email` se importa aparte porque si faltara, el PDF —que ya está en
 # producción— tiene que seguir andando igual.
@@ -2850,17 +2858,28 @@ def handler(event, context):  # noqa: ARG001
                     return v1_comunicaciones(event, parts[2])
                 if method == "POST":
                     return v1_comunicar(event, parts[2], body)
+            # La whitelist sólo si su módulo viajó: sin los controles, no hay
+            # ruta. Nunca un alta sin verificar el caso y el solicitante.
+            if whitelist_api:
+                if method == "POST" and parts == ["v1", "whitelist"]:
+                    return v1_whitelist_alta(event, body)
+                if len(parts) == 3 and parts[1] == "whitelist" and method == "GET":
+                    return v1_whitelist_consulta(event, parts[2], qs_v1)
+            rutas = [
+                "GET    /v1/casos",
+                "POST   /v1/casos",
+                "GET    /v1/casos/{id}",
+                "PATCH  /v1/casos/{id}",
+                "POST   /v1/casos/{id}/notas",
+                "GET    /v1/casos/{id}/comunicaciones",
+                "POST   /v1/casos/{id}/comunicaciones",
+                "GET    /v1/alertas?regla=...",
+            ]
+            if whitelist_api:
+                rutas += ["POST   /v1/whitelist",
+                          "GET    /v1/whitelist/{cliente_id}?tipo=customer"]
             return resp(404, {"error": "ruta no encontrada en la API externa",
-                              "rutas": [
-                                  "GET    /v1/casos",
-                                  "POST   /v1/casos",
-                                  "GET    /v1/casos/{id}",
-                                  "PATCH  /v1/casos/{id}",
-                                  "POST   /v1/casos/{id}/notas",
-                                  "GET    /v1/casos/{id}/comunicaciones",
-                                  "POST   /v1/casos/{id}/comunicaciones",
-                                  "GET    /v1/alertas?regla=...",
-                              ]})
+                              "rutas": rutas})
         # POST /search/wallet
         if method == "POST" and parts == ["search", "wallet"]:
             return run_wallet_search(body)
@@ -4702,6 +4721,13 @@ def get_whitelist(event: dict | None = None):
                 # en S3 y no llegaba a la pantalla, así que seguía sin poder
                 # saberse quién silenció a ese cliente — que era el punto.
                 "created_by": i.get("created_by", ""),
+                # QUIÉN LA PIDIÓ Y DESDE DÓNDE. Para las altas por API
+                # (`/v1/whitelist`) el autor técnico es el sistema y la persona
+                # es otra: sin separarlos, la pantalla diría que la agregó
+                # Octopus y no quién la pidió. Vacíos en las altas de pantalla.
+                "solicitado_por": i.get("solicitado_por", ""),
+                "origen": i.get("origen", ""),
+                "case_id": i.get("case_id", ""),
                 "created_at": i.get("created_at", ""),
                 "expires_at": i.get("expires_at_str", ""),
                 # Quién la pidió, quién la firmó, y si está silenciando algo
@@ -4763,11 +4789,26 @@ def add_to_whitelist(body: dict):
         return resp(503, {"error": "El control de aprobación de whitelist no "
                                    "está disponible en este despliegue."})
 
+    # DE DÓNDE VINO. Lo llena `/v1/whitelist`: la persona que lo pidió
+    # (`solicitado_por`), el sistema que lo mandó (`origen`, como `api:octopus`)
+    # y el caso. Desde las pantallas quedan vacíos y cae a `created_by`. Un
+    # solo escritor de whitelist: dos se separan en el tercer cambio y después
+    # la pantalla y la API muestran cosas distintas de la misma entrada.
+    origen = str(body.get("origen") or "").strip()[:100]
+    case_id = str(body.get("case_id") or "").strip()[:100]
+    # `solicitado_por` CAE A `created_by` y no al revés: es el campo contra el
+    # que se mide el cuatro ojos al aprobar. Si quedara vacío en las altas de
+    # pantalla, el que la pidió podría firmarla él mismo.
+    solicitado_por = (str(body.get("solicitado_por") or "").strip()[:200]
+                      or creado_por)
+
     wid = str(uuid.uuid4())
     now = dt.datetime.utcnow()
-    # NACE PENDIENTE Y NO SILENCIA NADA. Antes el alta era el final del
-    # trámite: una persona apretaba y el cliente desaparecía de todos los
-    # reportes por hasta 90 días. Ahora el alta es un PEDIDO.
+    creado_at = now.strftime("%Y-%m-%d %H:%M:%S")
+    # NACE PENDIENTE Y NO SILENCIA NADA — venga de la pantalla o de la API.
+    # Que Octopus pida el alta no la hace más firmada: un sistema externo que
+    # silenciara clientes sin pasar por un Oficial sería la misma puerta que
+    # este control vino a cerrar, con un candado más caro.
     #
     # Y NO SE CALCULA `expires_at` ACÁ: el reloj arranca al aprobar. Si
     # contara desde el pedido, una entrada firmada cinco días después valdría
@@ -4781,21 +4822,30 @@ def add_to_whitelist(body: dict):
         "scope": scope,
         "report_name": report_name if scope == "report" else "",
         "estado": whitelist_aprobacion.PENDIENTE,
-        "solicitado_por": creado_por,
-        "created_by": creado_por,
-        "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "created_by": creado_por or solicitado_por,
+        "solicitado_por": solicitado_por,
+        "origen": origen,
+        "case_id": case_id,
+        "created_at": creado_at,
         "expires_at": 0,
         "expires_at_str": "",
     })
     # Dejar de alertar sobre un cliente es una decisión de compliance: sin
     # auditoría no hay forma de reconstruir quién la tomó ni cuándo.
-    _safe_audit(user_email=creado_por or "unknown", action="whitelist.solicitar",
+    _safe_audit(user_email=solicitado_por or creado_por or "unknown",
+                action="whitelist.solicitar",
                 entity_type="whitelist", entity_id=wid,
                 new_value={"entity_field": entity_field, "scope": scope,
                            "duration_days": duration_days,
-                           "estado": whitelist_aprobacion.PENDIENTE})
+                           "estado": whitelist_aprobacion.PENDIENTE,
+                           "origen": origen, "case_id": case_id})
+    # `created_at` se suma a la respuesta para que la API externa pueda
+    # contestar «desde cuándo» sin releer S3. `expires_at` va VACÍO a
+    # propósito: todavía no empezó a correr, y devolver una fecha acá le
+    # haría creer a Octopus que el cliente ya está silenciado.
     return resp(201, {"whitelist_id": wid,
                       "estado": whitelist_aprobacion.PENDIENTE,
+                      "created_at": creado_at, "expires_at": "",
                       "aviso": "Queda pendiente: el cliente sigue alertando "
                                "hasta que un Oficial de Cumplimiento lo apruebe."})
 
@@ -9867,6 +9917,163 @@ def v1_alertas_por_regla(event: dict, q: dict):
         return resp(502, {"error": f"No pude consultar Redshift: {detalle[:200]}"})
     return resp(200, {"regla": regla, "total": len(filas),
                       "alertas": [api_externa.alerta_publica(f) for f in filas]})
+
+
+# ── whitelist por API ────────────────────────────────────────────────────
+# El alta la escribe `add_to_whitelist`, la misma de las pantallas. Acá están
+# los controles que sólo WatchTower puede hacer —el caso existe, el cliente es
+# el del caso, quien lo pide trabaja acá— y que por eso no se le delegan al
+# sistema que llama. La lógica pura vive en `whitelist_api.py`.
+
+def v1_whitelist_alta(event: dict, body: dict):
+    """POST /v1/whitelist — silencia las alertas de un cliente.
+
+    No libera la cuenta ni toca Admin: sólo deja de alertar, 30 días, sobre el
+    reporte que originó el caso.
+    """
+    consumidor, motivo = api_externa.autorizar(
+        event, api_externa.WHITELIST_ESCRIBIR)
+    if motivo:
+        return _v1_error(motivo)
+
+    malo = whitelist_api.motivo_de_rechazo_alta(body)
+    if malo:
+        return resp(400, {"error": malo})
+
+    cliente = (body or {}).get("cliente") or {}
+    caso_id = str(body.get("caso_id") or "").strip()
+    solicitado_por = whitelist_api.normalizar_correo(body.get("solicitado_por"))
+    razon = str(body.get("motivo") or "").strip()
+    dias = whitelist_api.dias_de(body)
+
+    # Quién lo pide tiene que ser alguien de este equipo. Octopus no puede
+    # afirmarlo: su padrón es el suyo. El mismo 403 si no está registrado o si
+    # está dado de baja — distinguirlos filtra quién trabaja acá.
+    r = get_users()
+    usuarios = json.loads(r["body"]).get("users") or []
+    if not whitelist_api.usuario_habilitado(usuarios, solicitado_por):
+        return resp(403, {"error": "solicitante_no_habilitado",
+                          "message": ("solicitado_por tiene que ser un usuario "
+                                      "registrado y activo de WatchTower.")})
+
+    caso = _crm_get("cases", caso_id)
+    if caso is None:
+        return resp(404, {"error": f"El caso '{caso_id}' no existe"})
+
+    desajuste = whitelist_api.desajuste_con_el_caso(caso, cliente)
+    if desajuste:
+        return resp(409, {"error": "cliente_no_es_del_caso",
+                          "message": desajuste})
+
+    # Alcance = el reporte del caso. Sin reporte no hay alcance posible: la
+    # entrada quedaría guardada sin excluir nada (ver whitelist_api).
+    reporte = whitelist_api.reporte_del_caso(caso)
+    if not reporte:
+        return resp(409, {
+            "error": "caso_sin_reporte",
+            "message": ("El caso no tiene reporte de origen, así que no se "
+                        "puede acotar el alcance al reporte del caso. El alta "
+                        "se hace desde la pantalla, eligiendo el alcance.")})
+
+    campo = whitelist_api.campo_de_tipo(cliente.get("tipo"))
+    valor = str(cliente.get("id") or "").strip()
+
+    # Idempotencia: el reintento no crea una segunda entrada ni le corre el
+    # vencimiento a la que está.
+    try:
+        existentes = _crm_list("whitelist")
+    except Exception as e:
+        return resp(503, {"error": "no_pude_leer_la_whitelist",
+                          "message": str(e)[:200]})
+    ya = whitelist_api.entrada_que_ya_cubre(existentes, campo, valor, reporte)
+    if ya:
+        return resp(200, {"ya_existia": True,
+                          **whitelist_api.entrada_publica(ya)})
+
+    origen = api_externa.actor(consumidor)
+    r = add_to_whitelist({
+        "entity_field": campo,
+        "entity_value": valor,
+        "duration_days": dias,
+        "reason": razon,
+        "scope": whitelist_api.ALCANCE,
+        "report_name": reporte,
+        "created_by": solicitado_por,
+        "solicitado_por": solicitado_por,
+        "origen": origen,
+        "case_id": caso_id,
+    })
+    if r.get("statusCode") != 201:
+        return r
+    creada = json.loads(r["body"])
+
+    # La nota es secundaria al alta: si falla, la whitelist ya quedó. El autor
+    # de la nota es el sistema, no la persona —acá el autor no es declarativo—
+    # y el pedido de quién fue va en el texto.
+    try:
+        add_case_note(caso_id, api_externa.cuerpo_nota(
+            whitelist_api.nota_de_alta(solicitado_por, origen, reporte,
+                                       dias, razon),
+            origen))
+    except Exception as e:  # pragma: no cover - la nota no bloquea el alta
+        print(f"[v1-whitelist] no pude dejar la nota en {caso_id}: {e}")
+
+    return resp(201, {
+        "ya_existia": False,
+        "whitelist_id": creada.get("whitelist_id", ""),
+        "cliente": {"tipo": str(cliente.get("tipo") or "").strip().lower(),
+                    "id": valor},
+        "alcance": whitelist_api.ALCANCE,
+        "reporte": reporte,
+        "caso_id": caso_id,
+        "motivo": razon,
+        "solicitado_por": solicitado_por,
+        "origen": origen,
+        "desde": creada.get("created_at", ""),
+        # VACÍO A PROPÓSITO: el plazo arranca cuando un Oficial la firma, no
+        # cuando Octopus la pide. Devolver una fecha acá le haría creer al
+        # sistema que el cliente ya está silenciado, y es justo lo contrario.
+        "hasta": "",
+        "dias": dias,
+        "estado": creada.get("estado", ""),
+        "silencia": False,
+        "aviso": ("Pedido registrado. El cliente SIGUE alertando hasta que un "
+                  "Oficial de Cumplimiento lo apruebe en WatchTower."),
+    })
+
+
+def v1_whitelist_consulta(event: dict, cliente_id: str, q: dict):
+    """GET /v1/whitelist/{cliente_id}[?tipo=customer|company] — si está vigente.
+
+    El `tipo` es necesario porque el mismo número puede ser un `customer_id` y
+    un `company_id` distintos: responder por "el id" sin decir de qué, sería
+    responder por otro cliente.
+    """
+    consumidor, motivo = api_externa.autorizar(
+        event, api_externa.WHITELIST_LEER)
+    if motivo:
+        return _v1_error(motivo)
+
+    tipo = str((q or {}).get("tipo") or "customer").strip().lower()
+    campo = whitelist_api.campo_de_tipo(tipo)
+    if not campo:
+        return resp(400, {"error": "tipo tiene que ser 'customer' o 'company'"})
+    valor = str(cliente_id or "").strip()
+    malo = whitelist_validacion.motivo_de_rechazo(campo, valor)
+    if malo:
+        return resp(400, {"error": f"cliente_id: {malo}"})
+
+    try:
+        entradas = _crm_list("whitelist")
+    except Exception as e:
+        return resp(503, {"error": "no_pude_leer_la_whitelist",
+                          "message": str(e)[:200]})
+    vigentes = whitelist_api.vigentes_de(entradas, campo, valor)
+    return resp(200, {
+        "cliente": {"tipo": tipo, "id": valor},
+        "vigente": bool(vigentes),
+        "entradas": [whitelist_api.entrada_publica(e) for e in vigentes],
+    })
 
 
 # ---------------------------------------------------------------------------

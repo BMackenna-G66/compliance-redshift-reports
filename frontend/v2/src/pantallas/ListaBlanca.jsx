@@ -21,7 +21,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Tabla } from '../comun/Tabla.jsx';
 import { Kpi } from '../comun/Kpi.jsx';
 import {
-  COLOR_VIGENCIA, estadoWhitelist, fecha, puedeAprobarWhitelist,
+  COLOR_VIGENCIA, estadoWhitelist, fecha, puedeAprobarWhitelist, quienPidio,
   resumenListaBlanca, vigenciaDe,
 } from '../comun/analisis.js';
 import { soloLectura } from '../permisos.js';
@@ -73,14 +73,34 @@ function columnas(alQuitar, lectura, quitando, alAprobar, alRechazar, email, soy
     {
       clave: 'created_by',
       titulo: 'Quién la pidió',
-      ancho: '14%',
+      ancho: '16%',
       // Las entradas anteriores a octubre de 2026 no tienen autor: el backend
       // recibía el dato y lo descartaba. Se muestra el hueco en vez de
       // esconderlo — «—» dice que no se sabe, que es la verdad.
-      render: (w) => (w.created_by
-        ? <span title={w.created_by}>{String(w.created_by).split('@')[0]}</span>
-        : <span style={{ color: 'var(--texto-mute)' }}>—</span>),
-      exportar: (w) => w.created_by || '',
+      //
+      // Y desde dónde: un alta por API la pide una persona pero la manda un
+      // sistema. Sin la insignia, la columna diría el correo de la analista y
+      // nadie sabría que no pasó por la pantalla.
+      render: (w) => {
+        const q = quienPidio(w);
+        if (!q.correo && !q.origen) return <span style={{ color: 'var(--texto-mute)' }}>—</span>;
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span title={q.correo}>{q.nombre || '—'}</span>
+            {q.porApi && (
+              <span className="wt-insignia"
+                    title={`Pedida desde ${q.sistema} por la API, no desde la pantalla`}
+                    style={{ color: 'var(--g66-azul-texto)', background: 'var(--azul-tenue)' }}>
+                {q.sistema}
+              </span>
+            )}
+          </span>
+        );
+      },
+      exportar: (w) => {
+        const q = quienPidio(w);
+        return q.origen ? `${q.correo} (${q.origen})` : q.correo;
+      },
     },
     {
       clave: '_vigencia',

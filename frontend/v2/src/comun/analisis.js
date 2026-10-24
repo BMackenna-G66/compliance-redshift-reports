@@ -115,6 +115,31 @@ export const COLOR_VIGENCIA = {
   desconocida: { color: 'var(--texto-mute)',         fondo: 'var(--superficie-3)' },
 };
 
+/** Quién pidió la entrada y desde dónde.
+ *
+ *  Para las altas por API (`POST /v1/whitelist`) el autor técnico es el
+ *  sistema que llamó y la persona que lo pidió es otra: sin separarlos, la
+ *  pantalla diría que la agregó Octopus y no quién la pidió, que es justo lo
+ *  que una auditoría pregunta.
+ *
+ *  Las entradas de pantalla no traen `solicitado_por` y caen a `created_by`;
+ *  las anteriores a octubre de 2026 no traen ninguno de los dos, porque el
+ *  backend recibía el autor y lo descartaba. El hueco se muestra como «—»: no
+ *  saberlo es la verdad y esconderlo no la mejora.
+ */
+export function quienPidio(entrada) {
+  const correo = String(entrada?.solicitado_por || entrada?.created_by || '').trim();
+  const origen = String(entrada?.origen || '').trim();
+  return {
+    correo,
+    nombre: correo ? correo.split('@')[0] : '',
+    origen,
+    // `api:octopus` → «Octopus». El prefijo ya lo dice la etiqueta.
+    sistema: origen.startsWith('api:') ? origen.slice(4) : origen,
+    porApi: origen.startsWith('api:'),
+  };
+}
+
 /** Cuenta de la lista blanca por vigencia. */
 export function resumenListaBlanca(entradas, ahora = new Date()) {
   const r = { total: 0, pendiente: 0, vigente: 0, por_vencer: 0, vencida: 0, permanente: 0, desconocida: 0 };

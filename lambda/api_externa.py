@@ -39,7 +39,14 @@ import boto3
 LEER = "casos:leer"
 ESCRIBIR = "casos:escribir"
 COMUNICAR = "casos:comunicar"
-PERMISOS_VALIDOS = {LEER, ESCRIBIR, COMUNICAR}
+# La whitelist va aparte de los casos y no se hereda: una integración que lee
+# y gestiona casos no tiene por qué poder silenciar las alertas de un cliente.
+# Darle estos permisos a una clave es una decisión explícita en Secrets
+# Manager, igual que las otras tres.
+WHITELIST_LEER = "whitelist:leer"
+WHITELIST_ESCRIBIR = "whitelist:escribir"
+PERMISOS_VALIDOS = {LEER, ESCRIBIR, COMUNICAR,
+                    WHITELIST_LEER, WHITELIST_ESCRIBIR}
 
 CLAVES_SECRET = os.environ.get(
     "API_EXTERNA_KEYS_SECRET", "compliance-redshift-reports/api-externa-keys")

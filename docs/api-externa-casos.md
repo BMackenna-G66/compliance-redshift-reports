@@ -51,9 +51,15 @@ revisar la clave, "no podés" te manda a pedir un permiso. No los trates igual.
 | `casos:leer` | listar, ver detalle, ver comunicaciones, consultar alertas |
 | `casos:escribir` | crear casos, cambiar estado/prioridad/asignación, notas |
 | `casos:comunicar` | **enviarle correo al cliente** |
+| `whitelist:leer` | consultar si un cliente está silenciado |
+| `whitelist:escribir` | **dejar de alertar sobre un cliente** |
 
-Si tu clave no tiene los tres, los endpoints del resto te devuelven `403` con
-la lista de lo que sí tenés.
+Si tu clave no tiene todos, los endpoints del resto te devuelven `403` con la
+lista de lo que sí tenés.
+
+Los dos de `whitelist` **no se heredan** de los de casos: gestionar un caso y
+silenciar las alertas de un cliente son cosas distintas, y la segunda se
+habilita a propósito.
 
 ---
 
@@ -88,7 +94,7 @@ nota**, no intentes firmar en su nombre.
 | `plazo` | `vencido` | `en_plazo`, `por_contactar`, `por_recontactar`, `vencido`, `cerrado`, `sin_plazo` |
 | `dias_min` / `dias_max` | `1.5` | días que lleva abierto |
 | `reporte` | `operation-alert_-_psp_sum_30` | alerta que lo originó |
-| `cliente_id` | `4171334` | id del cliente |
+| `cliente_id` | `9000001` | id del cliente |
 | `desde` / `hasta` | `2026-09-01` | rango de **creación** (`YYYY-MM-DD`) |
 | `actualizado_desde` | `2026-09-20 14:00:00` | lo que **cambió** desde ese momento — para sincronizar |
 | `pagina` / `por_pagina` | `1` / `50` | paginación, máximo **200** |
@@ -97,10 +103,10 @@ nota**, no intentes firmar en su nombre.
 {
   "casos": [{
     "id": "abc-123",
-    "titulo": "Caso: 4171334",
+    "titulo": "Caso: 9000001",
     "estado": "open",
     "prioridad": "high",
-    "cliente": {"tipo": "customer", "id": "4171334", "nombre": "…"},
+    "cliente": {"tipo": "customer", "id": "9000001", "nombre": "…"},
     "origen": {"reporte": "operation-alert_-_psp_sum_30", "prioridad_alerta": "P2"},
     "asignado_a": "ana@global66.com",
     "creado_at": "2026-09-08 13:00:13",
@@ -225,9 +231,9 @@ convertirse en caso.
 {
   "regla": "PSP-C-AMT-J9H7", "total": 12,
   "alertas": [{
-    "cliente_id": 4171334, "nombre": "Nombre Apellido",
+    "cliente_id": 9000001, "nombre": "Nombre Apellido",
     "email": "…", "pais": "AR",
-    "documento": {"tipo": "DNI", "numero": "38699180"},
+    "documento": {"tipo": "DNI", "numero": "30000001"},
     "estado_compliance": "BLOCKED",
     "regla": "operation-alert - FRAUD - PSP-C-AMT-J9H7",
     "motor": "operation-alert", "score": "59.07",
@@ -241,6 +247,128 @@ convertirse en caso.
 > esa ventana devuelve `503` con `{"error": "redshift_pausado"}`. Si tu proceso
 > corre de noche, programalo después de las 04:00. El resto de los endpoints
 > responde siempre.
+
+### Dejar de alertar sobre un cliente — `POST /v1/whitelist`
+
+Cuando revisaste un caso y la operación está justificada, podés pedir que ese
+cliente **deje de generar alertas** en el reporte que originó el caso, por 30
+días.
+
+> **Qué NO hace.** No libera la cuenta, no desbloquea al cliente y no toca
+> Admin. Sólo deja de alertar. Si el cliente está bloqueado, sigue bloqueado.
+
+Necesitás el permiso `whitelist:escribir`, que es **aparte** de los de casos:
+una clave que gestiona casos no silencia alertas por eso.
+
+```json
+POST /v1/whitelist
+{
+  "caso_id": "a1b2c3d4-0000-0000-0000-000000000001",
+  "cliente": {"tipo": "customer", "id": "9000001"},
+  "motivo": "Verificado con el cliente: es su nómina mensual, documentada.",
+  "solicitado_por": "ana.perez@ejemplo.test"
+}
+```
+
+| Campo | Obligatorio | Qué es |
+|---|---|---|
+| `caso_id` | sí | el caso de WatchTower que justifica el alta |
+| `cliente.tipo` | sí | `customer` o `company` |
+| `cliente.id` | sí | sólo dígitos; tiene que ser **el cliente del caso** |
+| `motivo` | sí | por qué se silencia. Queda en la pantalla y en la auditoría |
+| `solicitado_por` | sí | correo de **quien lo pide**, usuario de WatchTower |
+| `dias` | no | `30` (por defecto), `60` o `90` |
+
+> **El alta es un PEDIDO, no un alta.** La entrada queda `pendiente` y **el
+> cliente sigue alertando** hasta que un Oficial de Cumplimiento la firme en
+> WatchTower. Que el pedido venga de un sistema no lo hace más firmado.
+>
+> Por eso `hasta` viene **vacío**: el plazo de 30/60/90 días empieza a correr
+> desde la aprobación, no desde el pedido. Y por eso hay un `silencia`: es el
+> campo que contesta «¿este cliente ya dejó de alertar?», que es la pregunta
+> que importa. **No leas `whitelist_id` como un sí.**
+
+Respuesta `201`:
+
+```json
+{
+  "ya_existia": false,
+  "whitelist_id": "f0e1d2c3-0000-0000-0000-000000000002",
+  "cliente": {"tipo": "customer", "id": "9000001"},
+  "alcance": "report", "reporte": "psp_alerts_cl",
+  "caso_id": "a1b2c3d4-0000-0000-0000-000000000001",
+  "motivo": "Verificado con el cliente: …",
+  "solicitado_por": "ana.perez@ejemplo.test", "origen": "api:tu-sistema",
+  "desde": "2026-10-23 18:40:00", "hasta": "", "dias": 30,
+  "estado": "pendiente", "silencia": false,
+  "aviso": "Pedido registrado. El cliente SIGUE alertando hasta que un Oficial de Cumplimiento lo apruebe en WatchTower."
+}
+```
+
+Para saber si ya se firmó, consultá `GET /v1/whitelist/{cliente_id}` y mirá
+`silencia`. Un `200 {"ya_existia": true}` tampoco quiere decir que esté
+silenciado: quiere decir que ya hay un pedido o una entrada para ese cliente,
+y `estado` dice cuál de las dos.
+
+**Por qué te puede decir que no:**
+
+| Código | Qué pasó |
+|---|---|
+| `400` | falta un campo, el `cliente.id` no son dígitos, o pediste días que no son 30/60/90 |
+| `403` | `solicitado_por` no es un usuario de WatchTower, o está dado de baja |
+| `404` | el caso no existe acá |
+| `409` `cliente_no_es_del_caso` | el cliente que mandaste no es el del caso |
+| `409` `caso_sin_reporte` | el caso no tiene reporte de origen, así que no hay alcance posible: se hace desde la pantalla |
+
+**Es idempotente.** Si reintentás y ese cliente **ya** está silenciado para ese
+reporte, te devuelve `200` con `"ya_existia": true` y la entrada que ya estaba
+— **sin correrle el vencimiento**. Es a propósito: si el reintento estirara el
+plazo, un proceso que reintenta solo mantendría a un cliente silenciado para
+siempre sin que nadie lo decida. Reintentá tranquilo, pero no esperes que
+renueve.
+
+**Dos cosas que no podés elegir:**
+
+- **El alcance es siempre el reporte del caso.** `global` saca al cliente de
+  **todos** los reportes, incluido el de países de alto riesgo. Esa decisión se
+  toma desde la pantalla, mirando el panorama completo.
+- **El autor.** `origen` sale de tu clave (`api:tu-sistema`), no del cuerpo. Si
+  lo mandás, se ignora.
+
+Queda, además, una **nota automática en el caso** diciendo quién lo pidió,
+desde qué sistema y por qué — la misma que deja la pantalla.
+
+### Consultar si un cliente está silenciado — `GET /v1/whitelist/{cliente_id}`
+
+Necesita `whitelist:leer`.
+
+```
+GET /v1/whitelist/9000001?tipo=customer
+```
+
+```json
+{
+  "cliente": {"tipo": "customer", "id": "9000001"},
+  "vigente": true,
+  "entradas": [{
+    "whitelist_id": "f0e1d2c3-0000-0000-0000-000000000002",
+    "cliente": {"tipo": "customer", "id": "9000001"},
+    "alcance": "report", "reporte": "psp_alerts_cl",
+    "caso_id": "a1b2c3d4-0000-0000-0000-000000000001",
+    "motivo": "Verificado con el cliente: …",
+    "solicitado_por": "ana.perez@ejemplo.test", "origen": "api:tu-sistema",
+    "desde": "2026-10-23 18:40:00", "hasta": "2026-11-22 18:40:00", "dias": 30
+  }]
+}
+```
+
+El `tipo` importa: el mismo número puede ser un `customer_id` y un `company_id`
+**distintos**. Si no lo mandás, se asume `customer`. Un cliente puede tener más
+de una entrada vigente (por ejemplo una global y una por reporte), así que
+`entradas` es una lista y `vigente` dice si hay al menos una.
+
+**No hay `DELETE`.** Sacar a un cliente de la lista blanca antes de que venza
+se hace desde la pantalla.
 
 ---
 
@@ -335,7 +463,12 @@ deshacer.**
 - **Editar o borrar notas.** Sólo agregar.
 - **Subir adjuntos.** Los documentos del cliente entran por su respuesta al
   correo. Si tenés que adjuntar algo a mano, se hace desde la pantalla.
+- **Sacar a un cliente de la lista blanca.** El alta se pide por API; la baja
+  anticipada se hace desde la pantalla.
+- **Silenciar a un cliente en todos los reportes.** El alcance por API es
+  siempre el reporte del caso.
 - **Ver o administrar usuarios, reportes, embargos o el módulo de
-  corresponsales.** Esta clave sólo abre `/v1/casos` y `/v1/alertas`.
+  corresponsales.** Esta clave sólo abre `/v1/casos`, `/v1/alertas` y
+  `/v1/whitelist`.
 
 Si necesitás algo de esto, hablalo con Compliance antes de buscar una vuelta.
