@@ -138,12 +138,18 @@ def aprobacion_vigente(reporte: dict) -> dict | None:
 
 
 def bloqueos_para_aprobar(reporte: dict, quien: str, oficiales,
-                          acuse_ia: bool, narrativa_es_de_ia: bool) -> list:
+                          acuse_ia: bool, narrativa_es_de_ia: bool,
+                          acuse_gereo: bool) -> list:
     """Por qué no se puede aprobar. Lista vacía = se puede.
 
     El orden importa poco salvo en una cosa: se devuelven TODOS los motivos y
     no el primero. Alguien que arregla uno y vuelve a chocar con otro deja de
     confiar en lo que la pantalla le dice.
+
+    `acuse_gereo` NO tiene default. Es la misma regla que ya costó una vez con
+    `etapa` y `pendientes`: un control cuyo parámetro se puede omitir es un
+    control que el próximo llamador saltea sin enterarse. Que cada uno diga
+    explícitamente si hubo acuse.
     """
     faltan = []
     correo = str(quien or "").strip().lower()
@@ -170,10 +176,28 @@ def bloqueos_para_aprobar(reporte: dict, quien: str, oficiales,
         faltan.append("El reporte tiene que estar en revisión legal (hoy está "
                       f"en «{estado or 'sin estado'}»).")
 
-    # Lo que GEREO dejó pendiente de criterio humano. Es el control del PR #97
-    # y no puede saltearse por el camino nuevo.
-    for p in ros.pendientes_gereo(reporte):
-        faltan.append(str(p))
+    # LO QUE GEREO DEJÓ PENDIENTE SE ACUSA, NO BLOQUEA.
+    #
+    # Estaba como bloqueo seco y hacía que NINGÚN ROS de GEREO se pudiera
+    # aprobar jamás. `ros.cambiar_estado` ya explicaba por qué, en el camino
+    # viejo, es un acuse: «las advertencias vienen en TODAS las corridas —el
+    # reporte sale incompleto a propósito y el texto siempre es generado—, así
+    # que bloquear sin salida trabaría el módulo para siempre». El camino
+    # nuevo copió el control y perdió esa parte.
+    #
+    # No se descubrió antes porque no hay ningún ROS en producción: el flujo
+    # entero nunca corrió sobre un registro real. Lo encontró la prueba de
+    # punta a punta de la entrega, que es la primera que recorre el camino
+    # completo.
+    #
+    # Lo que falta no es que las advertencias desaparezcan: es que alguien se
+    # haga cargo de haberlas leído, con nombre y hora. Eso es lo que queda en
+    # `aprobacion.acuse_gereo`.
+    pendientes = ros.pendientes_gereo(reporte)
+    if pendientes and not acuse_gereo:
+        faltan.append(
+            "El borrador de GEREO deja puntos pendientes de tu criterio y hay "
+            "que acusarlos para aprobar: " + "; ".join(str(p) for p in pendientes))
 
     # UNA VERSIÓN NO SE APRUEBA DOS VECES. La segunda pisaría la primera y la
     # firma original desaparecería del registro.
