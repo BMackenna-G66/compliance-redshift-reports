@@ -198,7 +198,14 @@ def cuerpo_para(pedido: dict) -> dict:
 
 # ── Las llamadas ─────────────────────────────────────────────────────────
 
-def _pedir(ruta: str, cuerpo=None, timeout=TIMEOUT_SALUD, abrir=None):
+def _crudo(ruta: str, cuerpo=None, timeout=TIMEOUT_SALUD, abrir=None):
+    """`(código, dict)`. No traduce ni levanta por un código de error HTTP.
+
+    EL CÓDIGO ES PARTE DE LA RESPUESTA, no sólo la señal de que algo falló.
+    La entrega del ROS distingue 202 («recibido») de 200 («ya lo tenía») y las
+    dos son éxito: con una función que sólo devuelve el cuerpo, esa diferencia
+    se pierde y no se puede saber si la entrega se hizo ahora o ya estaba.
+    """
     k = clave()
     if not k:
         raise ErrorGereo("No hay clave de GEREO configurada "
@@ -211,7 +218,13 @@ def _pedir(ruta: str, cuerpo=None, timeout=TIMEOUT_SALUD, abrir=None):
     abrir = abrir or urllib.request.urlopen
     try:
         with abrir(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8"))
+            # `urlopen` siempre trae `.status`; el default existe para los
+            # dobles de los tests, que son un BytesIO pelado. 200 es el
+            # supuesto seguro: por este camino sólo se pasa cuando NO hubo
+            # HTTPError, y eso ya significa 2xx o 3xx.
+            codigo = getattr(r, "status", None) or 200
+            crudo = r.read().decode("utf-8")
+            return int(codigo), (json.loads(crudo) if crudo.strip() else {})
     except urllib.error.HTTPError as e:
         crudo = e.read().decode("utf-8", "replace")
         try:
@@ -220,11 +233,21 @@ def _pedir(ruta: str, cuerpo=None, timeout=TIMEOUT_SALUD, abrir=None):
             d = {}
         # Se loguea el código, nunca el cuerpo: trae datos de personas.
         print(f"[gereo] {ruta} respondió {e.code}")
-        raise _traducir(e.code, d) from e
+        return int(e.code), d
+
+
+def _pedir(ruta: str, cuerpo=None, timeout=TIMEOUT_SALUD, abrir=None):
+    try:
+        codigo, d = _crudo(ruta, cuerpo, timeout=timeout, abrir=abrir)
+    except ErrorGereo:
+        raise
     except Exception as e:                                       # noqa: BLE001
         print(f"[gereo] {ruta} falló: {type(e).__name__}")
         raise ErrorGereo(f"No se pudo hablar con GEREO: {type(e).__name__}",
                          codigo=0, reintentable=True) from e
+    if codigo >= 400:
+        raise _traducir(codigo, d)
+    return d
 
 
 def _traducir(codigo: int, d: dict) -> ErrorGereo:
@@ -301,3 +324,39 @@ def generar_ros(pedido: dict, abrir=None) -> dict:
         "advertencias": (doc.get("meta") or {}).get("advertencias") or [],
         "pdf_base64": d.get("pdf_base64"),
     }
+
+
+# El endpoint de la entrega se publica DESHABILITADO y responde 503 hasta la
+# fecha que acuerden los dos equipos. Ese 503 no es un problema pasajero: ver
+# la tabla de `gereo_entrega`.
+TIMEOUT_ENTREGA = 60
+
+
+def entregar(payload: dict, abrir=None) -> tuple:
+    """Entrega el ROS aprobado. Devuelve `(código, cuerpo)` sin traducir.
+
+    NO levanta por un código de error: la entrega necesita distinguir seis
+    respuestas y cinco de ellas son códigos de error HTTP. Quien llama las lee
+    con `gereo_entrega.leer_respuesta()`, que es donde vive esa tabla.
+
+    Lo único que sí levanta es no poder hablar con GEREO —un corte, un
+    timeout—, porque ahí no hay código que leer. Es reintentable: la
+    idempotencia de GEREO es por `ros_id + version`, así que repetir la misma
+    entrega después de un timeout devuelve 200 y no duplica nada.
+
+    **Un timeout no significa que no se entregó.** GEREO pudo haber recibido y
+    aceptado justo antes de que se cortara. Por eso el reintento manda la
+    misma versión y nunca una nueva.
+    """
+    try:
+        return _crudo("/api/v1/ros/entregas", payload,
+                      timeout=TIMEOUT_ENTREGA, abrir=abrir)
+    except ErrorGereo:
+        raise
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[gereo] la entrega falló: {type(e).__name__}")
+        raise ErrorGereo(
+            f"No se pudo hablar con GEREO: {type(e).__name__}. "
+            "Puede haber recibido la entrega igual: reintentá con la misma "
+            "versión, que no duplica.",
+            codigo=0, reintentable=True) from e
