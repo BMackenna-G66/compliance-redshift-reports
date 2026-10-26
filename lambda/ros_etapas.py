@@ -36,13 +36,21 @@ from __future__ import annotations
 # El nombre de cada etapa, para la pantalla. Las dos últimas no estaban en la
 # propuesta original del analista: se agregaron para cubrir la espera y los
 # fallos, que es donde un flujo sin etapa propia se queda mudo.
+#
+# LAS CLAVES SE QUEDAN COMO ESTÁN. Desde el acuerdo con GEREO del 23-10-2026
+# el paso final es «entregado a GEREO» y no «subido al regulador» —la carga
+# la autoriza un Oficial en Slack y WatchTower no se entera—, así que los
+# TEXTOS cambiaron. Las claves no: están guardadas en `etapa_gereo` y en cada
+# entrada de `historial_gereo`, y renombrarlas obligaría a migrar registros
+# para arreglar un nombre interno que no se muestra en ningún lado.
 ETAPAS = {
     "sin_ros":     "El caso no tiene ROS generado.",
     "recibido":    "GEREO devolvió el JSON y el PDF; están guardados.",
     "revisado":    "Un analista revisó el contenido.",
-    "enviando":    "La aprobación se mandó a GEREO y se espera respuesta.",
-    "enviado":     "Subido al portal del regulador.",
-    "error_envio": "Falló la subida.",
+    "enviando":    "La versión aprobada se está entregando a GEREO.",
+    "enviado":     ("Entregado a GEREO. La autorización para cargarlo al "
+                    "regulador se decide en Slack, fuera de WatchTower."),
+    "error_envio": "La entrega no salió.",
 }
 
 # De dónde se puede pasar a dónde.

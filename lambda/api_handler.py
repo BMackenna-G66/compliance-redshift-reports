@@ -3814,6 +3814,11 @@ def diff_version_ros(folio: str):
         "narrativa_es_de_ia": de_ia,
         "narrativa": ros_aprobacion.narrativa_para_el_registro(actual, pais),
         "hay_oficiales": bool(oficiales),
+        # LO QUE GEREO DEJÓ PENDIENTE DE CRITERIO HUMANO. Hay que acusarlo
+        # para aprobar, así que la pantalla tiene que poder mostrar QUÉ se
+        # está acusando. Un checkbox que dice «acuso los puntos pendientes»
+        # sin decir cuáles es una firma en blanco.
+        "pendientes": [str(p) for p in ros_mod.pendientes_gereo(r)],
     })
 
 

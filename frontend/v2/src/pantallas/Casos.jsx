@@ -25,7 +25,8 @@ import {
 } from '../comun/casos.js';
 import { ESTADOS_CASO } from '../dominio.js';
 import {
-  ETAPAS_ROS, correPlazo, etiquetaEtapa, filtrarPorRos, plazoDe, rosPorCaso,
+  ETAPAS_ROS, avisoDelPlazo, correPlazo, etiquetaEtapa, filtrarPorRos, plazoDe,
+  rosPorCaso,
 } from '../comun/ros.js';
 
 function Estado({ caso }) {
@@ -52,9 +53,15 @@ function EtapaRos({ ros, disponible }) {
   const d = etiquetaEtapa(efectivo);
   const apagado = !efectivo || ['sin_ros', 'no_disponible'].includes(efectivo.etapa);
   const plazo = correPlazo(efectivo) ? plazoDe(efectivo) : null;
+  // EL RELOJ PARADO NECESITA UNA EXPLICACIÓN. «Entregado a GEREO» para el
+  // plazo, pero entregado no es reportado: la carga al regulador se decide en
+  // Slack y no vuelve. Sin esto, una columna en silencio se lee como «llegó a
+  // tiempo», que es justo lo que WatchTower ya no puede afirmar.
+  const aviso = avisoDelPlazo(efectivo);
   const titulo = [
     efectivo?.folio && `${efectivo.folio}${efectivo.version ? ` · v${efectivo.version}` : ''}`,
     plazo?.desde && `cuenta desde ${plazo.desde}`,
+    aviso,
   ].filter(Boolean).join(' · ');
   return (
     <>
@@ -75,6 +82,13 @@ function EtapaRos({ ros, disponible }) {
                           que hay tiempo de sobra sin que nadie lo sepa. */
                        color: COLOR_ETAPA[plazo.semaforo] || 'var(--texto-mute)' }}>
           {plazo.texto}
+        </span>
+      )}
+      {aviso && (
+        <span style={{ display: 'block', fontSize: 'var(--texto-xs)',
+                       color: 'var(--texto-mute)' }}
+              title={aviso}>
+          sin acuse del regulador
         </span>
       )}
     </>

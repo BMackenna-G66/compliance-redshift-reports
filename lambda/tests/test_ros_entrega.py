@@ -444,6 +444,43 @@ class LosPendientesDeGereo(Base):
         self.assertNotIn("pendientes", d.get("error", ""))
 
 
+class ElDiffLeDiceALaPantallaQueAcusar(Base):
+    """`GET /ros/{folio}/diff` tiene que devolver los puntos pendientes.
+
+    Sin ellos, la pantalla sólo puede ofrecer un checkbox que diga «acuso los
+    puntos pendientes» sin decir cuáles — una firma en blanco sobre algo que
+    va a un regulador.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._v = A._version_a_aprobar
+        A._version_a_aprobar = lambda r: (3, DOC, DOC)
+        self._of = A._oficiales_cumplimiento
+        A._oficiales_cumplimiento = lambda: ["rocio.cerda@ejemplo.test"]
+
+    def tearDown(self):
+        A._version_a_aprobar = self._v
+        A._oficiales_cumplimiento = self._of
+        super().tearDown()
+
+    def diff(self):
+        r = A.diff_version_ros("ROS-2026-0007")
+        return r["statusCode"], json.loads(r["body"])
+
+    def test_devuelve_los_pendientes_enumerados(self):
+        self.ros["ROS-2026-0007"]["borrador_gereo"]["advertencias"] = [
+            "La tipología quedó sin definir: la elige el analista."]
+        codigo, d = self.diff()
+        self.assertEqual(codigo, 200)
+        self.assertIn("tipología", " ".join(d["pendientes"]))
+
+    def test_un_borrador_sin_pendientes_devuelve_la_lista_vacia(self):
+        codigo, d = self.diff()
+        self.assertEqual(codigo, 200)
+        self.assertEqual(d["pendientes"], [])
+
+
 class LaRuta(unittest.TestCase):
 
     def _por_la_ruta(self, metodo="POST", ruta="/ros/ROS-2026-0007/entregar"):
