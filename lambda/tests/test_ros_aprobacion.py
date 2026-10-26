@@ -56,14 +56,16 @@ class CUATRO_OJOS(unittest.TestCase):
         r = reporte([v(1, "gereo", "ana@example.com")],
                     [{"etapa": "revisado", "quien": "oficial@example.com"}])
         faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
-                                          acuse_ia=False, narrativa_es_de_ia=False)
+                                          acuse_ia=False, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(any("marcaste" in f for f in faltan))
 
     def test_quien_edito_tampoco(self):
         r = reporte([v(1, "gereo", "ana@example.com"),
                      v(2, "edicion", "oficial@example.com")])
         faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
-                                          acuse_ia=False, narrativa_es_de_ia=False)
+                                          acuse_ia=False, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(any("editaste" in f for f in faltan))
 
     def test_EDITO_LA_v2_Y_OTRO_LA_v3__TAMPOCO_APRUEBA(self):
@@ -72,7 +74,8 @@ class CUATRO_OJOS(unittest.TestCase):
                      v(2, "edicion", "oficial@example.com"),
                      v(3, "edicion", "beto@example.com")])
         faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
-                                          acuse_ia=False, narrativa_es_de_ia=False)
+                                          acuse_ia=False, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(any("editaste" in f for f in faltan))
 
     def test_A_edita__B_revisa__A_aprueba__RECHAZADO(self):
@@ -80,7 +83,8 @@ class CUATRO_OJOS(unittest.TestCase):
                      v(2, "edicion", "oficial@example.com")],
                     [{"etapa": "revisado", "quien": "beto@example.com"}])
         faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
-                                          acuse_ia=False, narrativa_es_de_ia=False)
+                                          acuse_ia=False, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(faltan)
 
     def test_PEDIR_EL_REPORTE_NO_ES_ESCRIBIRLO(self):
@@ -88,7 +92,8 @@ class CUATRO_OJOS(unittest.TestCase):
         quien lo pidió quedaría inhabilitado sin haber tocado una letra."""
         r = reporte([v(1, "gereo", "oficial@example.com")])
         faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
-                                          acuse_ia=False, narrativa_es_de_ia=False)
+                                          acuse_ia=False, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertEqual(faltan, [])
 
     def test_todos_los_revisores_cuentan_no_solo_el_ultimo(self):
@@ -105,7 +110,8 @@ class CUATRO_OJOS(unittest.TestCase):
         r = reporte([v(1, "gereo", "a@example.com"),
                      v(2, "edicion", "Oficial@Example.com")])
         faltan = AP.bloqueos_para_aprobar(r, "OFICIAL@example.com", OFICIALES,
-                                          acuse_ia=False, narrativa_es_de_ia=False)
+                                          acuse_ia=False, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(any("editaste" in f for f in faltan))
 
     def test_se_devuelven_TODOS_los_motivos(self):
@@ -115,7 +121,8 @@ class CUATRO_OJOS(unittest.TestCase):
                      v(2, "edicion", "x@example.com")],
                     [{"etapa": "revisado", "quien": "x@example.com"}])
         faltan = AP.bloqueos_para_aprobar(r, "x@example.com", [],
-                                          acuse_ia=False, narrativa_es_de_ia=True)
+                                          acuse_ia=False, narrativa_es_de_ia=True,
+                                          acuse_gereo=False)
         self.assertGreaterEqual(len(faltan), 3)
 
 
@@ -125,14 +132,16 @@ class EL_PADRON_FALLA_CERRADO(unittest.TestCase):
         """Un padrón que no se puede leer no significa «todos pueden»."""
         r = reporte([v(1, "gereo", "a@example.com")])
         faltan = AP.bloqueos_para_aprobar(r, "quien.sea@example.com", [],
-                                          acuse_ia=False, narrativa_es_de_ia=False)
+                                          acuse_ia=False, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(any("Oficial de Cumplimiento designado" in f
                             for f in faltan))
 
     def test_alguien_fuera_del_padron_no_aprueba(self):
         r = reporte([v(1, "gereo", "a@example.com")])
         faltan = AP.bloqueos_para_aprobar(r, "otro@example.com", OFICIALES,
-                                          acuse_ia=False, narrativa_es_de_ia=False)
+                                          acuse_ia=False, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(any("reservada" in f or "reservado" in f for f in faltan))
 
     def test_lee_las_dos_formas_del_documento(self):
@@ -163,13 +172,15 @@ class EL_TEXTO_DE_LA_IA_SE_ACUSA(unittest.TestCase):
         self.assertTrue(AP.narrativa_sin_tocar(self.V1, self.V1, "Chile"))
         r = reporte([v(1, "gereo", "a@example.com")])
         faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
-                                          acuse_ia=False, narrativa_es_de_ia=True)
+                                          acuse_ia=False, narrativa_es_de_ia=True,
+                                          acuse_gereo=False)
         self.assertTrue(any("redactó la IA" in f for f in faltan))
 
     def test_con_el_acuse_pasa(self):
         r = reporte([v(1, "gereo", "a@example.com")])
         faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
-                                          acuse_ia=True, narrativa_es_de_ia=True)
+                                          acuse_ia=True, narrativa_es_de_ia=True,
+                                          acuse_gereo=False)
         self.assertEqual(faltan, [])
 
     def test_si_alguien_lo_reescribio_no_se_pide(self):
@@ -422,7 +433,8 @@ class DONDE_TIENE_QUE_ESTAR_EL_REPORTE(unittest.TestCase):
         r = reporte([v(1, "gereo", "ana@example.com")], **extra)
         return AP.bloqueos_para_aprobar(
             r, "oficial@example.com", OFICIALES, acuse_ia=True,
-            narrativa_es_de_ia=False)
+            narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
 
     def test_SIN_REVISAR_NO_SE_APRUEBA(self):
         faltan = self._faltan(etapa_gereo="recibido")
@@ -443,17 +455,45 @@ class DONDE_TIENE_QUE_ESTAR_EL_REPORTE(unittest.TestCase):
             with self.subTest(etapa=etapa):
                 self.assertTrue(self._faltan(etapa_gereo=etapa))
 
-    def test_LOS_PENDIENTES_DE_GEREO_NO_SE_SALTEAN(self):
-        """Es el control del PR #97; el camino nuevo no puede esquivarlo."""
+    def _con_pendientes(self):
         r = reporte([v(1, "gereo", "ana@example.com")])
         # Los pendientes salen del `borrador_gereo` del propio reporte.
         r["borrador_gereo"] = {
             "senales": [{"id": "R1"}],
             "advertencias": ["Textos narrativos redactados con IA (borrador)."]}
+        return r
+
+    def test_LOS_PENDIENTES_DE_GEREO_SE_ACUSAN_Y_SIN_ACUSE_BLOQUEAN(self):
+        """Es el control del PR #97; el camino nuevo no puede esquivarlo.
+
+        CAMBIÓ LA REGLA, NO EL CONTROL. Estaba como bloqueo seco y hacía que
+        ningún ROS de GEREO se pudiera aprobar jamás: las advertencias vienen
+        en TODAS las corridas, porque el reporte sale incompleto a propósito.
+        `ros.cambiar_estado` ya explicaba por qué, en el camino viejo, esto es
+        un acuse y no un bloqueo; el camino nuevo copió el control y perdió
+        esa parte. Lo encontró la prueba de punta a punta de la entrega.
+
+        Sin el acuse sigue bloqueando, que es lo que este test afirmaba.
+        """
         faltan = AP.bloqueos_para_aprobar(
-            r, "oficial@example.com", OFICIALES, acuse_ia=True,
-            narrativa_es_de_ia=False)
+            self._con_pendientes(), "oficial@example.com", OFICIALES,
+            acuse_ia=True, narrativa_es_de_ia=False, acuse_gereo=False)
         self.assertTrue(any("IA" in f for f in faltan))
+
+    def test_CON_EL_ACUSE_SE_PUEDE_APROBAR(self):
+        """Lo que falta no es que las advertencias desaparezcan: es que
+        alguien se haga cargo de haberlas leído, con nombre y hora."""
+        faltan = AP.bloqueos_para_aprobar(
+            self._con_pendientes(), "oficial@example.com", OFICIALES,
+            acuse_ia=True, narrativa_es_de_ia=False, acuse_gereo=True)
+        self.assertEqual(faltan, [])
+
+    def test_el_acuse_de_gereo_no_tapa_el_de_la_IA(self):
+        # Son dos acuses distintos sobre dos cosas distintas.
+        faltan = AP.bloqueos_para_aprobar(
+            self._con_pendientes(), "oficial@example.com", OFICIALES,
+            acuse_ia=False, narrativa_es_de_ia=True, acuse_gereo=True)
+        self.assertTrue(any("expresamente" in f for f in faltan))
 
     def test_en_revisado_y_revision_legal_pasa(self):
         self.assertEqual(self._faltan(), [])
@@ -470,7 +510,8 @@ class UNA_VERSION_NO_SE_APRUEBA_DOS_VECES(unittest.TestCase):
     def test_la_segunda_se_rechaza(self):
         faltan = AP.bloqueos_para_aprobar(
             self._con_aprobacion(), "oficial@example.com", OFICIALES,
-            acuse_ia=True, narrativa_es_de_ia=False)
+            acuse_ia=True, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(any("ya está aprobada" in f for f in faltan))
 
     def test_NADIE_LEE_APROBACION_A_PELO(self):
@@ -704,7 +745,8 @@ class NINGUN_DEFAULT_FALLA_ABIERTO(unittest.TestCase):
     def test_llamada_minima_sobre_un_ros_sin_revisar__BLOQUEA(self):
         r = reporte([v(1, "gereo", "ana@example.com")], etapa_gereo="recibido")
         faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
-                                          acuse_ia=True, narrativa_es_de_ia=False)
+                                          acuse_ia=True, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(any("revisado" in f for f in faltan))
 
     def test_llamada_minima_con_pendientes__BLOQUEA(self):
@@ -712,7 +754,8 @@ class NINGUN_DEFAULT_FALLA_ABIERTO(unittest.TestCase):
         r["borrador_gereo"] = {"senales": [{"id": "R1"}],
                                "advertencias": ["Falta la temática."]}
         faltan = AP.bloqueos_para_aprobar(r, "oficial@example.com", OFICIALES,
-                                          acuse_ia=True, narrativa_es_de_ia=False)
+                                          acuse_ia=True, narrativa_es_de_ia=False,
+                                          acuse_gereo=False)
         self.assertTrue(any("temática" in f for f in faltan))
 
     def test_la_firma_ya_no_acepta_esos_kwargs(self):
@@ -721,6 +764,19 @@ class NINGUN_DEFAULT_FALLA_ABIERTO(unittest.TestCase):
         params = inspect.signature(AP.bloqueos_para_aprobar).parameters
         self.assertNotIn("etapa", params)
         self.assertNotIn("pendientes", params)
+
+    def test_NINGUN_ACUSE_TIENE_DEFAULT(self):
+        """Misma regla para `acuse_gereo` que para los otros dos.
+
+        Un acuse con default es un acuse que el próximo llamador omite sin
+        enterarse — y omitir un acuse es firmar en nombre de otro.
+        """
+        import inspect
+        params = inspect.signature(AP.bloqueos_para_aprobar).parameters
+        for nombre in ("acuse_ia", "narrativa_es_de_ia", "acuse_gereo"):
+            self.assertIn(nombre, params)
+            self.assertIs(params[nombre].default, inspect.Parameter.empty,
+                          f"{nombre} tiene default: se puede saltear")
 
 
 class NI_LA_PUNTUACION_NI_LAS_MAYUSCULAS_SON_AUTORIA(unittest.TestCase):

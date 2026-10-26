@@ -132,6 +132,15 @@ except Exception as _e:  # pragma: no cover
     gereo = ros_gereo = None
     print(f"[api] cliente de GEREO no disponible: {_e}")
 
+# La entrega del ROS aprobado. Import aparte del de arriba a propósito: si
+# faltara, la generación tiene que seguir andando. `entregar_ros` lo verifica
+# y devuelve 503 — nunca una entrega sin los controles previos.
+try:
+    import gereo_entrega
+except Exception as _e:  # pragma: no cover
+    gereo_entrega = None
+    print(f"[api] la entrega a GEREO no está disponible: {_e}")
+
 try:
     import ros_versiones
 except Exception as _e:  # pragma: no cover
@@ -2712,6 +2721,17 @@ def handler(event, context):  # noqa: ARG001
                     return marcar_revisado_ros(parts[1], body, exigido["email"])
                 return aprobar_ros(parts[1], body, exigido["email"])
 
+            # POST /ros/{folio}/entregar — le manda a GEREO la versión
+            # aprobada. Es la acción que saca el documento de WatchTower: el
+            # actor va como ARGUMENTO, como en revisar y aprobar, porque es
+            # quien queda registrado como responsable de la entrega.
+            if (method == "POST" and len(parts) == 3
+                    and parts[2] == "entregar"):
+                exigido, error = _identidad(event)
+                if error:
+                    return error
+                return entregar_ros(parts[1], body, exigido["email"])
+
             # GET /ros/{folio}/diff — qué tocó una persona desde que GEREO lo
             # generó. Es lo que mira quien aprueba.
             if method == "GET" and len(parts) == 3 and parts[2] == "diff":
@@ -3832,7 +3852,8 @@ def aprobar_ros(folio: str, body: dict, actor: str):
     de_ia = ros_aprobacion.narrativa_sin_tocar(v1, actual, pais)
     faltan = ros_aprobacion.bloqueos_para_aprobar(
         r, actor, _oficiales_cumplimiento(),
-        acuse_ia=bool(body.get("acuse_ia")), narrativa_es_de_ia=de_ia)
+        acuse_ia=bool(body.get("acuse_ia")), narrativa_es_de_ia=de_ia,
+        acuse_gereo=bool(body.get("acuse_gereo")))
     # UN REPORTE SIN NARRATIVA NO SE APRUEBA. Es lo que lee el regulador: lo
     # que se aprobaría es un documento que no dice nada.
     if not ros_aprobacion.hay_narrativa(actual, pais):
@@ -3853,6 +3874,12 @@ def aprobar_ros(folio: str, body: dict, actor: str):
         "cuando": ahora,
         "texto_de_ia_sin_modificar": de_ia,
         "acuse_ia": bool(body.get("acuse_ia")),
+        # QUÉ SE ACUSÓ, no sólo que se acusó: el día que se audite, la
+        # pregunta es qué decía la advertencia que alguien dio por leída. Y es
+        # lo que después lleva la entrega al eje viejo, en vez de volver a
+        # pedir el acuse a quien aprieta «Entregar».
+        "acuse_gereo": bool(body.get("acuse_gereo")),
+        "pendientes_acusados": [str(p) for p in ros_mod.pendientes_gereo(r)],
         "campos_vaciados": [c["ruta"] for c in
                             ros_aprobacion.diferencias_contra_v1(v1, actual)
                             if c["vaciado"]],
@@ -3891,6 +3918,194 @@ def aprobar_ros(folio: str, body: dict, actor: str):
                 new_value={"version": base,
                            "texto_de_ia": de_ia})
     return resp(200, {"ros": _con_pendientes(nuevo)})
+
+
+def _entrega_de(reporte: dict) -> dict:
+    e = (reporte or {}).get("entrega")
+    return dict(e) if isinstance(e, dict) else {}
+
+
+def entregar_ros(folio: str, body: dict, actor: str):
+    """POST /ros/{folio}/entregar — le manda a GEREO la versión aprobada.
+
+    Es el paso 3 del flujo acordado: desde que GEREO acusa recibo, el ROS
+    queda bloqueado y la comunicación termina. Lo que pase después
+    —autorización, rechazo o carga al regulador— ocurre en Slack y no vuelve.
+
+    ═══════════════════════════════════════════════════════════════════════
+    SE ESCRIBE UNA SOLA VEZ, AL FINAL
+    ═══════════════════════════════════════════════════════════════════════
+
+    La tentación es guardar `enviando` antes de llamar, para que nadie edite
+    mientras GEREO procesa. No se hace, y no es por simplificar: `enviando`
+    sólo sale hacia `enviado` o `error_envio`, y las dos las escribe esta
+    función. Si la Lambda se muere entre el `put` y la respuesta, el reporte
+    queda en `enviando` **para siempre**: no editable, no reintentable, sin
+    forma de salir desde ninguna pantalla.
+
+    Guardando una sola vez al final, una caída deja el registro intacto en
+    `revisado` y el analista puede reintentar. Y el reintento es seguro
+    porque la idempotencia de GEREO es por `ros_id + version`: si la entrega
+    sí había llegado, la segunda devuelve 200 y el ROS se bloquea igual.
+
+    El historial igual registra el paso por `enviando`, porque la cadena de
+    etapas se arma en memoria y se persiste entera: lo que pasó, pasó.
+
+    ═══════════════════════════════════════════════════════════════════════
+    LA NARRATIVA SALE DE LA VERSIÓN APROBADA
+    ═══════════════════════════════════════════════════════════════════════
+
+    `ros.cambiar_estado(..., "enviado")` exige que el reporte tenga narrativa,
+    y el campo `narrativa` del registro sólo lo llena `POST /ros/{folio}/
+    narrativa`. Un ROS de GEREO editado únicamente por el formulario de
+    versiones lo tiene VACÍO, así que ese control —que existe para que no se
+    reporte un documento que no dice nada— frenaría justo el camino nuevo por
+    un campo que nadie usa en él.
+
+    Se completa acá desde `narrativa_enviada.texto`, que es la narrativa de la
+    versión que se firmó. No es un parche: es la misma fuente única que
+    estableció la aprobación, y así el registro y el documento entregado
+    dicen lo mismo.
+    """
+    r = _crm_get("ros", folio)
+    if r is None:
+        return resp(404, {"error": f"No existe el reporte '{folio}'."})
+    if not (ros_etapas and ros_versiones and gereo and gereo_entrega):
+        return resp(503, {"error": "La entrega a GEREO no está disponible en "
+                                   "este despliegue."})
+
+    # YA ENTREGADO: se contesta con lo guardado y no se vuelve a llamar.
+    # Sin esto, el segundo clic choca contra la tabla de transiciones y
+    # devuelve «no se puede pasar de enviado a enviando», que es verdad y no
+    # le explica nada a nadie.
+    previa = _entrega_de(r)
+    if previa.get("entregado"):
+        return resp(200, {"ros": _con_pendientes(r), "entrega": previa,
+                          "mensaje": "Este reporte ya se entregó a GEREO."})
+
+    caso = _crm_get("cases", str(r.get("case_id") or "")) or {}
+    faltan = gereo_entrega.faltantes_para_entregar(r, caso)
+    if faltan:
+        return resp(409, {"error": " ".join(faltan), "motivos": faltan})
+
+    # Las mismas reglas que cualquier movimiento de etapa: no entregar un ROS
+    # descartado, ni uno que el eje viejo no tiene en revisión legal.
+    problemas = ros_etapas.bloqueos(r, "enviando")
+    if problemas:
+        return resp(409, {"error": "; ".join(problemas), "motivos": problemas})
+
+    aprobada = int((r.get("aprobacion") or {}).get("version") or 0)
+    try:
+        doc = _leer_version_ros(r, aprobada)
+    except Exception as e:                                       # noqa: BLE001
+        print(f"[ros] no pude leer la v{aprobada} de {folio}: {type(e).__name__}")
+        return resp(502, {"error": "No pude leer la versión aprobada."})
+
+    # CONTROL PROPIO, ADEMÁS DEL DE GEREO. Si lo leído de S3 no hashea igual
+    # que lo firmado al aprobar, entregar sería mandarle al regulador algo que
+    # nadie aprobó.
+    desajuste = gereo_entrega.desajuste_de_hash(r, doc)
+    if desajuste:
+        print(f"[ros] {folio}: {desajuste}")
+        return resp(409, {"error": f"No se puede entregar: {desajuste}."})
+
+    # EL EJE VIEJO SE PRUEBA ANTES DE SALIR, NO DESPUÉS.
+    #
+    # `ros.cambiar_estado(..., "enviado")` tiene sus propios controles: que
+    # haya narrativa y que no queden puntos del borrador de GEREO sin acusar.
+    # Corriéndolo recién después de entregar, un reporte que no los cumple ya
+    # está en GEREO y el registro queda partido: `etapa_gereo = enviado` y
+    # `estado = revision_legal`, o sea reportado y sin reportar a la vez.
+    #
+    # Se hace un ensayo en memoria con la MISMA función —no una copia de sus
+    # reglas, que se separaría de la original en el tercer cambio— y si se
+    # niega, se frena acá. El resultado se descarta: la etapa todavía no se
+    # movió y el `put` real es uno solo, al final.
+    listo = dict(r)
+    texto = str((listo.get("narrativa_enviada") or {}).get("texto") or "")
+    if texto and not str(listo.get("narrativa") or "").strip():
+        listo["narrativa"] = texto
+    # EL ACUSE DE LOS PENDIENTES LO LLEVA LA APROBACIÓN, no quien entrega.
+    # Ya se hizo, con nombre y hora, sobre esta misma versión: volver a
+    # pedirlo acá sería hacer firmar dos veces lo mismo, y pedírselo a quien
+    # aprieta «Entregar» —que puede ser otra persona— sería peor.
+    acusado = bool((r.get("aprobacion") or {}).get("acuse_gereo"))
+    try:
+        ros_mod.cambiar_estado(listo, "enviado", actor, nota="ensayo",
+                               acuse_gereo=acusado)
+    except ValueError as e:
+        return resp(409, {"error": f"No se puede entregar: {e}"})
+
+    payload = gereo_entrega.payload(r, caso, doc, url_base=WATCHTOWER_URL)
+    ahora = _now_str()
+    try:
+        codigo, cuerpo = gereo.entregar(payload)
+        lectura = gereo_entrega.leer_respuesta(codigo, cuerpo)
+    except gereo.ErrorGereo as e:
+        # No hay código que leer: se cortó antes de la respuesta. GEREO pudo
+        # haber recibido igual, así que el reintento manda la MISMA versión.
+        lectura = {"codigo": e.codigo, "estado": "FALLA", "entrega_id": "",
+                   "mensaje": e.mensaje, "campo": e.campo,
+                   "entregado": False, "reintentable": bool(e.reintentable)}
+
+    entrega = {
+        "version": aprobada,
+        "quien": actor,
+        "cuando": ahora,
+        "codigo": lectura.get("codigo"),
+        "estado": lectura.get("estado"),
+        "entrega_id": lectura.get("entrega_id"),
+        "entregado": bool(lectura.get("entregado")),
+        "reintentable": bool(lectura.get("reintentable")),
+        "mensaje": gereo_entrega.explicacion(lectura),
+    }
+
+    # La cadena de etapas se arma en memoria y se persiste de una sola vez.
+    # Se parte de `listo` —el reporte con la narrativa ya completada— y no de
+    # `r`: la narrativa es parte de lo que se entregó.
+    nuevo = ros_etapas.cambiar(
+        listo, "enviando", actor, momento=ahora,
+        nota=f"Entregando la v{aprobada} a GEREO.")
+    nuevo["entrega"] = entrega
+
+    if entrega["entregado"]:
+        nuevo = ros_etapas.cambiar(
+            nuevo, "enviado", actor, momento=ahora,
+            nota=entrega["mensaje"],
+            datos={"entrega_id": entrega["entrega_id"],
+                   "codigo": entrega["codigo"]})
+        # El puente al eje viejo. El ensayo de más arriba ya probó que esta
+        # transición es válida sobre este mismo reporte, así que acá no puede
+        # fallar por sus reglas. El `try` queda igual: si fallara por algo que
+        # no previmos, el documento YA está en GEREO y hay que dejar rastro en
+        # el registro, no sólo en un log que nadie mira.
+        try:
+            nuevo = ros_mod.cambiar_estado(
+                nuevo, "enviado", actor,
+                nota=f"Entregado a GEREO (v{aprobada}).",
+                acuse_gereo=acusado)
+        except ValueError as e:
+            print(f"[ros] {folio} entregado pero no pude mover el estado: {e}")
+            nuevo = ros_etapas.anotar(
+                nuevo, "estado_sin_mover", actor, momento=ahora,
+                nota=f"Entregado, pero el estado quedó sin mover: {e}")
+    else:
+        nuevo = ros_etapas.cambiar(
+            nuevo, "error_envio", actor, momento=ahora,
+            nota=entrega["mensaje"],
+            datos={"codigo": entrega["codigo"],
+                   "reintentable": entrega["reintentable"]})
+
+    _crm_put("ros", folio, nuevo)
+    # SIN EL PAYLOAD NI EL MENSAJE DE GEREO: el reporte lleva nombre,
+    # documento y operaciones de una persona real, y la auditoría se guarda.
+    _safe_audit(user_email=actor, action="ros.entregado", entity_type="ros",
+                entity_id=folio,
+                new_value={"version": aprobada, "codigo": entrega["codigo"],
+                           "estado": entrega["estado"],
+                           "entregado": entrega["entregado"]})
+    return resp(200 if entrega["entregado"] else 502,
+                {"ros": _con_pendientes(nuevo), "entrega": entrega})
 
 
 def listar_versiones_ros(folio: str):
