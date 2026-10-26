@@ -14,12 +14,23 @@
    modelo, palabra por palabra, quien firma lo dice con todas las letras y
    queda registrado. Es la pregunta que va a hacer una auditoría.
 
+   LOS PUNTOS PENDIENTES SE MUESTRAN, NO SE RESUMEN. GEREO devuelve el
+   reporte incompleto A PROPÓSITO: hay campos que dependen del criterio de
+   una persona. Para aprobar hay que acusarlos, y un checkbox que dice «acuso
+   los puntos pendientes» sin decir cuáles es una firma en blanco.
+
+   ENTREGAR ES LO ÚLTIMO QUE HACE WATCHTOWER CON ESTE REPORTE. Después queda
+   bloqueado y la conversación sigue en Slack, fuera de acá. Se dice antes de
+   apretar, no después.
+
    LOS CONTROLES ESTÁN EN EL BACKEND. Acá se muestran y se deshabilitan
    botones, que es cortesía. El rol y el cuatro ojos los decide la Lambda con
    el correo del token.
    ========================================================================= */
 
 import { useEffect, useState } from 'react';
+
+import { estadoDeEntrega } from '../../comun/ros.js';
 
 function Cambio({ c }) {
   return (
@@ -44,16 +55,19 @@ function Cambio({ c }) {
   );
 }
 
-export function Aprobar({ api, folio, version, etapa, lectura, alCambiar }) {
+export function Aprobar({ api, ros, folio, version, etapa, lectura, alCambiar }) {
   const [d, setD] = useState(null);
   const [estado, setEstado] = useState('cargando');
   const [error, setError] = useState('');
   const [motivos, setMotivos] = useState([]);
   const [acuse, setAcuse] = useState(false);
+  const [acuseGereo, setAcuseGereo] = useState(false);
+  const [entrega, setEntrega] = useState(null);
 
   useEffect(() => {
     let vivo = true;
-    setEstado('cargando'); setError(''); setMotivos([]); setAcuse(false);
+    setEstado('cargando'); setError(''); setMotivos([]);
+    setAcuse(false); setAcuseGereo(false); setEntrega(null);
     api.get(`/ros/${encodeURIComponent(folio)}/diff`)
       .then((x) => { if (vivo) { setD(x); setEstado(''); } })
       .catch((e) => {
@@ -68,6 +82,7 @@ export function Aprobar({ api, folio, version, etapa, lectura, alCambiar }) {
       const res = await api.post(
         `/ros/${encodeURIComponent(folio)}/${accion}`, cuerpo);
       setEstado('');
+      if (res?.entrega) setEntrega(res.entrega);
       alCambiar(res?.ros);
     } catch (e) {
       setEstado('error');
@@ -75,6 +90,11 @@ export function Aprobar({ api, folio, version, etapa, lectura, alCambiar }) {
       // El backend devuelve TODOS los motivos. Mostrarlos de a uno hace que
       // alguien arregle el primero y vuelva a chocar con el segundo.
       if (Array.isArray(e?.datos?.motivos)) setMotivos(e.datos.motivos);
+      // UNA ENTREGA QUE NO SALIÓ NO ES UN ERROR CUALQUIERA. El reporte se
+      // movió a «Error de entrega» y volvió a ser editable, y de la respuesta
+      // depende si conviene reintentar o corregir. Decirlo sólo con el
+      // mensaje de error dejaría a la persona sin saber cuál de las dos.
+      if (e?.datos?.entrega) setEntrega(e.datos.entrega);
     }
   }
 
@@ -83,8 +103,21 @@ export function Aprobar({ api, folio, version, etapa, lectura, alCambiar }) {
 
   const cambios = d.cambios || [];
   const vaciados = d.vaciados || [];
-  const puedeAprobar = etapa === 'revisado' && !lectura
-    && (!d.narrativa_es_de_ia || acuse);
+  const pendientes = d.pendientes || [];
+  const { aprobado, puedeEntregar: sePuedeEntregar } = estadoDeEntrega(ros);
+  const puedeEntregar = sePuedeEntregar && !lectura;
+  const puedeAprobar = etapa === 'revisado' && !lectura && !aprobado
+    && (!d.narrativa_es_de_ia || acuse)
+    && (pendientes.length === 0 || acuseGereo);
+
+  // POR QUÉ NO SE PUEDE, EN EL TOOLTIP. Un botón gris sin explicación hace
+  // que la persona pruebe los checkboxes a ver cuál lo despierta.
+  const motivoDeBloqueo = [
+    d.narrativa_es_de_ia && !acuse
+      && 'Falta acusar que el texto lo redactó una IA',
+    pendientes.length > 0 && !acuseGereo
+      && 'Falta acusar los puntos que GEREO dejó a tu criterio',
+  ].filter(Boolean).join('. ');
 
   return (
     <>
@@ -140,6 +173,34 @@ export function Aprobar({ api, folio, version, etapa, lectura, alCambiar }) {
         </>
       )}
 
+      {pendientes.length > 0 && (
+        <>
+          {/* QUÉ SE ESTÁ ACUSANDO, ENUMERADO. GEREO devuelve el reporte
+              incompleto a propósito y estos son los campos que dependen del
+              criterio de una persona. Un checkbox sin la lista es una firma
+              en blanco. */}
+          <div className="wt-nota" style={{ marginTop: 'var(--e-3)' }}>
+            <strong>
+              El borrador de GEREO deja {pendientes.length} punto
+              {pendientes.length === 1 ? '' : 's'} a tu criterio:
+            </strong>
+            <ul style={{ margin: 'var(--e-1) 0 0', paddingLeft: 18,
+                         fontSize: 'var(--texto-sm)' }}>
+              {pendientes.map((p) => <li key={p}>{p}</li>)}
+            </ul>
+          </div>
+          <label className="wt-checklist-item"
+                 style={{ cursor: 'pointer', marginTop: 'var(--e-2)' }}>
+            <input type="checkbox" checked={acuseGereo}
+                   onChange={(e) => setAcuseGereo(e.target.checked)} />
+            <span style={{ fontSize: 'var(--texto-sm)' }}>
+              <strong>Leí esos puntos y me hago cargo.</strong> Quedan
+              registrados a tu nombre, con la hora.
+            </span>
+          </label>
+        </>
+      )}
+
       {d.narrativa_es_de_ia && (
         <label className="wt-checklist-item"
                style={{ cursor: 'pointer', marginTop: 'var(--e-3)' }}>
@@ -151,6 +212,30 @@ export function Aprobar({ api, folio, version, etapa, lectura, alCambiar }) {
             registrado a tu nombre.
           </span>
         </label>
+      )}
+
+      {entrega && (
+        <div className="wt-nota"
+             style={{ marginTop: 'var(--e-3)',
+                      borderColor: entrega.entregado
+                        ? 'var(--nivel-bajo-texto)' : 'var(--nivel-alto-texto)',
+                      background: entrega.entregado
+                        ? 'var(--nivel-bajo-tenue)' : 'var(--nivel-alto-tenue)',
+                      color: entrega.entregado
+                        ? 'var(--nivel-bajo-texto)' : 'var(--nivel-alto-texto)' }}>
+          <strong>{entrega.entregado ? 'Entregado a GEREO.' : 'No se entregó.'}</strong>{' '}
+          {entrega.mensaje}
+          {entrega.entrega_id && (
+            <> <br /><span style={{ fontSize: 'var(--texto-xs)' }}>
+              Acuse de GEREO: <code>{entrega.entrega_id}</code>
+            </span></>
+          )}
+          {!entrega.entregado && entrega.reintentable && (
+            <> <br /><span style={{ fontSize: 'var(--texto-xs)' }}>
+              Se puede reintentar con la misma versión: GEREO no duplica.
+            </span></>
+          )}
+        </div>
       )}
 
       {(error || motivos.length > 0) && (
@@ -173,21 +258,36 @@ export function Aprobar({ api, folio, version, etapa, lectura, alCambiar }) {
               {estado === 'revisar' ? 'Guardando…' : 'Marcar como revisado'}
             </button>
           )}
-          {etapa === 'revisado' && (
+          {etapa === 'revisado' && !aprobado && (
             <button className="wt-btn wt-btn-primario" type="button"
                     disabled={!puedeAprobar || Boolean(estado)}
-                    title={d.narrativa_es_de_ia && !acuse
-                      ? 'Falta acusar que el texto lo redactó una IA' : ''}
+                    title={motivoDeBloqueo}
                     onClick={() => mover('aprobar',
-                                         { version, acuse_ia: acuse })}>
+                                         { version, acuse_ia: acuse,
+                                           acuse_gereo: acuseGereo })}>
               {estado === 'aprobar' ? 'Aprobando…' : 'Aprobar'}
+            </button>
+          )}
+          {/* ENTREGAR APARECE RECIÉN CON LA APROBACIÓN HECHA, y sobre esta
+              misma versión: una aprobación de una versión anterior ya no vale
+              y el backend la rechaza. Mostrar el botón igual sería ofrecer
+              algo que no va a funcionar. */}
+          {puedeEntregar && (
+            <button className="wt-btn wt-btn-primario" type="button"
+                    disabled={Boolean(estado)}
+                    onClick={() => mover('entregar', {})}>
+              {estado === 'entregar' ? 'Entregando…' : 'Entregar a GEREO'}
             </button>
           )}
           <span style={{ fontSize: 'var(--texto-sm)', color: 'var(--texto-mute)' }}>
             {/* Se dice ANTES de apretar: enterarse después de que el botón no
                 anda es peor que saber de entrada por qué. */}
-            Aprobar está reservado al Oficial de Cumplimiento, y no puede
-            hacerlo quien revisó ni quien editó este reporte.
+            {puedeEntregar
+              ? ('Entregar es lo último que hace WatchTower con este reporte: '
+                 + 'después queda bloqueado y la autorización para cargarlo al '
+                 + 'regulador se decide en Slack, fuera de acá.')
+              : ('Aprobar está reservado al Oficial de Cumplimiento, y no puede '
+                 + 'hacerlo quien revisó ni quien editó este reporte.')}
           </span>
         </div>
       )}

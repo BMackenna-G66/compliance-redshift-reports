@@ -94,6 +94,37 @@ export function puedeMover(reporte, destino, acuse = false) {
   return pendientesGereo(reporte).length === 0 || Boolean(acuse);
 }
 
+/**
+ * En qué punto de la entrega a GEREO está el reporte.
+ *
+ * LA APROBACIÓN VALE PARA UNA VERSIÓN, NO PARA EL REPORTE. Editar después de
+ * aprobar invalida la firma —el backend la borra del registro— y entregar una
+ * versión que nadie aprobó es exactamente lo que el `json_sha256` existe para
+ * impedir. Por eso no alcanza con «tiene aprobación»: tiene que ser la de la
+ * versión actual.
+ *
+ * Mostrar «Entregar» cuando el backend lo va a rechazar es peor que no
+ * mostrarlo: la persona aprieta, falla, y deja de confiar en los botones.
+ */
+export function estadoDeEntrega(reporte) {
+  const r = reporte || {};
+  const aprobacion = r.aprobacion || null;
+  const version = Number(r.version_actual || 0);
+  const aprobado = Boolean(aprobacion)
+    && Number(aprobacion.version || 0) === version && version > 0;
+  const entrega = r.entrega || null;
+  return {
+    aprobado,
+    aprobacion,
+    entrega,
+    yaEntregado: Boolean(entrega?.entregado),
+    // Se entrega desde `revisado` (la aprobación no mueve la etapa) y también
+    // desde `error_envio`, que es el reintento.
+    puedeEntregar: aprobado && !entrega?.entregado
+      && ['revisado', 'error_envio'].includes(etapaDeRos(r)),
+  };
+}
+
 /** El nombre del regulador para mostrar: «UAF · Chile». */
 export function nombreRegulador(clave, reguladores) {
   const d = (reguladores || {})[clave];
@@ -142,9 +173,19 @@ export const ETAPAS_ROS = {
   descartado: { texto: 'Descartado', color: 'neutro' },
   recibido: { texto: 'Recibido', color: 'info' },
   revisado: { texto: 'Revisado', color: 'medio' },
-  enviando: { texto: 'Enviando…', color: 'medio' },
-  enviado: { texto: 'Enviado', color: 'ok' },
-  error_envio: { texto: 'Error de envío', color: 'alto' },
+  /* LOS NOMBRES DICEN «ENTREGA», NO «ENVÍO», desde el acuerdo con GEREO del
+     23-10-2026. WatchTower le entrega el ROS a GEREO y ahí termina su parte:
+     la autorización y la carga al regulador se deciden en Slack y no
+     vuelven. «Enviado = subido al regulador» era verdad con el flujo
+     anterior y con éste sería una afirmación que WatchTower no puede hacer.
+
+     LAS CLAVES NO CAMBIAN. `enviando`/`enviado`/`error_envio` están
+     guardadas en `etapa_gereo` y en cada entrada de `historial_gereo`.
+     Renombrarlas obligaría a migrar los registros; renombrar el texto no
+     toca ninguno. */
+  enviando: { texto: 'Entregando…', color: 'medio' },
+  enviado: { texto: 'Entregado a GEREO', color: 'ok' },
+  error_envio: { texto: 'Error de entrega', color: 'alto' },
   /* NO es «Sin ROS». El reporte existe: lo que falló fue guardar su versión,
      y mostrarlo como si no existiera esconde la falla detrás de un estado
      normal — que es justo lo que no puede pasar con un registro regulatorio. */
@@ -200,10 +241,46 @@ export function etapaDeRos(r) {
   return Object.prototype.hasOwnProperty.call(ETAPAS_ROS, e) ? e : 'sin_ros';
 }
 
-/** Si en esta etapa todavía corre el plazo. */
+/**
+ * Si en esta etapa todavía corre el plazo.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * EL RELOJ SE PARA EN «ENTREGADO», QUE NO ES «REPORTADO»
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Con el flujo acordado con GEREO (23-10-2026), la comunicación termina en la
+ * entrega: la autorización para cargar el ROS al regulador se decide en Slack
+ * y **no vuelve a WatchTower**. Así que desde acá no se puede saber si el ROS
+ * se cargó, ni cuándo, ni si lo rechazaron.
+ *
+ * O sea que el plazo deja de medir el hecho legal —cuándo se reportó— y pasa
+ * a medir cuándo WatchTower hizo su parte. Un ROS entregado el día 10 y
+ * rechazado en Slack el día 12 se queda en verde para siempre, y a los 40
+ * días seguiría en verde.
+ *
+ * Se deja igual A PROPÓSITO: parar el reloj en la entrega es lo único que
+ * WatchTower puede afirmar con lo que sabe. Lo que NO se puede hacer es dejar
+ * que el verde se lea como «reportado a tiempo», y por eso `avisoDelPlazo`
+ * existe y la pantalla lo muestra junto al semáforo.
+ *
+ * El arreglo de verdad es que GEREO avise el resultado de la carga. Mientras
+ * no lo haga, esto es lo honesto.
+ */
 export function correPlazo(ros) {
   return Boolean(ros) && !['sin_ros', 'enviado', 'descartado', 'no_disponible']
     .includes(ros.etapa);
+}
+
+/**
+ * Qué hay que aclarar sobre el plazo en esta etapa. `''` si no hay nada.
+ *
+ * Vive al lado de `correPlazo` para que quien cambie una vea la otra: el día
+ * que el reloj se pare en otro punto, el texto tiene que acompañar.
+ */
+export function avisoDelPlazo(ros) {
+  if (etapaDeRos(ros) !== 'enviado' && ros?.etapa !== 'enviado') return '';
+  return ('El plazo dejó de contar al entregarlo a GEREO. WatchTower no sabe '
+          + 'si se cargó al regulador: eso se decide en Slack.');
 }
 
 /** Cómo se dibuja la etapa de un caso que puede no tener ROS. */

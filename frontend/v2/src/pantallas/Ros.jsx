@@ -398,7 +398,8 @@ function Detalle({ r, reguladores, transiciones, lectura, email, api,
                            margin: 'var(--e-5) 0 var(--e-2)' }}>
                 Revisión y aprobación
               </h3>
-              <Aprobar api={api} folio={r.folio} version={r.version_actual}
+              <Aprobar api={api} ros={r} folio={r.folio}
+                       version={r.version_actual}
                        etapa={r.etapa_gereo} lectura={lectura || !puedeEditar}
                        alCambiar={alRecargar} />
             </>

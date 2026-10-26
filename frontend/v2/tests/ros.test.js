@@ -23,8 +23,9 @@ import { dirname, join } from 'node:path';
 import test, { describe, it } from 'node:test';
 
 import {
-  ETAPAS_ROS, PLAZO_LEGAL_DIAS, correPlazo, destinosDe, diasDesde, editable,
-  etapaDeRos, etiquetaEtapa, faltaParaEnviar, filtrarPorRos, origenDelPlazo,
+  ETAPAS_ROS, PLAZO_LEGAL_DIAS, avisoDelPlazo, correPlazo, destinosDe,
+  diasDesde, editable, estadoDeEntrega, etapaDeRos, etiquetaEtapa,
+  faltaParaEnviar, filtrarPorRos, origenDelPlazo,
   pendientesGereo, plazoDe, puedeMover, rosPorCaso,
 } from '../src/comun/ros.js';
 
@@ -360,4 +361,108 @@ test('UN 200 CON `warning` ES EL REGISTRO CAÍDO, no «cero ROS»', () => {
   assert.equal(disponible(caido), false, 'un warning se leyó como registro sano');
   assert.equal(disponible(ok), true, 'un registro vacío de verdad no es una falla');
   assert.equal(disponible(null), false);
+});
+
+
+/* ── La entrega a GEREO ──────────────────────────────────────────────────── */
+
+describe('en qué punto de la entrega está el reporte', () => {
+  const aprobado = {
+    version_actual: 3,
+    etapa_gereo: 'revisado',
+    aprobacion: { version: 3, quien: 'rocio@ejemplo.test' },
+  };
+
+  it('con la aprobación de la versión actual se puede entregar', () => {
+    const e = estadoDeEntrega(aprobado);
+    assert.equal(e.aprobado, true);
+    assert.equal(e.puedeEntregar, true);
+  });
+
+  it('LA APROBACIÓN DE OTRA VERSIÓN NO SIRVE', () => {
+    // Editar después de aprobar invalida la firma: el backend la borra. Si la
+    // pantalla ofreciera «Entregar» igual, la persona aprieta, falla, y deja
+    // de confiar en los botones.
+    const e = estadoDeEntrega({ ...aprobado, version_actual: 4 });
+    assert.equal(e.aprobado, false);
+    assert.equal(e.puedeEntregar, false);
+  });
+
+  it('sin aprobación no se puede entregar', () => {
+    const e = estadoDeEntrega({ version_actual: 3, etapa_gereo: 'revisado' });
+    assert.equal(e.puedeEntregar, false);
+  });
+
+  it('sin ninguna versión guardada tampoco', () => {
+    const e = estadoDeEntrega({ version_actual: 0, etapa_gereo: 'recibido',
+                                aprobacion: { version: 0 } });
+    assert.equal(e.aprobado, false);
+  });
+
+  it('desde «error de entrega» se puede reintentar', () => {
+    const e = estadoDeEntrega({ ...aprobado, etapa_gereo: 'error_envio' });
+    assert.equal(e.puedeEntregar, true);
+  });
+
+  it('lo ya entregado no se vuelve a entregar', () => {
+    const e = estadoDeEntrega({
+      ...aprobado, etapa_gereo: 'enviado',
+      entrega: { entregado: true, entrega_id: 'e-1' } });
+    assert.equal(e.yaEntregado, true);
+    assert.equal(e.puedeEntregar, false);
+  });
+
+  it('un intento fallido no cuenta como entregado', () => {
+    const e = estadoDeEntrega({
+      ...aprobado, etapa_gereo: 'error_envio',
+      entrega: { entregado: false, reintentable: true } });
+    assert.equal(e.yaEntregado, false);
+    assert.equal(e.puedeEntregar, true, 'no deja reintentar');
+  });
+
+  it('aguanta nulos', () => {
+    assert.equal(estadoDeEntrega(null).puedeEntregar, false);
+    assert.equal(estadoDeEntrega(undefined).aprobado, false);
+  });
+});
+
+describe('las etapas dicen «entrega» y no «envío»', () => {
+  it('el nombre final no afirma que se reportó', () => {
+    // «Enviado = subido al regulador» era verdad con el flujo anterior. Con
+    // éste, WatchTower no se entera de la carga: afirmarlo sería mentir.
+    assert.equal(ETAPAS_ROS.enviado.texto, 'Entregado a GEREO');
+    assert.equal(ETAPAS_ROS.enviando.texto, 'Entregando…');
+    assert.equal(ETAPAS_ROS.error_envio.texto, 'Error de entrega');
+  });
+
+  it('LAS CLAVES NO CAMBIARON', () => {
+    // Están guardadas en `etapa_gereo` y en cada entrada de
+    // `historial_gereo`: renombrarlas obligaría a migrar los registros.
+    for (const k of ['enviando', 'enviado', 'error_envio']) {
+      assert.ok(ETAPAS_ROS[k], `desapareció la clave ${k}`);
+    }
+  });
+});
+
+describe('el plazo parado se explica', () => {
+  it('EN «ENTREGADO» AVISA QUE NO SABEMOS SI SE REPORTÓ', () => {
+    // El reloj se para en la entrega, pero entregado no es reportado: la
+    // carga se decide en Slack y no vuelve. Un verde en silencio se lee como
+    // «llegó a tiempo», que es justo lo que ya no se puede afirmar.
+    assert.equal(correPlazo({ etapa: 'enviado' }), false);
+    assert.match(avisoDelPlazo({ etapa: 'enviado' }), /Slack/);
+  });
+
+  it('mientras el reloj corre no hay nada que aclarar', () => {
+    assert.equal(avisoDelPlazo({ etapa: 'revisado' }), '');
+    assert.equal(avisoDelPlazo({ etapa: 'recibido' }), '');
+  });
+
+  it('un ROS descartado no necesita el aviso: no se entregó', () => {
+    assert.equal(avisoDelPlazo({ etapa: 'descartado' }), '');
+  });
+
+  it('aguanta nulos', () => {
+    assert.equal(avisoDelPlazo(null), '');
+  });
 });
