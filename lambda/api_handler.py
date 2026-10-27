@@ -2449,7 +2449,26 @@ def _migrate_whitelist_to_s3() -> int:
         if not wid:
             continue
         exp_str = str(r.get("expires_at") or "")[:19]
-        _crm_put("whitelist", str(wid), {
+        # ESTA MIGRACIÓN ESQUIVABA EL CONTROL DE APROBACIÓN. Escribía entradas
+        # sin `estado`, y mientras «sin estado» significó «heredada», traer
+        # una fila de Redshift alcanzaba para silenciar un cliente sin que
+        # nadie firmara.
+        #
+        # Dos reglas, las dos necesarias:
+        #   · Si la entrada YA existe en S3, se respeta su estado. Volver a
+        #     correr esto no puede borrar la firma de un Oficial.
+        #   · Si es nueva, nace PENDIENTE como cualquier otra. Que venga de
+        #     Redshift no la hace aprobada.
+        estado = whitelist_aprobacion.PENDIENTE if whitelist_aprobacion else ""
+        aprobacion = None
+        try:
+            previa = _crm_get("whitelist", str(wid)) or {}
+        except Exception:                                        # noqa: BLE001
+            previa = {}
+        if previa.get("estado"):
+            estado = previa["estado"]
+            aprobacion = previa.get("aprobacion")
+        nueva = {
             "whitelist_id": str(wid),
             "entity_field": r.get("entity_field") or "",
             "entity_value": r.get("entity_value") or "",
@@ -2457,10 +2476,14 @@ def _migrate_whitelist_to_s3() -> int:
             "reason": r.get("reason") or "",
             "scope": r.get("scope") or "global",
             "report_name": r.get("report_name") or "",
+            "estado": estado,
             "created_at": str(r.get("created_at") or "")[:19],
             "expires_at": _str_to_epoch(exp_str),
             "expires_at_str": exp_str,
-        })
+        }
+        if aprobacion:
+            nueva["aprobacion"] = aprobacion
+        _crm_put("whitelist", str(wid), nueva)
         n += 1
     return n
 

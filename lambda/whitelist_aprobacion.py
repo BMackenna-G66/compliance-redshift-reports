@@ -32,16 +32,31 @@ pueda aprobar quien la pidió no es desconfianza, es para qué sirve el control:
 un segundo par de ojos que no son los mismos ojos.
 
 ═══════════════════════════════════════════════════════════════════════════
-LAS 49 QUE YA ESTABAN
+LAS QUE YA ESTABAN: SE RESPETAN, PERO LA HERENCIA ES ACOTADA
 ═══════════════════════════════════════════════════════════════════════════
 
-Se respetan. Una entrada sin el campo `estado` es anterior a este control y
-sigue aplicando hasta que venza — todas vencen dentro de los 90 días.
+Las entradas anteriores al control siguen aplicando hasta que venzan — todas
+vencen dentro de los 90 días. Ponerlas en `pendiente` habría sido lo riguroso
+y lo irresponsable: cada cliente silenciado volvería a alertar de golpe en la
+próxima corrida, encima de un equipo que no pidió esa avalancha.
 
-Ponerlas en `pendiente` habría sido lo riguroso y lo irresponsable: 46
-clientes volviendo a alertar de golpe en la próxima corrida, encima de un
-equipo que no pidió esa avalancha. Se marcan en la pantalla como «sin
-aprobación» y el problema se termina solo.
+**Pero la herencia NO se deduce de la ausencia del campo.** Esa fue la primera
+versión de esto y era un agujero: cualquier camino que escribiera una entrada
+sin pasar por el estado nuevo —la migración desde Redshift, una carga a mano
+en S3, un cliente de la API que no se enteró— quedaba «heredada», y heredada
+aplica. O sea: silenciar un cliente sin aprobación seguía siendo posible, sólo
+que por la puerta de atrás.
+
+La herencia está acotada por `CORTE`, el momento en que el control empezó a
+correr en producción. Una entrada sin estado válido:
+
+    creada ANTES del corte  → heredada, aplica (es de las que ya estaban)
+    creada DESPUÉS          → desconocida, NO aplica
+    sin fecha legible       → desconocida, NO aplica
+
+Y un `estado` presente pero inválido —un typo, «pending» en inglés— nunca es
+herencia, sin importar la fecha: el campo está, alguien lo escribió, y lo que
+no se reconoce no silencia.
 
 ═══════════════════════════════════════════════════════════════════════════
 EL RELOJ ARRANCA AL APROBAR
@@ -66,21 +81,55 @@ APROBADA = "aprobada"
 RECHAZADA = "rechazada"
 
 # Las que ya estaban cuando esto no existía. No es un estado que se pueda
-# pedir: se deduce de que el campo no esté.
+# pedir: se deduce de la ausencia del campo MÁS la fecha de creación.
 HEREDADA = "heredada"
+
+# Sin estado válido y fuera de la ventana de herencia. No silencia nada, y se
+# muestra: una entrada que llegó por un camino que no pasó por el control es
+# algo que alguien tiene que mirar, no algo que se descarta en silencio.
+DESCONOCIDA = "desconocida"
 
 ESTADOS = (PENDIENTE, APROBADA, RECHAZADA)
 
-# Los únicos estados que silencian algo.
+# Los únicos estados que silencian algo. `DESCONOCIDA` no está, y ése es el
+# punto entero del corte.
 APLICAN = (APROBADA, HEREDADA)
+
+# EL MOMENTO EN QUE EL CONTROL EMPEZÓ A CORRER, en UTC, como lo guarda
+# `created_at`. Lo que se creó antes es de las que ya estaban; lo que se creó
+# después y no tiene estado válido llegó por un camino que esquivó el control.
+#
+# Es una constante y no una fecha calculada a propósito: tiene que significar
+# lo mismo dentro de un año, cuando nadie se acuerde de por qué está.
+CORTE = "2026-10-27 15:55:21"
 
 DIAS_VALIDOS = (30, 60, 90)
 
 
 def estado_de(entrada) -> str:
-    """El estado de la entrada. Sin el campo, es anterior al control."""
-    e = str((entrada or {}).get("estado") or "").strip().lower()
-    return e if e in ESTADOS else HEREDADA
+    """El estado de la entrada.
+
+    Sin el campo, depende de CUÁNDO se creó: antes del corte es una de las que
+    ya estaban; después, es una entrada que llegó por un camino que no pasó
+    por el control y no silencia nada.
+
+    Con el campo presente pero con un valor que no se reconoce, nunca es
+    herencia: alguien lo escribió, y lo que no se entiende no aplica.
+    """
+    entrada = entrada or {}
+    crudo = str(entrada.get("estado") or "").strip().lower()
+    if crudo in ESTADOS:
+        return crudo
+    if crudo:
+        # El campo está y dice cualquier cosa. No se adivina.
+        return DESCONOCIDA
+    creada = str(entrada.get("created_at") or "").strip()
+    # La comparación es de texto porque el formato es fijo y ordenable
+    # (`YYYY-MM-DD HH:MM:SS`). Una fecha con otra forma no compara bien, así
+    # que no entra: sin fecha legible no hay herencia.
+    if len(creada) >= 19 and creada[:19] < CORTE and creada[4] == "-":
+        return HEREDADA
+    return DESCONOCIDA
 
 
 def vencida(entrada, ahora: int | None = None) -> bool:
@@ -141,6 +190,14 @@ def bloqueos_para_aprobar(entrada, quien: str, oficiales) -> list:
     elif estado == HEREDADA:
         faltan.append("Esta entrada es anterior al control de aprobación: "
                       "sigue vigente hasta que venza y no se aprueba.")
+    elif estado == DESCONOCIDA:
+        # NO se blanquea firmándola. Aprobarla convertiría «alguien escribió
+        # esto por fuera del control» en «un Oficial lo revisó», que es
+        # justo la confusión que no puede quedar en el expediente. Hay que
+        # entender de dónde salió y, si corresponde, pedirla de nuevo.
+        faltan.append("Esta entrada llegó por un camino que no pasó por el "
+                      "control y no silencia nada. No se aprueba: hay que "
+                      "averiguar de dónde salió y volver a pedirla.")
 
     # EL PADRÓN FALLA CERRADO. Vacío no es "cualquiera puede": es "no sabemos
     # quién puede", y ante eso no se silencia a nadie.
@@ -231,4 +288,7 @@ def resumen(entrada) -> dict:
         # La pantalla lo usa para el cartel de «sin aprobación»: son las que
         # entraron antes de que esto existiera.
         "sin_aprobacion": estado == HEREDADA,
+        # Y ésta es la que hay que ir a mirar: llegó por un camino que no pasó
+        # por el control. No silencia nada, pero que exista es una pista.
+        "fuera_del_control": estado == DESCONOCIDA,
     }

@@ -242,15 +242,24 @@ describe('la aprobación de la lista blanca', () => {
     assert.ok(COLOR_VIGENCIA.pendiente);
   });
 
-  it('una entrada vieja sin estado se marca «Sin aprobación»', () => {
-    /* Las 49 que ya estaban al 27-10-2026. Siguen aplicando hasta vencer,
-       pero la pantalla no las presenta como firmadas. */
-    assert.equal(estadoWhitelist({ entity_value: '9' }).clave, 'heredada');
-    assert.equal(estadoWhitelist({ entity_value: '9' }).etiqueta, 'Sin aprobación');
+  it('una entrada anterior al control se marca «Sin aprobación»', () => {
+    /* Las que ya estaban. Siguen aplicando hasta vencer, pero la pantalla no
+       las presenta como firmadas. El estado lo calcula el backend y viaja en
+       la entrada: acá no se vuelve a deducir de la ausencia del campo. */
+    const vieja = { entity_value: '9', estado: 'heredada' };
+    assert.equal(estadoWhitelist(vieja).clave, 'heredada');
+    assert.equal(estadoWhitelist(vieja).etiqueta, 'Sin aprobación');
   });
 
-  it('un estado inventado no se dibuja como si fuera bueno', () => {
-    assert.equal(estadoWhitelist({ estado: 'aprobadisima' }).clave, 'heredada');
+  it('LO QUE NO SE ENTIENDE NO SE DIBUJA COMO SI ESTUVIERA EN REGLA', () => {
+    /* Antes, cualquier cosa sin estado válido caía en «heredada» —gris, como
+       una entrada vieja normal— y una entrada que llegó por fuera del control
+       se veía igual que las legítimas. Ahora sale en rojo. */
+    for (const raro of [{ entity_value: '9' }, { estado: 'aprobadisima' },
+                        { estado: 'pending' }, {}]) {
+      assert.equal(estadoWhitelist(raro).clave, 'desconocida');
+      assert.equal(estadoWhitelist(raro).etiqueta, 'Fuera del control');
+    }
   });
 
   it('UN OFICIAL DISTINTO DEL QUE PIDIÓ PUEDE FIRMAR', () => {

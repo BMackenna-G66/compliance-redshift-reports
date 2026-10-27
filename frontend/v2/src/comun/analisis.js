@@ -192,10 +192,19 @@ export const ESTADO_WHITELIST = {
   aprobada:  { etiqueta: 'Aprobada',                color: 'var(--nivel-bajo-texto)', fondo: 'var(--nivel-bajo-tenue)' },
   rechazada: { etiqueta: 'Rechazada',               color: 'var(--estado-error-texto)', fondo: 'var(--estado-error-fondo)' },
   heredada:  { etiqueta: 'Sin aprobación',          color: 'var(--texto-mute)', fondo: 'var(--superficie-3)' },
+  /* Llegó por un camino que no pasó por el control: una carga a mano, una
+     migración, un cliente de la API desactualizado. NO silencia nada, pero se
+     muestra — una entrada así es una pista de que algo escribe por fuera, y
+     esconderla sería perder la pista. */
+  desconocida: { etiqueta: 'Fuera del control', color: 'var(--estado-error-texto)', fondo: 'var(--estado-error-fondo)' },
 };
 
 export function estadoWhitelist(entrada) {
-  const clave = ESTADO_WHITELIST[entrada?.estado] ? entrada.estado : 'heredada';
+  /* El estado lo calcula el backend y viaja en la entrada: acá no se vuelve a
+     deducir. Si llegara algo que no se reconoce, se muestra como «fuera del
+     control» y no como herencia — lo que no se entiende no se presenta como
+     si estuviera en regla. */
+  const clave = ESTADO_WHITELIST[entrada?.estado] ? entrada.estado : 'desconocida';
   return { clave, ...ESTADO_WHITELIST[clave] };
 }
 

@@ -1216,9 +1216,15 @@
                     <span x-show="entry.estado==='aprobada'"
                       class="text-xs px-2 py-0.5 rounded-full border bg-green-900/40 text-green-400 border-green-700"
                       :title="'Aprobada por ' + (entry.aprobada_por||'—') + ' el ' + (entry.aprobada_en||'—')">Aprobada</span>
-                    <span x-show="entry.estado!=='pendiente' && entry.estado!=='aprobada'"
+                    <span x-show="entry.estado==='heredada'"
                       class="text-xs px-2 py-0.5 rounded-full border bg-slate-700 text-slate-400 border-slate-600"
                       title="Anterior al control de aprobación: sigue vigente hasta que venza.">Sin aprobación</span>
+                    <!-- Llegó por un camino que esquivó el control. No silencia
+                         nada, pero que exista es una pista: se muestra en rojo
+                         en vez de esconderla. -->
+                    <span x-show="entry.estado!=='pendiente' && entry.estado!=='aprobada' && entry.estado!=='heredada'"
+                      class="text-xs px-2 py-0.5 rounded-full border bg-red-900/40 text-red-300 border-red-700"
+                      title="Llegó por un camino que no pasó por el control. NO silencia nada: hay que averiguar de dónde salió.">Fuera del control</span>
                   </td>
                   <td class="px-4 py-2.5 text-slate-300 font-mono text-xs" x-text="entry.entity_field"></td>
                   <td class="px-4 py-2.5 text-white font-medium text-xs" x-text="entry.entity_value"></td>
