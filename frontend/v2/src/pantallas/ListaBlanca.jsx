@@ -52,8 +52,10 @@ function Estado({ entrada }) {
           title={entrada?.estado === 'aprobada' && entrada?.aprobada_por
             ? `Aprobada por ${entrada.aprobada_por} el ${entrada.aprobada_en || '—'}`
             : entrada?.estado === 'pendiente'
-              ? `Pedida por ${quien || 'alguien'}. El cliente SIGUE alertando hasta que se apruebe.`
-              : 'Anterior al control de aprobación: sigue vigente hasta que venza.'}>
+            ? `Pedida por ${quien || 'alguien'}. El cliente SIGUE alertando hasta que se apruebe.`
+            : entrada?.estado === 'heredada'
+              ? 'Anterior al control de aprobación: sigue vigente hasta que venza.'
+              : 'Llegó por un camino que no pasó por el control. NO silencia nada: hay que averiguar de dónde salió.'}>
       {e.etiqueta}
     </span>
   );

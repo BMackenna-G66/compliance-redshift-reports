@@ -27,13 +27,50 @@ def pendiente(**extra):
 
 # ── estado_de ───────────────────────────────────────────────────────────────
 
-def test_sin_campo_estado_es_una_entrada_heredada():
-    # Las 49 que ya estaban no tienen el campo. No son pendientes.
-    assert W.estado_de({"whitelist_id": "vieja"}) == "heredada"
+def test_sin_estado_Y_ANTERIOR_AL_CORTE_es_heredada():
+    # Las que ya estaban no tienen el campo, pero sí fecha anterior al corte.
+    assert W.estado_de({"whitelist_id": "vieja",
+                        "created_at": "2026-08-04 13:51:51"}) == "heredada"
 
 
-def test_un_estado_inventado_no_se_toma_por_bueno():
-    assert W.estado_de({"estado": "aprobadisima"}) == "heredada"
+def test_SIN_ESTADO_Y_POSTERIOR_AL_CORTE_NO_APLICA():
+    """El agujero que esto cierra.
+
+    Mientras «sin estado» significaba «heredada» a secas, cualquier camino que
+    escribiera una entrada sin pasar por el control —la migración desde
+    Redshift, una carga a mano en S3, un cliente de la API desactualizado—
+    silenciaba un cliente sin que nadie firmara. Por la puerta de atrás, pero
+    silenciaba igual.
+    """
+    nueva = {"whitelist_id": "colada", "created_at": "2026-11-01 10:00:00",
+             "expires_at": 9999999999}
+    assert W.estado_de(nueva) == "desconocida"
+    assert W.aplica(nueva, 1800000000) is False
+
+
+def test_SIN_FECHA_LEGIBLE_NO_HAY_HERENCIA():
+    """Falla cerrado: sin saber cuándo se creó, no se hereda nada."""
+    for sin_fecha in ({"whitelist_id": "x"},
+                      {"whitelist_id": "x", "created_at": ""},
+                      {"whitelist_id": "x", "created_at": "ayer"},
+                      {"whitelist_id": "x", "created_at": "04/08/2026"}):
+        assert W.estado_de(sin_fecha) == "desconocida", sin_fecha
+
+
+def test_UN_ESTADO_INVENTADO_NUNCA_ES_HERENCIA():
+    # El campo está y dice cualquier cosa: alguien lo escribió. No se adivina,
+    # ni siquiera si la fecha es vieja.
+    assert W.estado_de({"estado": "aprobadisima"}) == "desconocida"
+    assert W.estado_de({"estado": "pending",
+                        "created_at": "2026-08-04 13:51:51"}) == "desconocida"
+
+
+def test_una_desconocida_se_marca_para_ir_a_mirarla():
+    # No silencia nada, pero que exista es una pista de que algo escribió por
+    # fuera del control.
+    r = W.resumen({"whitelist_id": "colada", "created_at": "2026-11-01 10:00:00"})
+    assert r["fuera_del_control"] is True
+    assert r["aplica"] is False
 
 
 def test_el_estado_no_distingue_mayusculas():
@@ -59,10 +96,21 @@ def test_una_aprobada_vigente_si_silencia():
 def test_LAS_QUE_YA_ESTABAN_SIGUEN_APLICANDO():
     # Ponerlas en pendiente habría devuelto a los reportes, de golpe, a cada
     # cliente que estaba silenciado. Se respetan y se marcan; vencen solas.
+    # La más nueva de las que había en producción es del 15-10-2026.
     vieja = {"entity_field": "customer_id", "entity_value": "9",
-             "expires_at": TS + 86400}
+             "created_at": "2026-10-15 22:04:16", "expires_at": TS + 86400}
     assert W.aplica(vieja, TS) is True
     assert W.resumen(vieja)["sin_aprobacion"] is True
+
+
+def test_EL_CORTE_ES_EL_MOMENTO_DEL_DESPLIEGUE():
+    # Una constante y no una fecha calculada: tiene que significar lo mismo
+    # dentro de un año, cuando nadie se acuerde de por qué está.
+    assert W.CORTE == "2026-10-27 15:55:21"
+    justo_antes = {"created_at": "2026-10-27 15:55:20", "expires_at": TS + 86400}
+    justo_despues = {"created_at": "2026-10-27 15:55:22", "expires_at": TS + 86400}
+    assert W.estado_de(justo_antes) == "heredada"
+    assert W.estado_de(justo_despues) == "desconocida"
 
 
 def test_una_aprobada_vencida_deja_de_silenciar():
@@ -130,9 +178,23 @@ def test_una_rechazada_no_se_puede_aprobar():
 
 
 def test_una_heredada_no_se_aprueba():
-    faltan = W.bloqueos_para_aprobar({"entity_value": "9"},
-                                     "oficial@global66.com", OFICIALES)
+    faltan = W.bloqueos_para_aprobar(
+        {"entity_value": "9", "created_at": "2026-08-04 13:51:51"},
+        "oficial@global66.com", OFICIALES)
     assert any("anterior al control" in f for f in faltan)
+
+
+def test_UNA_DESCONOCIDA_TAMPOCO_SE_APRUEBA():
+    """No se blanquea firmándola: hay que entender de dónde salió.
+
+    Aprobarla sería convertir «alguien escribió esto por fuera del control»
+    en «un Oficial lo revisó», que es precisamente la confusión que no puede
+    quedar en el expediente.
+    """
+    faltan = W.bloqueos_para_aprobar(
+        {"entity_value": "9", "created_at": "2026-11-01 10:00:00"},
+        "oficial@global66.com", OFICIALES)
+    assert faltan
 
 
 def test_sin_quien_no_se_aprueba():
