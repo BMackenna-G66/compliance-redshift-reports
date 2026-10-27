@@ -192,7 +192,11 @@ export function notaDeWhitelist(cuerpo) {
   const alcance = cuerpo.scope === 'report'
     ? `sólo ${cuerpo.report_name || 'el reporte del caso'}`
     : 'todas las alertas';
-  return `Cliente pasado a whitelist (${cuerpo.duration_days} días, ${alcance}). `
+  // «Pedido», no «pasado». La nota queda en el expediente y la lee alguien
+  // dentro de seis meses: si dice que el cliente pasó a whitelist y en
+  // realidad nadie firmó, esa persona lee una decisión que no se tomó.
+  return `Cliente PEDIDO para whitelist (${cuerpo.duration_days} días, ${alcance}). `
+       + `Pendiente de aprobación de un Oficial de Cumplimiento. `
        + `Motivo: ${cuerpo.reason}`;
 }
 

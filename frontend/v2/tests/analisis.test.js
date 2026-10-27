@@ -9,7 +9,8 @@ import { describe, it } from 'node:test';
 
 import {
   COLOR_VIGENCIA, ESTADOS_CORRIDA, RIESGO_EMPRESA, duracion, duracionTexto,
-  enCurso, excesoDe, excesoTexto, leerIds, parametros, resumenListaBlanca,
+  enCurso, estadoWhitelist, excesoDe, excesoTexto, leerIds, parametros,
+  puedeAprobarWhitelist, resumenListaBlanca,
   riesgoDe,
   vigenciaDe,
 } from '../src/comun/analisis.js';
@@ -223,5 +224,80 @@ describe('los ids del análisis individual', () => {
     // El backend acepta otros identificadores; filtrarlos acá los perdería
     // en silencio.
     assert.deepEqual(leerIds('11.111.111-K, 111'), ['11.111.111-K', '111']);
+  });
+});
+
+describe('la aprobación de la lista blanca', () => {
+  const pendiente = {
+    entity_value: '9000001', estado: 'pendiente', duration_days: 90,
+    solicitado_por: 'analista@global66.com', expires_at: '',
+  };
+
+  it('UNA PENDIENTE NO SE MUESTRA COMO PERMANENTE', () => {
+    /* No tiene `expires_at` porque el reloj arranca al aprobarla. Sin la
+       regla nueva caía en «Permanente», en azul, como si silenciara para
+       siempre — justo lo contrario de lo que hace. */
+    assert.equal(vigenciaDe(pendiente).estado, 'pendiente');
+    assert.equal(vigenciaDe(pendiente).etiqueta, 'Sin aprobar');
+    assert.ok(COLOR_VIGENCIA.pendiente);
+  });
+
+  it('una entrada vieja sin estado se marca «Sin aprobación»', () => {
+    /* Las 49 que ya estaban al 27-10-2026. Siguen aplicando hasta vencer,
+       pero la pantalla no las presenta como firmadas. */
+    assert.equal(estadoWhitelist({ entity_value: '9' }).clave, 'heredada');
+    assert.equal(estadoWhitelist({ entity_value: '9' }).etiqueta, 'Sin aprobación');
+  });
+
+  it('un estado inventado no se dibuja como si fuera bueno', () => {
+    assert.equal(estadoWhitelist({ estado: 'aprobadisima' }).clave, 'heredada');
+  });
+
+  it('UN OFICIAL DISTINTO DEL QUE PIDIÓ PUEDE FIRMAR', () => {
+    const r = puedeAprobarWhitelist(pendiente, 'oficial@global66.com', true);
+    assert.equal(r.puede, true);
+  });
+
+  it('EL QUE LA PIDIÓ NO PUEDE FIRMARLA', () => {
+    /* Cuatro ojos: si el que pide puede firmar, el paso se completa solo. */
+    const r = puedeAprobarWhitelist(pendiente, 'analista@global66.com', true);
+    assert.equal(r.puede, false);
+    assert.match(r.motivo, /pediste vos/);
+  });
+
+  it('el cuatro ojos mira también created_by, que es lo que manda la v1', () => {
+    const e = { ...pendiente, solicitado_por: '', created_by: 'Analista@Global66.com' };
+    assert.equal(puedeAprobarWhitelist(e, 'analista@global66.com', true).puede, false);
+  });
+
+  it('quien no es Oficial no firma, y el botón dice por qué', () => {
+    const r = puedeAprobarWhitelist(pendiente, 'otro@global66.com', false);
+    assert.equal(r.puede, false);
+    assert.match(r.motivo, /Oficial de Cumplimiento/);
+  });
+
+  it('una ya aprobada no se vuelve a firmar', () => {
+    const e = { ...pendiente, estado: 'aprobada' };
+    assert.equal(puedeAprobarWhitelist(e, 'oficial@global66.com', true).puede, false);
+  });
+
+  it('EL MOTIVO NUNCA VIENE VACÍO CUANDO NO SE PUEDE', () => {
+    /* Va al `title` del botón apagado. Uno gris y mudo hace que la gente
+       apriete tres veces y después pregunte por chat. */
+    for (const caso of [
+      [pendiente, 'analista@global66.com', true],
+      [pendiente, 'otro@global66.com', false],
+      [{ ...pendiente, estado: 'aprobada' }, 'oficial@global66.com', true],
+    ]) {
+      const r = puedeAprobarWhitelist(caso[0], caso[1], caso[2]);
+      assert.equal(r.puede, false);
+      assert.ok(r.motivo.length > 10);
+    }
+  });
+
+  it('el resumen cuenta las pendientes aparte', () => {
+    const r = resumenListaBlanca([pendiente, { expires_at: '2099-01-01 00:00:00' }]);
+    assert.equal(r.pendiente, 1);
+    assert.equal(r.total, 2);
   });
 });

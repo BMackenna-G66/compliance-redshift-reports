@@ -47,6 +47,15 @@ from pathlib import Path
 
 import whitelist_validacion
 
+# Qué entradas de whitelist silencian algo. Sin este módulo NINGUNA aplica:
+# los reportes muestran a todo el mundo. Es el lado seguro — lo caro es seguir
+# tapando clientes cuando el control que decide a quién se tapa no cargó.
+try:
+    import whitelist_aprobacion
+except Exception as _e:  # pragma: no cover
+    whitelist_aprobacion = None
+    print(f"[runner] aprobación de whitelist no disponible: {_e}")
+
 import boto3
 import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -448,11 +457,19 @@ def fetch_active_whitelist(report_name: str = "") -> list[dict]:
         with ThreadPoolExecutor(max_workers=16) as ex:
             items = [i for i in ex.map(_fetch, keys) if i is not None]
 
+        # ACÁ ES DONDE LA APROBACIÓN SIGNIFICA ALGO. Una entrada pendiente
+        # no entra en el SQL, así que el cliente sigue apareciendo en los
+        # reportes hasta que un Oficial la firme. Todo el resto del flujo
+        # —pantallas, botones, auditoría— es acompañamiento de esta línea.
+        if not whitelist_aprobacion:
+            logger.warning("Whitelist: sin el módulo de aprobación no se "
+                           "aplica ninguna entrada")
+            return []
+
         rows: list[dict] = []
         for i in items:
-            exp = int(i.get("expires_at", 0))
-            if exp and exp <= now:
-                continue  # vencida
+            if not whitelist_aprobacion.aplica(i, now):
+                continue  # pendiente, rechazada o vencida
             scope = i.get("scope", "global")
             rn = i.get("report_name", "")
             if scope == "global" or rn == report_name:

@@ -334,7 +334,8 @@ export function Caso({ api, perfil, email, id: casoId, navegar }) {
       } catch { /* la whitelist ya se creó; la nota se puede escribir a mano */ }
       setWl({ abierta: false, dias: 30, alcance: 'global', motivo: '' });
       await cargar();
-    }, 'Cliente agregado a la whitelist.');
+    }, 'Pedido enviado. El cliente SIGUE alertando hasta que lo apruebe '
+     + 'un Oficial de Cumplimiento en Lista Blanca.');
   };
 
   const analizarConIa = () => accion('ia', async () => {

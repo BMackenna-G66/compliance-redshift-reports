@@ -224,15 +224,35 @@ class ElAltaIndividual(unittest.TestCase):
         self.assertEqual(r["statusCode"], 201)
         self.assertEqual(puesto["created_by"], "")
 
-    def test_se_audita(self):
-        """Dejar de alertar sobre un cliente es una decisión de compliance."""
+    def test_se_audita_COMO_PEDIDO_Y_NO_COMO_ALTA(self):
+        """Dejar de alertar sobre un cliente es una decisión de compliance.
+
+        El nombre de la acción cambió de `whitelist.add` a
+        `whitelist.solicitar` y no es cosmético: el alta dejó de ser el final
+        del trámite. Quien aprieta el botón PIDE; el que firma es otro, y esa
+        firma tiene su propia entrada (`whitelist.aprobar`). Si las dos se
+        llamaran igual, la auditoría no distinguiría al que pidió del que
+        decidió.
+        """
         _, _, auditado = self._agregar({"entity_field": "customer_id",
                                         "entity_value": "9000001",
                                         "duration_days": 30,
                                         "created_by": "analista@example.com"})
         self.assertEqual(len(auditado), 1)
-        self.assertEqual(auditado[0]["action"], "whitelist.add")
+        self.assertEqual(auditado[0]["action"], "whitelist.solicitar")
         self.assertEqual(auditado[0]["user_email"], "analista@example.com")
+
+    def test_EL_ALTA_NACE_PENDIENTE_Y_NO_SILENCIA_NADA(self):
+        """El control entero, visto desde el camino que usa la pantalla."""
+        import whitelist_aprobacion
+        _, puesto, _ = self._agregar({"entity_field": "customer_id",
+                                      "entity_value": "9000001",
+                                      "duration_days": 90,
+                                      "created_by": "analista@example.com"})
+        self.assertEqual(puesto["estado"], "pendiente")
+        self.assertFalse(whitelist_aprobacion.aplica(puesto))
+        # Y sin fecha de vencimiento: el reloj arranca al aprobar.
+        self.assertEqual(puesto["expires_at"], 0)
 
     def test_la_auditoria_NO_lleva_el_valor_del_cliente(self):
         _, _, auditado = self._agregar({"entity_field": "customer_id",

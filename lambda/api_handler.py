@@ -167,6 +167,20 @@ except Exception as _e:  # pragma: no cover
 
 import whitelist_validacion
 
+# Quién aprueba que un cliente deje de alertar. Defensivo porque importa a
+# `ros_aprobacion`, que a su vez importa cuatro módulos más: si alguno no
+# viajó en el paquete, esto se cae y arrastraría a TODA la API con él.
+#
+# El modo de falla es seguro y está elegido: sin este módulo no aplica
+# NINGUNA entrada —los reportes muestran a todo el mundo— y no se puede dar
+# de alta ni aprobar. Lo caro es lo contrario: seguir silenciando clientes
+# cuando el control que decide a quién se silencia no cargó.
+try:
+    import whitelist_aprobacion
+except Exception as _e:  # pragma: no cover
+    whitelist_aprobacion = None
+    print(f"[api] aprobación de whitelist no disponible: {_e}")
+
 try:
     import informe_alertas
     import informe_email
@@ -2899,7 +2913,7 @@ def handler(event, context):  # noqa: ARG001
 
         # GET /whitelist
         if method == "GET" and parts == ["whitelist"]:
-            return get_whitelist()
+            return get_whitelist(event)
         # POST /whitelist
         if method == "POST" and parts == ["whitelist"]:
             return add_to_whitelist(body)
@@ -2907,6 +2921,15 @@ def handler(event, context):  # noqa: ARG001
         # Va ANTES de cualquier ruta genérica /whitelist/{id}.
         if method == "POST" and parts == ["whitelist", "bulk"]:
             return bulk_add_to_whitelist(body)
+        # POST /whitelist/{id}/aprobar — un Oficial firma el silencio.
+        # Va ANTES del DELETE genérico y después de /whitelist/bulk.
+        if (method == "POST" and len(parts) == 3 and parts[0] == "whitelist"
+                and parts[2] == "aprobar"):
+            return aprobar_whitelist(parts[1], body, event)
+        # POST /whitelist/{id}/rechazar
+        if (method == "POST" and len(parts) == 3 and parts[0] == "whitelist"
+                and parts[2] == "rechazar"):
+            return rechazar_whitelist(parts[1], body, event)
         # DELETE /whitelist/{id}
         if method == "DELETE" and len(parts) == 2 and parts[0] == "whitelist":
             return remove_from_whitelist(parts[1], body)
@@ -4628,14 +4651,43 @@ def _crm_list(kind: str) -> list[dict]:
         return [i for i in ex.map(_fetch, keys) if i is not None]
 
 
-def get_whitelist():
+def get_whitelist(event: dict | None = None):
+    """Las entradas que importan: las que silencian algo y las que esperan firma.
+
+    LAS PENDIENTES TIENEN QUE VERSE. Si se filtraran junto con las vencidas,
+    pedir una entrada sería mandarla a un buzón que nadie abre: el Oficial no
+    tendría dónde encontrarla y el que la pidió creería que ya está.
+
+    Las vencidas y las rechazadas sí se esconden: ya no hacen nada y lo único
+    que aportan a la pantalla es ruido. Quedan en S3 y en la auditoría.
+
+    EL PADRÓN NO VIAJA AL NAVEGADOR. Se manda `soy_oficial`, un booleano sobre
+    quien está mirando, y no la lista: es una lista de personas con un rol de
+    cumplimiento y la pantalla sólo necesita saber si dibuja el botón. Mismo
+    criterio que la pantalla de aprobación del ROS, que recibe `hay_oficiales`
+    y nunca los nombres.
+    """
+    # Anónimo es un caso válido acá: esta ruta no exige token y lo único que
+    # cambia es que no se ofrecen los botones de firmar.
+    correo = ""
+    try:
+        identidad, _err = _identidad(event or {})
+        correo = (identidad or {}).get("email", "")
+    except Exception:                                            # noqa: BLE001
+        correo = ""
+    soy_oficial = bool(correo and correo.lower() in
+                       [o.lower() for o in _oficiales_cumplimiento()])
     # S3-backed: works with the Redshift cluster paused.
     try:
         now = int(time.time())
         out = []
         for i in _crm_list("whitelist"):
-            exp = int(i.get("expires_at", 0))
-            if exp and exp <= now:
+            if not whitelist_aprobacion:
+                continue
+            estado = whitelist_aprobacion.estado_de(i)
+            if estado == whitelist_aprobacion.RECHAZADA:
+                continue
+            if estado != whitelist_aprobacion.PENDIENTE and whitelist_aprobacion.vencida(i, now):
                 continue  # vencida
             out.append({
                 "whitelist_id": i.get("whitelist_id", ""),
@@ -4652,9 +4704,20 @@ def get_whitelist():
                 "created_by": i.get("created_by", ""),
                 "created_at": i.get("created_at", ""),
                 "expires_at": i.get("expires_at_str", ""),
+                # Quién la pidió, quién la firmó, y si está silenciando algo
+                # AHORA. Lo último no se deduce del estado solo: una aprobada
+                # vencida tiene estado `aprobada` y no tapa nada.
+                **whitelist_aprobacion.resumen(i),
             })
+        # Las pendientes primero: son las únicas que esperan que alguien haga
+        # algo. Dentro de cada grupo, lo más nuevo arriba.
+        # Dos pasadas y no una clave compuesta: `sort` es estable, así que
+        # ordenar por fecha y después por estado deja lo más nuevo arriba
+        # dentro de cada grupo sin tener que invertir una fecha que es texto.
         out.sort(key=lambda x: x["created_at"], reverse=True)
-        return resp(200, {"whitelist": out})
+        out.sort(key=lambda x: x["estado"] != whitelist_aprobacion.PENDIENTE)
+        return resp(200, {"whitelist": out, "soy_oficial": soy_oficial,
+                          "mi_correo": correo})
     except Exception as e:
         return resp(200, {"whitelist": [], "warning": str(e)})
 
@@ -4696,9 +4759,19 @@ def add_to_whitelist(body: dict):
     creado_por = str(body.get("created_by") or body.get("actor_email")
                      or "").strip()[:200]
 
+    if not whitelist_aprobacion:
+        return resp(503, {"error": "El control de aprobación de whitelist no "
+                                   "está disponible en este despliegue."})
+
     wid = str(uuid.uuid4())
     now = dt.datetime.utcnow()
-    expires = now + dt.timedelta(days=duration_days)
+    # NACE PENDIENTE Y NO SILENCIA NADA. Antes el alta era el final del
+    # trámite: una persona apretaba y el cliente desaparecía de todos los
+    # reportes por hasta 90 días. Ahora el alta es un PEDIDO.
+    #
+    # Y NO SE CALCULA `expires_at` ACÁ: el reloj arranca al aprobar. Si
+    # contara desde el pedido, una entrada firmada cinco días después valdría
+    # 85 días y el que la pidió pagaría la demora del que la firma.
     _crm_put("whitelist", wid, {
         "whitelist_id": wid,
         "entity_field": entity_field,
@@ -4707,18 +4780,24 @@ def add_to_whitelist(body: dict):
         "reason": reason,
         "scope": scope,
         "report_name": report_name if scope == "report" else "",
+        "estado": whitelist_aprobacion.PENDIENTE,
+        "solicitado_por": creado_por,
         "created_by": creado_por,
         "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "expires_at": int(expires.timestamp()),
-        "expires_at_str": expires.strftime("%Y-%m-%d %H:%M:%S"),
+        "expires_at": 0,
+        "expires_at_str": "",
     })
     # Dejar de alertar sobre un cliente es una decisión de compliance: sin
     # auditoría no hay forma de reconstruir quién la tomó ni cuándo.
-    _safe_audit(user_email=creado_por or "unknown", action="whitelist.add",
+    _safe_audit(user_email=creado_por or "unknown", action="whitelist.solicitar",
                 entity_type="whitelist", entity_id=wid,
                 new_value={"entity_field": entity_field, "scope": scope,
-                           "duration_days": duration_days})
-    return resp(201, {"whitelist_id": wid})
+                           "duration_days": duration_days,
+                           "estado": whitelist_aprobacion.PENDIENTE})
+    return resp(201, {"whitelist_id": wid,
+                      "estado": whitelist_aprobacion.PENDIENTE,
+                      "aviso": "Queda pendiente: el cliente sigue alertando "
+                               "hasta que un Oficial de Cumplimiento lo apruebe."})
 
 
 def bulk_add_to_whitelist(body: dict):
@@ -4758,18 +4837,23 @@ def bulk_add_to_whitelist(body: dict):
     if not reason:
         return resp(400, {"error": "reason es requerido — queda como justificación de por qué se silencian estas alertas"})
 
-    # Whitelist vigente, para no duplicar entradas al repetir la operación.
+    if not whitelist_aprobacion:
+        return resp(503, {"error": "El control de aprobación de whitelist no "
+                                   "está disponible en este despliegue."})
+
+    # Lo que ya está, para no duplicar al repetir la operación. Cuenta lo
+    # vigente Y lo pendiente: pedir dos veces lo mismo le deja al Oficial dos
+    # entradas idénticas para firmar y ninguna pista de cuál es la buena.
     now = dt.datetime.utcnow()
     now_ts = int(now.timestamp())
     ya_vigentes = set()
     try:
         for w in _crm_list("whitelist"):
-            if int(w.get("expires_at") or 0) > now_ts:
+            if (whitelist_aprobacion.aplica(w, now_ts)
+                    or whitelist_aprobacion.estado_de(w) == whitelist_aprobacion.PENDIENTE):
                 ya_vigentes.add(((w.get("entity_field") or ""), str(w.get("entity_value") or "")))
     except Exception:
         pass
-
-    expires = now + dt.timedelta(days=duration_days)
     added, skipped = [], []
     vistos = set()
     for idx, row in enumerate(rows):
@@ -4789,7 +4873,7 @@ def bulk_add_to_whitelist(body: dict):
             continue
         clave = (field, value)
         if clave in ya_vigentes:
-            skipped.append({"index": idx, "motivo": f"{field} {value} ya está en whitelist vigente"})
+            skipped.append({"index": idx, "motivo": f"{field} {value} ya está en whitelist (vigente o pendiente de aprobación)"})
             continue
         if clave in vistos:
             skipped.append({"index": idx, "motivo": f"{field} {value} repetido en la misma selección"})
@@ -4797,6 +4881,10 @@ def bulk_add_to_whitelist(body: dict):
         vistos.add(clave)
 
         wid = str(uuid.uuid4())
+        # ACÁ SE PERDÍA EL AUTOR. Este camino nunca guardó `created_by`, y es
+        # el que explica que casi ninguna entrada vigente supiera de quién
+        # era: se daban de alta en lote desde la tabla de resultados y el
+        # actor quedaba sólo en la auditoría agregada, sin llegar al registro.
         _crm_put("whitelist", wid, {
             "whitelist_id": wid,
             "entity_field": field,
@@ -4805,13 +4893,16 @@ def bulk_add_to_whitelist(body: dict):
             "reason": reason,
             "scope": scope,
             "report_name": report_name if scope == "report" else "",
+            "estado": whitelist_aprobacion.PENDIENTE,
+            "solicitado_por": actor,
+            "created_by": actor,
             "created_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "expires_at": int(expires.timestamp()),
-            "expires_at_str": expires.strftime("%Y-%m-%d %H:%M:%S"),
+            "expires_at": 0,
+            "expires_at_str": "",
         })
         added.append({"whitelist_id": wid, "entity_field": field, "entity_value": value})
 
-    _safe_audit(user_email=actor or "unknown", action="whitelist.bulk_add",
+    _safe_audit(user_email=actor or "unknown", action="whitelist.bulk_solicitar",
                 entity_type="whitelist", entity_id=f"{len(added)} entradas",
                 new_value={"added": len(added), "skipped": len(skipped),
                            "duration_days": duration_days, "scope": scope,
@@ -4820,9 +4911,111 @@ def bulk_add_to_whitelist(body: dict):
     return resp(200, {
         "added": len(added),
         "skipped": skipped,
-        "expires_at": expires.strftime("%Y-%m-%d %H:%M:%S"),
+        # Sin fecha de vencimiento: todavía no empezó a correr. El plazo
+        # arranca cuando el Oficial aprueba cada una.
+        "estado": whitelist_aprobacion.PENDIENTE,
+        "aviso": ("Quedan pendientes: estos clientes siguen alertando hasta "
+                  "que un Oficial de Cumplimiento las apruebe."),
         "detalle": added,
     })
+
+
+def _entrada_whitelist(whitelist_id: str):
+    """La entrada cruda de S3, o None."""
+    try:
+        return _crm_get("whitelist", whitelist_id)
+    except Exception:                                            # noqa: BLE001
+        return None
+
+
+def aprobar_whitelist(whitelist_id: str, body: dict, event: dict):
+    """Un Oficial firma que este cliente deje de alertar.
+
+    Es la pieza que faltaba. El botón de «pasar a whitelist» existía en tres
+    lugares; éste no existía en ninguno, y por eso había clientes silenciados
+    en todos los reportes sin que nadie lo hubiera firmado.
+
+    LA IDENTIDAD SALE DEL TOKEN, NO DEL CUERPO. `actor_email` lo escribe el
+    cliente: aprobar con el correo de otro sería escribir la firma de otro.
+    """
+    if not whitelist_aprobacion:
+        return resp(503, {"error": "El control de aprobación de whitelist no "
+                                   "está disponible en este despliegue."})
+    identidad, error = _identidad(event)
+    if error:
+        return error
+    quien = (identidad or {}).get("email", "")
+
+    entrada = _entrada_whitelist(whitelist_id)
+    if not entrada:
+        return resp(404, {"error": "No existe esa entrada de whitelist."})
+
+    faltan = whitelist_aprobacion.bloqueos_para_aprobar(
+        entrada, quien, _oficiales_cumplimiento())
+    if faltan:
+        return resp(409, {"error": "No se puede aprobar.", "motivos": faltan})
+
+    aprobada = whitelist_aprobacion.aprobar(entrada, quien)
+    _crm_put("whitelist", whitelist_id, aprobada)
+    # SIN EL VALOR DEL CLIENTE. La auditoría se guarda años y el valor es el
+    # identificador de una persona o una empresa; el campo y el alcance
+    # alcanzan para reconstruir la decisión.
+    _safe_audit(user_email=quien, action="whitelist.aprobar",
+                entity_type="whitelist", entity_id=whitelist_id,
+                new_value={"entity_field": aprobada.get("entity_field", ""),
+                           "scope": aprobada.get("scope", ""),
+                           "duration_days": aprobada.get("duration_days", 0),
+                           "solicitado_por": whitelist_aprobacion.quien_pidio(entrada),
+                           "expires_at": aprobada.get("expires_at_str", "")})
+    return resp(200, {"whitelist_id": whitelist_id,
+                      "estado": aprobada["estado"],
+                      "expires_at": aprobada.get("expires_at_str", ""),
+                      **whitelist_aprobacion.resumen(aprobada)})
+
+
+def rechazar_whitelist(whitelist_id: str, body: dict, event: dict):
+    """Un Oficial decide que ese cliente SIGUE alertando.
+
+    Se rechaza en vez de borrar: decidir que no se silencia a alguien también
+    es una decisión, y borrarla deja el expediente contando que nunca se pidió
+    nada.
+    """
+    if not whitelist_aprobacion:
+        return resp(503, {"error": "El control de aprobación de whitelist no "
+                                   "está disponible en este despliegue."})
+    identidad, error = _identidad(event)
+    if error:
+        return error
+    quien = (identidad or {}).get("email", "")
+
+    entrada = _entrada_whitelist(whitelist_id)
+    if not entrada:
+        return resp(404, {"error": "No existe esa entrada de whitelist."})
+
+    # Mismos bloqueos que para aprobar: el padrón y los cuatro ojos valen para
+    # las dos decisiones. Rechazar lo propio es tan poco un control como
+    # aprobarlo.
+    faltan = whitelist_aprobacion.bloqueos_para_aprobar(
+        entrada, quien, _oficiales_cumplimiento())
+    if faltan:
+        return resp(409, {"error": "No se puede rechazar.", "motivos": faltan})
+
+    motivo = str((body or {}).get("motivo") or "").strip()
+    if not motivo:
+        return resp(400, {"error": "motivo es requerido: el que la pidió tiene "
+                                   "que poder leer por qué no se aprobó."})
+
+    rechazada = whitelist_aprobacion.rechazar(entrada, quien, motivo)
+    _crm_put("whitelist", whitelist_id, rechazada)
+    _safe_audit(user_email=quien, action="whitelist.rechazar",
+                entity_type="whitelist", entity_id=whitelist_id,
+                new_value={"entity_field": rechazada.get("entity_field", ""),
+                           "scope": rechazada.get("scope", ""),
+                           "solicitado_por": whitelist_aprobacion.quien_pidio(entrada),
+                           "motivo": motivo})
+    return resp(200, {"whitelist_id": whitelist_id,
+                      "estado": rechazada["estado"],
+                      **whitelist_aprobacion.resumen(rechazada)})
 
 
 def remove_from_whitelist(whitelist_id: str, body: dict | None = None):
