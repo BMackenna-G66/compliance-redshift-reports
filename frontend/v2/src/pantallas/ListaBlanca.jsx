@@ -3,6 +3,12 @@
    ----------------------------------------------------------------------------
    Los clientes que dejan de generar alertas, por cuánto tiempo y por qué.
 
+   LO PIDE UNO Y LO FIRMA OTRO. Una entrada nace pendiente y NO silencia
+   nada hasta que un Oficial de Cumplimiento la aprueba. Antes no era así:
+   apretar el botón apagaba las alertas del cliente en el acto, y había
+   clientes silenciados en todos los reportes sin que nadie lo hubiera
+   firmado.
+
    LA VIGENCIA ES EL DATO, NO UN ADORNO. Una entrada en lista blanca apaga las
    alertas de ese cliente: si está vencida, el cliente volvió a la bandeja sin
    que nadie lo anuncie. Por eso la vigencia se calcula contra la hora real,
@@ -14,7 +20,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { Tabla } from '../comun/Tabla.jsx';
 import { Kpi } from '../comun/Kpi.jsx';
-import { COLOR_VIGENCIA, fecha, resumenListaBlanca, vigenciaDe } from '../comun/analisis.js';
+import {
+  COLOR_VIGENCIA, estadoWhitelist, fecha, puedeAprobarWhitelist,
+  resumenListaBlanca, vigenciaDe,
+} from '../comun/analisis.js';
 import { soloLectura } from '../permisos.js';
 
 function Vigencia({ entrada }) {
@@ -35,13 +44,35 @@ function Vigencia({ entrada }) {
   );
 }
 
-function columnas(alQuitar, lectura, quitando) {
+function Estado({ entrada }) {
+  const e = estadoWhitelist(entrada);
+  const quien = entrada?.aprobada_por || entrada?.solicitado_por || '';
+  return (
+    <span className="wt-insignia" style={{ color: e.color, background: e.fondo }}
+          title={entrada?.estado === 'aprobada' && entrada?.aprobada_por
+            ? `Aprobada por ${entrada.aprobada_por} el ${entrada.aprobada_en || '—'}`
+            : entrada?.estado === 'pendiente'
+              ? `Pedida por ${quien || 'alguien'}. El cliente SIGUE alertando hasta que se apruebe.`
+              : 'Anterior al control de aprobación: sigue vigente hasta que venza.'}>
+      {e.etiqueta}
+    </span>
+  );
+}
+
+function columnas(alQuitar, lectura, quitando, alAprobar, alRechazar, email, soyOficial, firmando) {
   const cols = [
     { clave: 'entity_value', titulo: 'Cliente', tipo: 'mono', ancho: '14%' },
+    {
+      clave: 'estado',
+      titulo: 'Estado',
+      ancho: '13%',
+      render: (w) => <Estado entrada={w} />,
+      exportar: (w) => estadoWhitelist(w).etiqueta,
+    },
     { clave: 'entity_field', titulo: 'Campo', ancho: '12%' },
     {
       clave: 'created_by',
-      titulo: 'Quién',
+      titulo: 'Quién la pidió',
       ancho: '14%',
       // Las entradas anteriores a octubre de 2026 no tienen autor: el backend
       // recibía el dato y lo descartaba. Se muestra el hueco en vez de
@@ -88,16 +119,38 @@ function columnas(alQuitar, lectura, quitando) {
     cols.push({
       clave: 'whitelist_id',
       titulo: '',
-      ancho: '8%',
+      ancho: '14%',
       ordenable: false,
       buscable: false,
-      render: (w) => (
-        <button className="wt-btn" style={{ padding: '2px 8px' }}
-                disabled={quitando === w.whitelist_id}
-                onClick={() => alQuitar(w)}>
-          {quitando === w.whitelist_id ? '…' : 'Quitar'}
-        </button>
-      ),
+      render: (w) => {
+        const ocupado = firmando === w.whitelist_id;
+        if (w.estado === 'pendiente') {
+          // El botón apagado lleva el motivo en el `title`: uno gris y mudo
+          // hace que la gente apriete tres veces y después pregunte por chat.
+          const { puede, motivo } = puedeAprobarWhitelist(w, email, soyOficial);
+          return (
+            <span style={{ display: 'inline-flex', gap: 4 }}>
+              <button className="wt-btn wt-btn-primario" style={{ padding: '2px 8px' }}
+                      disabled={!puede || ocupado} title={motivo}
+                      onClick={() => alAprobar(w)}>
+                {ocupado ? '…' : 'Aprobar'}
+              </button>
+              <button className="wt-btn" style={{ padding: '2px 8px' }}
+                      disabled={!puede || ocupado} title={motivo}
+                      onClick={() => alRechazar(w)}>
+                Rechazar
+              </button>
+            </span>
+          );
+        }
+        return (
+          <button className="wt-btn" style={{ padding: '2px 8px' }}
+                  disabled={quitando === w.whitelist_id}
+                  onClick={() => alQuitar(w)}>
+            {quitando === w.whitelist_id ? '…' : 'Quitar'}
+          </button>
+        );
+      },
       exportar: () => '',
     });
   }
@@ -174,6 +227,8 @@ export function ListaBlanca({ api, perfil, email }) {
   const [guardando, setGuardando] = useState(false);
   const [quitando, setQuitando] = useState('');
   const [masiva, setMasiva] = useState(null);
+  const [soyOficial, setSoyOficial] = useState(false);
+  const [firmando, setFirmando] = useState('');
 
   const lectura = soloLectura(perfil);
 
@@ -182,6 +237,9 @@ export function ListaBlanca({ api, perfil, email }) {
     try {
       const d = await api.get('/whitelist');
       setEntradas(d?.whitelist || []);
+      // El padrón no llega al navegador: llega la respuesta a «¿éste que
+      // mira puede firmar?». Ver get_whitelist en el backend.
+      setSoyOficial(Boolean(d?.soy_oficial));
     } catch (e) {
       setError(e?.message || 'No se pudo cargar la lista blanca.');
     } finally {
@@ -201,7 +259,12 @@ export function ListaBlanca({ api, perfil, email }) {
     setGuardando(true); setError(''); setAviso('');
     try {
       await api.post('/whitelist', datos);
-      setAviso(`Cliente ${datos.entity_value} agregado por ${datos.duration_days} días.`);
+      // NO dice «agregado»: no silencia nada todavía. Decir que ya está sería
+      // el error caro — alguien cierra el caso creyendo que el cliente dejó
+      // de alertar y nadie firma nunca.
+      setAviso(`Pedido para ${datos.entity_value}, por ${datos.duration_days} días. `
+        + 'Queda PENDIENTE: el cliente sigue alertando hasta que lo apruebe un '
+        + 'Oficial de Cumplimiento.');
       await cargar();
     } catch (e) {
       setError(e?.message || 'No se pudo agregar.');
@@ -224,10 +287,11 @@ export function ListaBlanca({ api, perfil, email }) {
     if (ids.length === 0) { setError('Pegá al menos un identificador.'); return; }
     if (!masiva.reason.trim()) { setError('El motivo es obligatorio: es lo único que queda escrito.'); return; }
     const ok = globalThis.confirm(
-      `Se van a agregar ${ids.length} cliente(s) a la lista blanca por `
+      `Se van a PEDIR ${ids.length} cliente(s) para la lista blanca, por `
       + `${masiva.duration_days} días.\n\n`
-      + 'Mientras estén, NO generan ninguna alerta: ni de sanciones ni de delitos '
-      + 'sensibles.\n\n¿Confirmás?');
+      + 'Todavía no silencian nada: cada uno lo tiene que aprobar un Oficial de '
+      + 'Cumplimiento. Una vez aprobados, NO generan ninguna alerta — ni de '
+      + 'sanciones ni de delitos sensibles.\n\n¿Confirmás?');
     if (!ok) return;
     setGuardando(true); setError(''); setAviso('');
     try {
@@ -239,13 +303,45 @@ export function ListaBlanca({ api, perfil, email }) {
         scope: masiva.scope,
       });
       if (d?.error) throw new Error(d.error);
-      setAviso(`Agregados ${d?.added ?? ids.length} de ${ids.length}.`);
+      setAviso(`Pedidos ${d?.added ?? ids.length} de ${ids.length}. Quedan PENDIENTES: `
+        + 'estos clientes siguen alertando hasta que un Oficial de Cumplimiento '
+        + 'los apruebe uno por uno.');
       setMasiva(null);
       await cargar();
     } catch (e) {
       setError(e?.message || 'No se pudo hacer el alta masiva.');
     } finally {
       setGuardando(false);
+    }
+  }
+
+  async function firmar(w, accion) {
+    // La confirmación dice qué cambia en el mundo, no qué botón se apretó.
+    const texto = accion === 'aprobar'
+      ? `Aprobar que ${w.entity_value} deje de alertar por ${w.duration_days} días.\n\n`
+        + 'Desde ahora no aparece en los reportes: ni sanciones ni delitos '
+        + 'sensibles.\n\n¿Confirmás?'
+      : `Rechazar el pedido para ${w.entity_value}.\n\nEl cliente sigue alertando.`;
+    let motivo = '';
+    if (accion === 'rechazar') {
+      motivo = globalThis.prompt(`${texto}\n\n¿Por qué? (lo lee quien lo pidió)`) || '';
+      if (!motivo.trim()) return;
+    } else if (!globalThis.confirm(texto)) {
+      return;
+    }
+    setFirmando(w.whitelist_id); setError(''); setAviso('');
+    try {
+      const d = await api.post(`/whitelist/${w.whitelist_id}/${accion}`,
+        accion === 'rechazar' ? { motivo: motivo.trim() } : {});
+      if (d?.error) throw new Error([d.error, ...(d.motivos || [])].join(' '));
+      setAviso(accion === 'aprobar'
+        ? `${w.entity_value} aprobado: deja de alertar hasta el ${d?.expires_at || '—'}.`
+        : `Pedido para ${w.entity_value} rechazado. El cliente sigue alertando.`);
+      await cargar();
+    } catch (e) {
+      setError(e?.message || 'No se pudo firmar.');
+    } finally {
+      setFirmando('');
     }
   }
 
@@ -355,7 +451,7 @@ export function ListaBlanca({ api, perfil, email }) {
             <div style={{ display: 'flex', gap: 'var(--e-2)', marginTop: 'var(--e-4)' }}>
               <button className="wt-btn wt-btn-primario" disabled={guardando}
                       onClick={agregarMasiva}>
-                {guardando ? 'Agregando…' : 'Agregar a todos'}
+                {guardando ? 'Pidiendo…' : 'Pedir para todos'}
               </button>
               <button className="wt-btn" onClick={() => setMasiva(null)}>Cancelar</button>
             </div>
@@ -365,7 +461,9 @@ export function ListaBlanca({ api, perfil, email }) {
 
       <Tabla
         titulo="Lista blanca"
-        columnas={columnas(quitar, lectura, quitando)}
+        columnas={columnas(quitar, lectura, quitando,
+          (w) => firmar(w, 'aprobar'), (w) => firmar(w, 'rechazar'),
+          email, soyOficial, firmando)}
         filas={preparadas}
         cargando={cargando}
         error={error}

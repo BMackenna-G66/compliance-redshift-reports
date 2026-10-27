@@ -85,6 +85,13 @@ export function parametros(corrida) {
  * no un dato faltante.
  */
 export function vigenciaDe(entrada, ahora = new Date()) {
+  // UNA PENDIENTE NO ES PERMANENTE. No tiene `expires_at` porque el reloj
+  // arranca al aprobarla, y sin esto caía en «Permanente» — en azul, como si
+  // silenciara para siempre, justo lo contrario de lo que hace: no silencia
+  // nada todavía.
+  if (entrada?.estado === 'pendiente') {
+    return { estado: 'pendiente', etiqueta: 'Sin aprobar', vence: null, dias: null };
+  }
   const texto = entrada?.expires_at;
   if (!texto) return { estado: 'permanente', etiqueta: 'Permanente', vence: null, dias: null };
   const vence = fecha(texto);
@@ -100,6 +107,7 @@ export function vigenciaDe(entrada, ahora = new Date()) {
 }
 
 export const COLOR_VIGENCIA = {
+  pendiente:   { color: 'var(--nivel-alto-texto)',   fondo: 'var(--nivel-alto-tenue)' },
   vigente:     { color: 'var(--nivel-bajo-texto)',   fondo: 'var(--nivel-bajo-tenue)' },
   por_vencer:  { color: 'var(--nivel-alto-texto)',   fondo: 'var(--nivel-alto-tenue)' },
   vencida:     { color: 'var(--estado-error-texto)', fondo: 'var(--estado-error-fondo)' },
@@ -109,7 +117,7 @@ export const COLOR_VIGENCIA = {
 
 /** Cuenta de la lista blanca por vigencia. */
 export function resumenListaBlanca(entradas, ahora = new Date()) {
-  const r = { total: 0, vigente: 0, por_vencer: 0, vencida: 0, permanente: 0, desconocida: 0 };
+  const r = { total: 0, pendiente: 0, vigente: 0, por_vencer: 0, vencida: 0, permanente: 0, desconocida: 0 };
   for (const e of entradas || []) {
     r.total += 1;
     r[vigenciaDe(e, ahora).estado] += 1;
@@ -165,4 +173,51 @@ export function leerIds(texto) {
     .split(/[\s,;]+/)
     .map((x) => x.trim())
     .filter(Boolean);
+}
+
+/* ── Aprobación de la lista blanca ──────────────────────────────────────────
+
+   Silenciar a un cliente lo pide una persona y lo firma otra. Lo de acá es lo
+   que la pantalla necesita para dibujar ese estado y para decidir si el botón
+   de aprobar se puede apretar.
+
+   LA REGLA ESTÁ TAMBIÉN EN EL BACKEND, y ésta no la reemplaza. Acá sirve para
+   no ofrecer un botón que va a dar 409; la decisión de verdad se toma del
+   otro lado, donde el padrón se lee de S3 y no se puede editar desde una
+   consola del navegador.
+   ------------------------------------------------------------------------ */
+
+export const ESTADO_WHITELIST = {
+  pendiente: { etiqueta: 'Pendiente de aprobación', color: 'var(--nivel-alto-texto)', fondo: 'var(--nivel-alto-tenue)' },
+  aprobada:  { etiqueta: 'Aprobada',                color: 'var(--nivel-bajo-texto)', fondo: 'var(--nivel-bajo-tenue)' },
+  rechazada: { etiqueta: 'Rechazada',               color: 'var(--estado-error-texto)', fondo: 'var(--estado-error-fondo)' },
+  heredada:  { etiqueta: 'Sin aprobación',          color: 'var(--texto-mute)', fondo: 'var(--superficie-3)' },
+};
+
+export function estadoWhitelist(entrada) {
+  const clave = ESTADO_WHITELIST[entrada?.estado] ? entrada.estado : 'heredada';
+  return { clave, ...ESTADO_WHITELIST[clave] };
+}
+
+/**
+ * Si este usuario puede firmar esta entrada, y si no, por qué no.
+ *
+ * Devuelve `{ puede, motivo }`. El motivo va al `title` del botón apagado:
+ * un botón gris sin explicación hace que la gente apriete tres veces y
+ * después pregunte por chat.
+ */
+export function puedeAprobarWhitelist(entrada, email, soyOficial) {
+  const yo = String(email || '').trim().toLowerCase();
+  const pidio = String(entrada?.solicitado_por || entrada?.created_by || '').trim().toLowerCase();
+
+  if (entrada?.estado !== 'pendiente') {
+    return { puede: false, motivo: 'Sólo se aprueban las entradas pendientes.' };
+  }
+  if (!soyOficial) {
+    return { puede: false, motivo: 'Sólo un Oficial de Cumplimiento puede aprobar que un cliente deje de alertar.' };
+  }
+  if (yo && yo === pidio) {
+    return { puede: false, motivo: 'No podés aprobar una entrada que pediste vos: tiene que mirarla otra persona.' };
+  }
+  return { puede: true, motivo: '' };
 }

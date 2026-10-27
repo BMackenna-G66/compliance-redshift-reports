@@ -230,3 +230,59 @@ class LaParidadConV1(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LaAprobacionDeWhitelistEstaEnLOS_DOS(unittest.TestCase):
+    """Que el control exista en las dos pantallas, no en una.
+
+    POR QUÉ ESTO ES UN TEST Y NO UNA BUENA INTENCIÓN. La lista blanca vive en
+    v1 y en v2, y las dos escriben contra la misma API. Si la aprobación
+    quedara sólo en v2, cualquiera podría seguir pidiendo desde v1 sin ver que
+    su pedido quedó pendiente —creería que el cliente ya está silenciado— y
+    ningún Oficial que use v1 tendría dónde firmarlo.
+
+    Medio cambio desplegado ya rompió producción el 18-09-2026. Esto es el
+    freno.
+
+    SE BUSCA LA ACCIÓN, NO LA RUTA. Los dos frentes arman la URL con una
+    plantilla (`/whitelist/${id}/${accion}`), así que `/aprobar` no aparece
+    literal en ninguno de los dos. Lo que sí aparece es la acción.
+    """
+
+    V1 = (RAIZ / "frontend" / "index.html").read_text(encoding="utf-8")
+    V2 = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (RAIZ / "frontend" / "v2" / "src").rglob("*.js*"))
+
+    def _frentes(self):
+        return (("v1", self.V1), ("v2", self.V2))
+
+    def test_las_dos_pueden_aprobar_y_rechazar(self):
+        for nombre, fuente in self._frentes():
+            with self.subTest(frente=nombre):
+                self.assertIn("'aprobar'", fuente)
+                self.assertIn("'rechazar'", fuente)
+                self.assertIn("whitelist/${", fuente.replace("`", ""))
+
+    def test_las_dos_muestran_el_estado_pendiente(self):
+        for nombre, fuente in self._frentes():
+            with self.subTest(frente=nombre):
+                self.assertIn("pendiente", fuente)
+
+    def test_NINGUNA_DE_LAS_DOS_PROMETE_QUE_YA_ESTA(self):
+        """El mensaje del alta no puede decir que el cliente quedó silenciado.
+
+        Es el error caro: alguien cierra el caso creyendo que dejó de alertar
+        y nadie firma nunca.
+        """
+        for nombre, fuente in self._frentes():
+            with self.subTest(frente=nombre):
+                self.assertNotIn("Agregado a la whitelist", fuente)
+                self.assertNotIn("Cliente agregado a la whitelist", fuente)
+
+    def test_EL_PADRON_NO_BAJA_AL_NAVEGADOR(self):
+        """Las dos preguntan `soy_oficial`; ninguna recibe la lista de personas."""
+        for nombre, fuente in self._frentes():
+            with self.subTest(frente=nombre):
+                self.assertIn("soy_oficial", fuente)
+                self.assertNotIn("oficiales_cumplimiento", fuente)

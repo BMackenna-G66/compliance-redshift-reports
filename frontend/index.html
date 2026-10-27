@@ -1173,6 +1173,12 @@
           </button>
         </div>
 
+        <!-- Lo que pasa cuando se aprieta el botón, dicho antes de apretarlo.
+             Una entrada pedida NO silencia nada hasta que la firma un Oficial. -->
+        <div x-show="whitelistAviso" x-cloak
+          class="mb-4 text-xs text-amber-300 bg-amber-900/30 border border-amber-700 rounded-lg px-3 py-2"
+          x-text="whitelistAviso"></div>
+
         <div x-show="whitelistLoading" class="text-center py-16 text-slate-400"><span class="spin text-3xl">⏳</span></div>
 
         <div x-show="!whitelistLoading && whitelist.length===0"
@@ -1186,6 +1192,7 @@
           <table class="w-full text-sm">
             <thead class="bg-slate-900 border-b border-slate-700">
               <tr>
+                <th class="text-left px-4 py-3 text-slate-400 font-medium">Estado</th>
                 <th class="text-left px-4 py-3 text-slate-400 font-medium">Campo</th>
                 <th class="text-left px-4 py-3 text-slate-400 font-medium">Valor</th>
                 <th class="text-left px-4 py-3 text-slate-400 font-medium">Alcance</th>
@@ -1199,6 +1206,20 @@
             <tbody class="divide-y divide-slate-700">
               <template x-for="entry in whitelist" :key="entry.whitelist_id">
                 <tr class="hover:bg-slate-700/50 transition">
+                  <!-- Una pendiente NO silencia nada: el cliente sigue
+                       alertando hasta que un Oficial la firme. Va primero
+                       porque es lo que cambia qué hay que hacer con la fila. -->
+                  <td class="px-4 py-2.5">
+                    <span x-show="entry.estado==='pendiente'"
+                      class="text-xs px-2 py-0.5 rounded-full border bg-amber-900/40 text-amber-300 border-amber-700"
+                      title="Pedida, sin firmar. El cliente sigue alertando.">Pendiente</span>
+                    <span x-show="entry.estado==='aprobada'"
+                      class="text-xs px-2 py-0.5 rounded-full border bg-green-900/40 text-green-400 border-green-700"
+                      :title="'Aprobada por ' + (entry.aprobada_por||'—') + ' el ' + (entry.aprobada_en||'—')">Aprobada</span>
+                    <span x-show="entry.estado!=='pendiente' && entry.estado!=='aprobada'"
+                      class="text-xs px-2 py-0.5 rounded-full border bg-slate-700 text-slate-400 border-slate-600"
+                      title="Anterior al control de aprobación: sigue vigente hasta que venza.">Sin aprobación</span>
+                  </td>
                   <td class="px-4 py-2.5 text-slate-300 font-mono text-xs" x-text="entry.entity_field"></td>
                   <td class="px-4 py-2.5 text-white font-medium text-xs" x-text="entry.entity_value"></td>
                   <td class="px-4 py-2.5">
@@ -1214,10 +1235,31 @@
                   <td class="px-4 py-2.5 text-slate-400 text-xs" :title="entry.created_by||''"
                       x-text="entry.created_by ? entry.created_by.split('@')[0] : '—'"></td>
                   <td class="px-4 py-2.5 text-center">
-                    <button @click="removeWhitelist(entry.whitelist_id)"
-                      class="text-xs text-red-400 hover:text-white bg-red-900/30 hover:bg-red-600 border border-red-800 px-2 py-1 rounded transition">
-                      × Eliminar
-                    </button>
+                    <!-- Sólo un Oficial de Cumplimiento que no la haya pedido.
+                         `whitelistSoyOficial` lo contesta el backend: el padrón
+                         es una lista de personas y no baja al navegador. -->
+                    <template x-if="entry.estado==='pendiente'">
+                      <span class="inline-flex gap-1">
+                        <button @click="firmarWhitelist(entry, 'aprobar')"
+                          :disabled="!puedeFirmarWhitelist(entry)"
+                          :title="puedeFirmarWhitelist(entry) ? 'Aprobar que deje de alertar' : motivoNoFirmaWhitelist(entry)"
+                          class="text-xs text-green-400 hover:text-white bg-green-900/30 hover:bg-green-600 border border-green-800 px-2 py-1 rounded transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-green-900/30 disabled:hover:text-green-400">
+                          ✓ Aprobar
+                        </button>
+                        <button @click="firmarWhitelist(entry, 'rechazar')"
+                          :disabled="!puedeFirmarWhitelist(entry)"
+                          :title="puedeFirmarWhitelist(entry) ? 'Rechazar el pedido' : motivoNoFirmaWhitelist(entry)"
+                          class="text-xs text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 border border-slate-600 px-2 py-1 rounded transition disabled:opacity-40 disabled:cursor-not-allowed">
+                          Rechazar
+                        </button>
+                      </span>
+                    </template>
+                    <template x-if="entry.estado!=='pendiente'">
+                      <button @click="removeWhitelist(entry.whitelist_id)"
+                        class="text-xs text-red-400 hover:text-white bg-red-900/30 hover:bg-red-600 border border-red-800 px-2 py-1 rounded transition">
+                        × Eliminar
+                      </button>
+                    </template>
                   </td>
                 </tr>
               </template>
@@ -4822,7 +4864,7 @@
                 </button>
               </div>
               <p x-show="caseWL.error" class="text-xs text-red-400" x-text="caseWL.error"></p>
-              <p x-show="caseWL.ok" class="text-xs text-green-400">✓ Agregado a la whitelist.</p>
+              <p x-show="caseWL.ok" class="text-xs text-amber-300">✓ Pedido enviado. El cliente SIGUE alertando hasta que un Oficial de Cumplimiento lo apruebe en Lista Blanca.</p>
             </div>
           </div>
         </div>
@@ -7836,6 +7878,10 @@
       // Whitelist
       whitelist: [],
       whitelistLoading: false,
+      // Si QUIEN MIRA es Oficial de Cumplimiento. Lo contesta el backend: el
+      // padrón es una lista de personas y no baja al navegador.
+      whitelistSoyOficial: false,
+      whitelistAviso: '',
       addWhitelistOpen: false,
       newWL: { entity_field: 'customer_id', entity_value: '', duration_days: 30, reason: '', scope: 'global', report_name: '' },
       whitelistRowOpen: false,
@@ -10277,8 +10323,49 @@
         this.whitelistLoading = true;
         const d = await this.api('GET', '/whitelist');
         this.whitelist = d?.whitelist || [];
+        // El padrón de Oficiales NO baja al navegador: baja la respuesta a
+        // «¿éste que mira puede firmar?». Es una lista de personas con un rol
+        // de cumplimiento y la pantalla sólo necesita el booleano.
+        this.whitelistSoyOficial = Boolean(d?.soy_oficial);
         this.kpiWhitelist = this.whitelist.length;
         this.whitelistLoading = false;
+      },
+
+      /* Si este usuario puede firmar esta entrada. La decisión de verdad la
+         toma el backend —acá no hay nada que no se pueda editar desde una
+         consola del navegador—; esto sólo evita ofrecer un botón que va a
+         contestar 409. */
+      puedeFirmarWhitelist(entry) {
+        if (entry?.estado !== 'pendiente') return false;
+        if (!this.whitelistSoyOficial) return false;
+        const yo = String(this.currentUserEmail || this.userEmail || '').trim().toLowerCase();
+        const pidio = String(entry?.solicitado_por || entry?.created_by || '').trim().toLowerCase();
+        return !(yo && yo === pidio);
+      },
+
+      motivoNoFirmaWhitelist(entry) {
+        if (entry?.estado !== 'pendiente') return 'Sólo se firman las entradas pendientes.';
+        if (!this.whitelistSoyOficial) {
+          return 'Sólo un Oficial de Cumplimiento puede aprobar que un cliente deje de alertar.';
+        }
+        return 'No podés firmar una entrada que pediste vos: tiene que mirarla otra persona.';
+      },
+
+      async firmarWhitelist(entry, accion) {
+        let motivo = '';
+        if (accion === 'rechazar') {
+          motivo = window.prompt(
+            `Rechazar el pedido para ${entry.entity_value}. El cliente sigue alertando.\n\n`
+            + '¿Por qué? (lo lee quien lo pidió)') || '';
+          if (!motivo.trim()) return;
+        } else if (!window.confirm(
+          `Aprobar que ${entry.entity_value} deje de alertar por ${entry.duration_days} días.\n\n`
+          + 'Desde ahora no aparece en los reportes: ni sanciones ni delitos sensibles.\n\n¿Confirmás?')) {
+          return;
+        }
+        const d = await this.api('POST', `/whitelist/${entry.whitelist_id}/${accion}`,
+          accion === 'rechazar' ? { motivo: motivo.trim() } : {});
+        if (d) await this.loadWhitelist();
       },
 
       async addWhitelist() {
@@ -10292,6 +10379,10 @@
         if (d) {
           this.addWhitelistOpen = false;
           this.newWL = { entity_field: 'customer_id', entity_value: '', duration_days: 30, reason: '', scope: 'global', report_name: '' };
+          // NO silencia nada todavía. Decir «agregado» sería el error caro:
+          // alguien cierra el caso creyendo que el cliente dejó de alertar.
+          this.whitelistAviso = 'Pedido enviado. Queda PENDIENTE: el cliente sigue '
+            + 'alertando hasta que lo apruebe un Oficial de Cumplimiento.';
           await this.loadWhitelist();
         }
       },
