@@ -89,6 +89,21 @@ except Exception:
     def _send_email_gmail(*args, **kwargs):  # noqa: ANN001
         return {"sent": False, "error": "api_handler no importable"}
 
+# El informe de alertas de los lunes. Se arma y se manda con la MISMA función
+# que usa el botón de la pantalla: un informe programado que recorriera otro
+# camino sería un segundo informe que nadie compara con el primero.
+try:
+    from api_handler import enviar_informe_alertas as _enviar_informe_alertas
+except Exception:
+    def _enviar_informe_alertas(*args, **kwargs):  # noqa: ANN001
+        return {"statusCode": 503,
+                "body": json.dumps({"error": "api_handler no importable"})}
+
+try:
+    import informe_programado
+except Exception:                                                # noqa: BLE001
+    informe_programado = None
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -1281,7 +1296,11 @@ def _gereo_ros(event: dict, run_id: str | None) -> dict:
     return {"ok": True, "detenido": d.get("detenido"), "s3_key": clave}
 
 
-def _avisar_falla(proceso: str, detalle: str, es_prueba: bool = False) -> None:
+CONSECUENCIA_ENTRADA = "Mientras siga así, ese correo NO entra al sistema."
+
+
+def _avisar_falla(proceso: str, detalle: str, es_prueba: bool = False,
+                  consecuencia: str = CONSECUENCIA_ENTRADA) -> None:
     """Avisa que la escucha de respuestas dejó de funcionar.
 
     NO VA AL CANAL DEL EQUIPO, a pedido: esto es una falla de infraestructura
@@ -1300,6 +1319,13 @@ def _avisar_falla(proceso: str, detalle: str, es_prueba: bool = False) -> None:
 
     Se avisa UNA VEZ POR HORA, no cada diez minutos: un canal caído durante
     días generaría cientos de mensajes, y un privado inundado se silencia.
+
+    `consecuencia` es la frase que dice qué se pierde mientras el proceso esté
+    caído. Tiene como valor por defecto el de los procesos que LEEN correo
+    —que son los tres que ya usaban esto— pero un proceso que MANDA necesita
+    decir lo contrario: un aviso que le explica al que lo lee que no entró un
+    correo, cuando lo que pasó es que no salió, manda a buscar el problema al
+    lado equivocado.
     """
     marca = f"avisos/falla-{proceso.split()[0].lower()}.txt"
     ahora = dt.datetime.utcnow()
@@ -1318,8 +1344,7 @@ def _avisar_falla(proceso: str, detalle: str, es_prueba: bool = False) -> None:
     texto = (
         f"{titulo}\n"
         f"`{detalle[:300]}`\n"
-        "Mientras siga así, ese correo NO entra al sistema. Este aviso se "
-        "repite como máximo una vez por hora."
+        f"{consecuencia} Este aviso se repite como máximo una vez por hora."
     )
 
     avisado = False
@@ -1345,7 +1370,7 @@ def _avisar_falla(proceso: str, detalle: str, es_prueba: bool = False) -> None:
             '<p style="font-family:Arial,sans-serif;font-size:14px;">'
             f"<strong>{'PRUEBA — así se ve el aviso. No hay ninguna falla real.' if es_prueba else 'Proceso caído: ' + proceso}</strong><br>"
             f"<code>{detalle[:300]}</code><br><br>"
-            "Mientras siga así, ese correo no entra al sistema.</p>")
+            f"{consecuencia}</p>")
         asunto = (f"[WatchTower] PRUEBA — aviso de falla ({proceso})"
                   if es_prueba else f"[WatchTower] Proceso caído: {proceso}")
         r = _send_email_gmail(AVISO_FALLA_EMAIL, asunto, cuerpo)
@@ -1359,6 +1384,77 @@ def _avisar_falla(proceso: str, detalle: str, es_prueba: bool = False) -> None:
                           Body=ahora.isoformat().encode())
         except Exception:                                        # noqa: BLE001
             pass
+
+
+# Lo que se pierde mientras el informe de los lunes esté caído. Es lo contrario
+# de lo que dice el aviso por defecto: acá el correo no SALE.
+SIN_INFORME = ("El equipo KYT se queda sin el informe de esta semana; las "
+               "alertas siguen en la bandeja.")
+
+
+def _config_informe_alertas() -> dict:
+    """`config/informe_alertas.json`, o `{}` si no se puede leer.
+
+    Falla ABIERTO a propósito: que S3 tosa un lunes a las nueve no puede
+    dejar al equipo sin informe. Si no hay config, el plan cae a la lista con
+    la que se creó el horario, que es una fuente igual de autorizada.
+    """
+    try:
+        obj = s3.get_object(Bucket=S3_BUCKET,
+                            Key=informe_programado.CLAVE_CONFIG)
+        d = json.loads(obj["Body"].read().decode("utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception as e:                                       # noqa: BLE001
+        logger.info("Informe de alertas: sin config en S3 (%s) — se usa la "
+                    "lista del horario", type(e).__name__)
+        return {}
+
+
+def _informe_alertas_programado(event: dict) -> dict:
+    """El informe de alertas de los lunes, sin nadie apretando un botón.
+
+    Corre acá y no en la Lambda de la API por el motivo de siempre: la API
+    tiene 60 segundos y armar el informe con todas las alertas abiertas puede
+    no entrar. Ésta tiene 900.
+    """
+    if not informe_programado:
+        logger.error("Informe de alertas: informe_programado no viajó en el paquete")
+        _avisar_falla("Informe de alertas programado",
+                      "el módulo informe_programado no está en el paquete",
+                      consecuencia=SIN_INFORME)
+        return {"status": "error", "error": "informe_programado no importable"}
+
+    p = informe_programado.plan(_config_informe_alertas(), event)
+    if not p["enviar"]:
+        # Apagado a mano NO es una falla: alguien lo decidió. Quedarse sin
+        # destinatarios SÍ lo es, y por eso el aviso mira el origen y no sólo
+        # el hecho de que no salió.
+        apagado = p["origen"] == "config"
+        logger.info("Informe de alertas: no sale — %s", p["motivo"])
+        if not apagado:
+            _avisar_falla(informe_programado.PROCESO, p["motivo"],
+                          consecuencia=SIN_INFORME)
+        return {"enviado": False, "motivo": p["motivo"], "apagado": apagado}
+
+    respuesta = _enviar_informe_alertas(informe_programado.cuerpo(p, event))
+    codigo, datos = informe_programado.leer_respuesta(respuesta)
+    problema = informe_programado.falla(codigo, datos)
+
+    if problema:
+        # El 200 con `enviado: false` es el caso que importa: respuesta bien
+        # formada, correo que no llegó a nadie. Sin esto vuelve a pasar lo de
+        # la escucha de respuestas — fallar todas las semanas en silencio.
+        logger.error("Informe de alertas programado CAÍDO: %s", problema)
+        _avisar_falla(informe_programado.PROCESO, problema,
+                      consecuencia=SIN_INFORME)
+    else:
+        logger.info("Informe de alertas enviado a %d destinatario(s) (origen: "
+                    "%s) · %s alertas", len(p["para"]), p["origen"],
+                    datos.get("alertas"))
+
+    return {"enviado": not problema, "destinatarios": p["para"],
+            "origen": p["origen"], "alertas": datos.get("alertas"),
+            "sin_caso": datos.get("sin_caso"), "aviso": problema}
 
 
 def handler(event, context):  # noqa: ARG001
@@ -1404,6 +1500,16 @@ def handler(event, context):  # noqa: ARG001
         else:
             logger.info("Escucha de respuestas: %s", json.dumps(r, default=str))
         return r
+
+    # ── El informe de alertas de los lunes ────────────────────────────────
+    # Lo dispara EventBridge Scheduler a las 09:00 de Chile — Scheduler y no
+    # una regla cron común, porque una regla sólo entiende UTC y Chile cambia
+    # de huso dos veces al año: el informe llegaría a las 8 o a las 10 según
+    # el mes. El horario se crea con ./horario_informe_alertas.sh, que vive en
+    # el repo justamente para que no sea un recurso que alguien creó a mano en
+    # la consola y nadie puede reconstruir.
+    if report_name == "informe_alertas":
+        return _informe_alertas_programado(event)
 
     # ── GEREO: el borrador del ROS ────────────────────────────────────────
     # Vive acá y no en la API porque un ROS tarda decenas de segundos: no
