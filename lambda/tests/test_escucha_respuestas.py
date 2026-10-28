@@ -169,7 +169,10 @@ class ElFalloNoPuedeSerSilencioso(unittest.TestCase):
     def _despacho(self):
         fuente = (RAIZ / "handler.py").read_text(encoding="utf-8")
         i = fuente.index('if report_name == "poll_document_replies":')
-        return fuente[i:i + 900]
+        # Hasta el final REAL de la rama, no 900 caracteres. Con un ancho fijo,
+        # agregarle tres líneas al bloque tiraba abajo un test que no tenía
+        # nada que ver con el cambio.
+        return fuente[i:fuente.index("return r", i) + len("return r")]
 
     def test_un_error_se_loguea_como_error(self):
         cuerpo = self._despacho()

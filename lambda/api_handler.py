@@ -442,6 +442,10 @@ _ATTACHMENT_EXTS_ALLOWED = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".
 # reciente: la casilla arrastra miles de mensajes viejos del grupo que no son
 # respuestas a solicitudes, y no tiene sentido tocarlos.
 DOC_REPLY_LOOKBACK_DAYS = int(os.environ.get("DOC_REPLY_LOOKBACK_DAYS", "10"))
+# Reintentos al CONECTAR, no al leer. Cubre el timeout suelto de red, que
+# en catorce dias de corridas cada 10 minutos paso dos veces y se curo
+# solo en la corrida siguiente.
+INTENTOS_CONEXION_IMAP = int(os.environ.get("INTENTOS_CONEXION_IMAP", "3"))
 _EMAIL_REF_RE = re.compile(r"\[ref:\s*([0-9a-f]{8})\]", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
@@ -8064,7 +8068,48 @@ def _marcar_email_procesado(message_id: str, case_id: str, outcome: str) -> None
     })
 
 
-def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -> str:
+def _cerrar_imap(imap) -> None:
+    """Cierra sin hacer ruido. Si la conexion ya esta muerta, cerrarla levanta
+    —y ahi no hay nada que hacer: el error que importa es el de antes."""
+    if imap is None:
+        return
+    try:
+        imap.close()
+    except Exception:                                            # noqa: BLE001
+        pass
+    try:
+        imap.logout()
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
+def _cabecera_reply(imap, num, email_lib) -> dict | None:
+    """Lee SOLO los encabezados del mensaje. Un par de cientos de bytes.
+
+    Existe para no bajar el cuerpo de un mensaje que vamos a descartar. El
+    control de duplicados es el ledger de Message-ID y el de pertenencia es
+    el token del asunto: las dos cosas viven en los encabezados, asi que
+    decidir no cuesta ancho de banda. El cuerpo —que es donde estan los
+    adjuntos, y lo que pesa— se baja recien cuando ya sabemos que hay un
+    caso al que pegarselo.
+
+    BODY.PEEK, igual que la bajada entera: sin PEEK, mirar un mensaje lo
+    marca \\Seen, y eso ensuciaria spam real de otra gente.
+    """
+    status, data = imap.fetch(
+        num, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM)])")
+    if status != "OK" or not data or not isinstance(data[0], tuple):
+        return None
+    msg = email_lib.message_from_bytes(data[0][1])
+    return {
+        "subject": _decode_mime_words(msg.get("Subject", "")),
+        "from_addr": email_lib.utils.parseaddr(msg.get("From", ""))[1],
+        "message_id": (msg.get("Message-ID") or "").strip(),
+    }
+
+
+def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False,
+                           cabecera=None) -> str:
     """Procesa un único mensaje IMAP. Retorna 'matched' (adjuntos subidos,
     checklist a "recibido"), 'matched_no_attachment' (el caso matcheó pero
     el cliente no adjuntó nada válido — se deja una nota con el texto de su
@@ -8076,13 +8121,12 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
     # efecto secundario a menos que se use PEEK; sin esto, cualquier lectura
     # (incluso solo para inspeccionar) marcaría como leído un spam real que
     # no matcheó ningún caso, rompiendo la garantía de "no tocar nada".
-    status, msg_data = imap.fetch(num, "(BODY.PEEK[])")
-    if status != "OK":
+    if cabecera is None:
+        cabecera = _cabecera_reply(imap, num, email_lib)
+    if cabecera is None:
         return "error"
-    msg = email_lib.message_from_bytes(msg_data[0][1])
-    subject = _decode_mime_words(msg.get("Subject", ""))
-    from_addr = email_lib.utils.parseaddr(msg.get("From", ""))[1]
-    message_id = (msg.get("Message-ID") or "").strip()
+    subject, from_addr, message_id = (cabecera["subject"], cabecera["from_addr"],
+                                      cabecera["message_id"])
     if _email_ya_procesado(message_id):
         return "duplicado"
 
@@ -8092,6 +8136,17 @@ def _process_reply_message(imap, num, email_lib, move_matched_from_spam=False) -
     if case is None:
         return "unmatched"
     case_id = ref_record["case_id"]
+
+    # RECIEN ACA se baja el mensaje entero, y solo de lo que matcheo un caso.
+    # Antes esta bajada estaba arriba de todo, asi que cada corrida se traia
+    # los 40 mensajes de la ventana CON SUS ADJUNTOS para terminar
+    # descartandolos por duplicados. 144 corridas por dia contra la misma
+    # tanda es como se revienta la cuota de IMAP de Gmail, y Gmail contesta
+    # cortando la conexion: [OVERQUOTA] primero y EOF despues.
+    status, msg_data = imap.fetch(num, "(BODY.PEEK[])")
+    if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+        return "error"
+    msg = email_lib.message_from_bytes(msg_data[0][1])
 
     saved_any = False
     nuevos_adjuntos: list[str] = []
@@ -8225,13 +8280,41 @@ def poll_document_replies() -> dict:
     if not password:
         return {"status": "skipped", "reason": "DOC_REPLY_IMAP_SECRET_ARN no configurado"}
 
-    try:
-        # timeout explícito: sin esto, un stall de red deja la Lambda colgada
-        # hasta su límite de 900s y las corridas programadas se apilan.
-        imap = imaplib.IMAP4_SSL(DOC_REPLY_IMAP_HOST, timeout=30)
-        imap.login(DOC_REPLY_IMAP_USER, password)
-    except Exception as e:
-        return {"status": "error", "error": f"No se pudo conectar/autenticar por IMAP: {e}"}
+    # Un timeout suelto al conectar se reintenta; una clave rechazada no.
+    # Son dos cosas distintas con el mismo final: la red se cura sola en
+    # segundos, la credencial no se cura reintentando —y tres logins fallidos
+    # seguidos contra Gmail es justo lo que hace que Gmail empiece a trabar la
+    # cuenta—. Por eso el corte es por tipo de excepcion: OSError/TimeoutError
+    # es socket (se reintenta), imaplib.IMAP4.error es protocolo o
+    # autenticacion (se avisa de una).
+    imap = None
+    for intento in range(1, INTENTOS_CONEXION_IMAP + 1):
+        try:
+            # timeout explícito: sin esto, un stall de red deja la Lambda colgada
+            # hasta su límite de 900s y las corridas programadas se apilan.
+            imap = imaplib.IMAP4_SSL(DOC_REPLY_IMAP_HOST, timeout=30)
+            imap.login(DOC_REPLY_IMAP_USER, password)
+            break
+        except (TimeoutError, OSError) as e:
+            # Si el que fallo fue el login, la conexion quedo abierta: hay que
+            # cerrarla antes de reintentar. Gmail permite 15 conexiones IMAP
+            # simultaneas por cuenta y dejar uno colgado por intento es
+            # empezar a gastarlas de arriba.
+            _cerrar_imap(imap)
+            imap = None
+            if intento >= INTENTOS_CONEXION_IMAP:
+                return {"status": "error",
+                        "error": f"No se pudo conectar/autenticar por IMAP: {e}"}
+            print(f"poll_document_replies: conexion fallida (intento {intento}"
+                  f" de {INTENTOS_CONEXION_IMAP}): {e}")
+            time.sleep(2 * intento)
+        except Exception as e:
+            _cerrar_imap(imap)
+            return {"status": "error",
+                    "error": f"No se pudo conectar/autenticar por IMAP: {e}"}
+    if imap is None:
+        return {"status": "error",
+                "error": "No se pudo conectar/autenticar por IMAP: sin conexion"}
 
     processed = matched = matched_no_doc = unmatched = errors = duplicados = 0
     pendientes = 0
@@ -8263,13 +8346,29 @@ def poll_document_replies() -> dict:
         if status == "OK":
             status, data = imap.search(None, criterio)
             nums = data[0].split() if status == "OK" else []
-            pendientes += max(0, len(nums) - MAX_POR_CARPETA)
-            for num in nums[:MAX_POR_CARPETA]:
+            gastados = 0
+            for num in nums:
                 if time.time() > deadline:
                     pendientes += 1
                     continue
                 try:
-                    outcome = _process_reply_message(imap, num, email_lib)
+                    cab = _cabecera_reply(imap, num, email_lib)
+                    # UN DUPLICADO NO GASTA CUPO. El cupo esta para acotar el
+                    # trabajo pesado, y de un duplicado ya sabemos todo con los
+                    # encabezados. Cuando gastaba cupo, los 40 mensajes mas
+                    # viejos de la ventana se comian la corrida entera, corrida
+                    # tras corrida, y la respuesta recien llegada —que es la
+                    # ULTIMA de la lista— no se miraba nunca: el cliente
+                    # mandaba el documento y en el caso no aparecia nada.
+                    if cab is not None and _email_ya_procesado(cab["message_id"]):
+                        duplicados += 1
+                        continue
+                    if gastados >= MAX_POR_CARPETA:
+                        pendientes += 1
+                        continue
+                    gastados += 1
+                    outcome = _process_reply_message(imap, num, email_lib,
+                                                     cabecera=cab)
                     if outcome == "duplicado":
                         duplicados += 1
                         continue
@@ -8281,6 +8380,11 @@ def poll_document_replies() -> dict:
                     matched += (outcome == "matched")
                     matched_no_doc += (outcome == "matched_no_attachment")
                     unmatched += (outcome == "unmatched")
+                except imaplib.IMAP4.abort:
+                    # Gmail corto la conexion: seguir el lote es hablarle a un
+                    # socket muerto. Sube al except de afuera, que lo convierte
+                    # en un status de error visible en vez de un crash mudo.
+                    raise
                 except Exception as e:
                     print(f"poll_document_replies: error procesando mensaje INBOX {num}: {e}")
                     errors += 1
@@ -8290,27 +8394,53 @@ def poll_document_replies() -> dict:
         if status == "OK":
             status, data = imap.search(None, criterio)
             nums = data[0].split() if status == "OK" else []
-            pendientes += max(0, len(nums) - MAX_POR_CARPETA)
-            for num in nums[:MAX_POR_CARPETA]:
+            gastados = 0
+            for num in nums:
                 if time.time() > deadline:
                     pendientes += 1
                     continue
                 try:
-                    outcome = _process_reply_message(imap, num, email_lib, move_matched_from_spam=True)
+                    cab = _cabecera_reply(imap, num, email_lib)
+                    if cab is not None and _email_ya_procesado(cab["message_id"]):
+                        duplicados += 1
+                        continue
+                    if gastados >= MAX_POR_CARPETA:
+                        pendientes += 1
+                        continue
+                    gastados += 1
+                    outcome = _process_reply_message(imap, num, email_lib,
+                                                     move_matched_from_spam=True,
+                                                     cabecera=cab)
                     if outcome in ("matched", "matched_no_attachment"):
                         processed += 1
                         matched += (outcome == "matched")
                         matched_no_doc += (outcome == "matched_no_attachment")
                     # unmatched/error en Spam: no se toca, no se marca, no se cuenta —
                     # es spam real de otra gente, no nuestro.
+                except imaplib.IMAP4.abort:
+                    # Gmail corto la conexion: seguir el lote es hablarle a un
+                    # socket muerto. Sube al except de afuera, que lo convierte
+                    # en un status de error visible en vez de un crash mudo.
+                    raise
                 except Exception as e:
                     print(f"poll_document_replies: error procesando mensaje Spam {num}: {e}")
+    except Exception as e:
+        # ESTE except NO EXISTIA, y es la razon por la que nadie se entero.
+        # imap.select() y imap.search() caen fuera del try de cada mensaje:
+        # cuando Gmail corta la conexion por cuota, el abort subia hasta aca,
+        # no habia nada que lo atrapara, y la Lambda moria con una excepcion
+        # sin manejar. Una Lambda que muere asi no devuelve
+        # {"status": "error"}, asi que _avisar_falla NUNCA se llamaba: el
+        # proceso se caia en silencio, corrida tras corrida. Y encima
+        # EventBridge reintenta dos veces cada invocacion asincronica fallada,
+        # o sea que cada caida volvia a golpear la misma cuota agotada.
+        return {"status": "error", "error": f"IMAP corto la lectura: {e}",
+                "processed": processed, "matched": matched,
+                "matched_no_attachment": matched_no_doc, "unmatched": unmatched,
+                "errors": errors, "duplicados": duplicados,
+                "pendientes": pendientes}
     finally:
-        try:
-            imap.close()
-            imap.logout()
-        except Exception:
-            pass
+        _cerrar_imap(imap)
 
     resultado = {"status": "ok", "processed": processed, "matched": matched,
                  "matched_no_attachment": matched_no_doc, "unmatched": unmatched,

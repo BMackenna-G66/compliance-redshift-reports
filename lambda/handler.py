@@ -1316,6 +1316,41 @@ def _gereo_ros(event: dict, run_id: str | None) -> dict:
 CONSECUENCIA_ENTRADA = "Mientras siga así, ese correo NO entra al sistema."
 
 
+CLAVE_RACHA_ESCUCHA = "avisos/racha-escucha.txt"
+
+
+def _racha_fallas(hubo_falla: bool) -> int:
+    """Cuantas corridas SEGUIDAS viene fallando. 0 si la ultima anduvo.
+
+    El aviso sale recien a la segunda seguida. Un timeout suelto de Gmail se
+    cura solo en la corrida de diez minutos despues, y un correo que dice
+    "Proceso caido" por algo que ya se curo entrena a la persona a ignorar
+    ese correo — que es exactamente como se perdieron los ocho dias que este
+    aviso existe para que no vuelvan a pasar.
+
+    El precio es llegar hasta diez minutos mas tarde a una caida real.
+    Contra ocho dias de silencio, es nada.
+
+    Si S3 no contesta, devuelve 2: ante la duda se avisa. Un control que se
+    queda mudo cuando su propio almacen falla no es un control.
+    """
+    try:
+        if not hubo_falla:
+            s3.delete_object(Bucket=S3_BUCKET, Key=CLAVE_RACHA_ESCUCHA)
+            return 0
+        try:
+            previo = int((s3.get_object(Bucket=S3_BUCKET, Key=CLAVE_RACHA_ESCUCHA)
+                          ["Body"].read().decode().strip()) or 0)
+        except Exception:                                        # noqa: BLE001
+            previo = 0
+        ahora = previo + 1
+        s3.put_object(Bucket=S3_BUCKET, Key=CLAVE_RACHA_ESCUCHA,
+                      Body=str(ahora).encode())
+        return ahora
+    except Exception:                                            # noqa: BLE001
+        return 2 if hubo_falla else 0
+
+
 def _avisar_falla(proceso: str, detalle: str, es_prueba: bool = False,
                   consecuencia: str = CONSECUENCIA_ENTRADA) -> None:
     """Avisa que la escucha de respuestas dejó de funcionar.
@@ -1512,9 +1547,15 @@ def handler(event, context):  # noqa: ARG001
         # Un canal de contacto con clientes que se corta tiene que gritar.
         if r.get("status") == "error":
             logger.error("Escucha de respuestas CAÍDA: %s", r.get("error"))
-            _avisar_falla("Escucha de respuestas de clientes",
-                          str(r.get("error") or ""))
+            if _racha_fallas(True) >= 2:
+                _avisar_falla("Escucha de respuestas de clientes",
+                              str(r.get("error") or ""))
+            else:
+                logger.warning(
+                    "Escucha de respuestas: primera corrida fallada. No aviso "
+                    "todavía; si la próxima también falla, sale el aviso.")
         else:
+            _racha_fallas(False)
             logger.info("Escucha de respuestas: %s", json.dumps(r, default=str))
         return r
 
