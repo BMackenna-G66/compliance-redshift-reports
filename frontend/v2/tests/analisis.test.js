@@ -10,7 +10,7 @@ import { describe, it } from 'node:test';
 import {
   COLOR_VIGENCIA, ESTADOS_CORRIDA, RIESGO_EMPRESA, duracion, duracionTexto,
   enCurso, estadoWhitelist, excesoDe, excesoTexto, leerIds, parametros,
-  puedeAprobarWhitelist, resumenListaBlanca,
+  puedeAprobarWhitelist, quienPidio, resumenListaBlanca,
   riesgoDe,
   vigenciaDe,
 } from '../src/comun/analisis.js';
@@ -139,6 +139,48 @@ describe('la vigencia en la lista blanca', () => {
     for (const e of ['vigente', 'por_vencer', 'vencida', 'permanente', 'desconocida']) {
       assert.ok(COLOR_VIGENCIA[e], e);
     }
+  });
+});
+
+describe('quién pidió la entrada de lista blanca', () => {
+  it('un alta por API muestra a la persona, no al sistema', () => {
+    // El autor técnico es Octopus y la persona que lo pidió es otra. Sin
+    // separarlos, la columna diría que la agregó un sistema.
+    const q = quienPidio({
+      solicitado_por: 'ana.perez@ejemplo.test',
+      created_by: 'ana.perez@ejemplo.test',
+      origen: 'api:octopus',
+    });
+    assert.equal(q.nombre, 'ana.perez');
+    assert.equal(q.sistema, 'octopus');
+    assert.equal(q.porApi, true);
+  });
+
+  it('un alta de pantalla cae a created_by y no marca sistema', () => {
+    const q = quienPidio({ created_by: 'luis.soto@ejemplo.test' });
+    assert.equal(q.nombre, 'luis.soto');
+    assert.equal(q.porApi, false);
+    assert.equal(q.sistema, '');
+  });
+
+  it('una entrada vieja sin autor no inventa uno', () => {
+    const q = quienPidio({ whitelist_id: 'wl-vieja' });
+    assert.equal(q.correo, '');
+    assert.equal(q.nombre, '');
+    assert.equal(q.porApi, false);
+  });
+
+  it('solicitado_por manda sobre created_by', () => {
+    const q = quienPidio({
+      solicitado_por: 'ana.perez@ejemplo.test',
+      created_by: 'otro@ejemplo.test',
+    });
+    assert.equal(q.correo, 'ana.perez@ejemplo.test');
+  });
+
+  it('aguanta nulos sin romper la tabla', () => {
+    assert.equal(quienPidio(null).correo, '');
+    assert.equal(quienPidio(undefined).porApi, false);
   });
 });
 

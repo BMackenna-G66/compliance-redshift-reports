@@ -272,9 +272,9 @@ class ElContrato(unittest.TestCase):
     nada hasta que alguien lo decida."""
 
     CASO = {
-        "case_id": "abc-123", "title": "Caso: 4171334", "description": "",
+        "case_id": "abc-123", "title": "Caso: 9000001", "description": "",
         "status": "open", "priority": "high", "entity_type": "customer",
-        "entity_id": "4171334", "entity_name": "Jaqueline Cipres",
+        "entity_id": "9000001", "entity_name": "Nombre Apellido",
         "report_name": "operation-alert_-_psp_sum_30", "alert_priority": "P2",
         "assigned_to": "ana@global66.com", "created_by": "api:sistema-casos",
         "created_at": "2026-09-08 13:00:13", "updated_at": "2026-09-08 13:00:13",
@@ -283,13 +283,13 @@ class ElContrato(unittest.TestCase):
         "sla_horas_restantes": -216.0, "sla_cierre_at": "2026-09-11 13:00:13",
         "sla_accion": "cerrar",
         # Un campo interno que NO tiene que salir al contrato.
-        "alert_data": {"email": "jaquelin@ejemplo.com", "dni": "38699180"},
+        "alert_data": {"email": "cliente@ejemplo.test", "dni": "30000001"},
     }
 
     def test_expone_lo_que_corresponde(self):
         p = X.caso_publico(self.CASO)
         self.assertEqual(p["id"], "abc-123")
-        self.assertEqual(p["cliente"]["id"], "4171334")
+        self.assertEqual(p["cliente"]["id"], "9000001")
         self.assertEqual(p["origen"]["reporte"], "operation-alert_-_psp_sum_30")
         self.assertEqual(p["plazo"]["estado"], "vencido")
         self.assertEqual(p["plazo"]["accion"], "cerrar")
@@ -299,8 +299,8 @@ class ElContrato(unittest.TestCase):
         se piden en el detalle, no viajan en cada fila de una página de 200."""
         p = X.caso_publico(self.CASO)
         plano = repr(p)
-        self.assertNotIn("38699180", plano)
-        self.assertNotIn("jaquelin@ejemplo.com", plano)
+        self.assertNotIn("30000001", plano)
+        self.assertNotIn("cliente@ejemplo.test", plano)
         self.assertNotIn("alert_data", p)
 
     def test_un_caso_sin_plazo_lo_dice(self):

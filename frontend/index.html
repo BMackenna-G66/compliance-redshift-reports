@@ -1237,9 +1237,20 @@
                   <td class="px-4 py-2.5 text-slate-400 text-xs max-w-xs truncate" x-text="entry.reason||'—'"></td>
                   <!-- Quién la agregó. Las entradas anteriores a octubre de 2026
                        no lo tienen: el backend recibía el dato y lo descartaba.
-                       Se muestra «—» en vez de esconder el hueco. -->
-                  <td class="px-4 py-2.5 text-slate-400 text-xs" :title="entry.created_by||''"
-                      x-text="entry.created_by ? entry.created_by.split('@')[0] : '—'"></td>
+                       Se muestra «—» en vez de esconder el hueco.
+
+                       Y desde dónde: un alta por API (POST /v1/whitelist) la
+                       pide una persona pero la manda un sistema. Sin la
+                       insignia, la columna mostraría el correo de la analista
+                       y nadie sabría que no pasó por la pantalla. -->
+                  <td class="px-4 py-2.5 text-slate-400 text-xs"
+                      :title="(entry.solicitado_por||entry.created_by||'') + (entry.origen ? ' — vía ' + entry.origen : '')">
+                    <span x-text="(entry.solicitado_por||entry.created_by) ? (entry.solicitado_por||entry.created_by).split('@')[0] : '—'"></span>
+                    <template x-if="(entry.origen||'').startsWith('api:')">
+                      <span class="ml-1 text-[10px] px-1.5 py-0.5 rounded-full border bg-blue-900/50 text-blue-400 border-blue-700"
+                            x-text="entry.origen.slice(4)"></span>
+                    </template>
+                  </td>
                   <td class="px-4 py-2.5 text-center">
                     <!-- Sólo un Oficial de Cumplimiento que no la haya pedido.
                          `whitelistSoyOficial` lo contesta el backend: el padrón
